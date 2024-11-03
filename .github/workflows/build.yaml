@@ -1,0 +1,21 @@
+name: Build
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Install LLVM/Clang
+        uses: llvm/llvm-project/utils/gha/install-llvm-action@main
+        with:
+          components: "clang"
+
+      - name: Run make
+        run: make
