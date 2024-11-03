@@ -321,7 +321,7 @@ template <class T> void encode(const T &t, write w) {
 
 template <class T> std::string encoded(const T &t, size_t cap = 1024) {
   std::string s;
-  auto enc = Encoder(make_writer(s));
+  auto enc = Encoder{make_writer(s)};
   enc % const_cast<T &>(t);
   return s;
 }
@@ -338,7 +338,7 @@ read make_reader(std::string_view data) {
 }
 
 template <class T> void decode(T &t, read r) {
-  auto dec = Decoder(r);
+  auto dec = Decoder{r};
   dec % t;
 }
 

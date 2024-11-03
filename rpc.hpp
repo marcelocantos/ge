@@ -49,7 +49,7 @@ private:
     auto &handle = routes_.at(path);
     lk.unlock();
     if (!handle) {
-      throw std::runtime_error(std::format("route {} not found", path));
+      throw std::runtime_error("route " + path + " not found");
     }
     return handle;
   }
