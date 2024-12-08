@@ -21,10 +21,10 @@
 
 using namespace ge;
 
-void check_factorial(rpc::Caller &caller, rpc::Router &router) {
-  rpc::Endpoint<int, int> factorial_ep = {"factorial"};
+void check_factorial(Client &c, Server &r) {
+  Endpoint<int, int> factorial_ep = {"factorial"};
 
-  factorial_ep.route(router, [](int n) {
+  factorial_ep.route(r, [](int n) {
     auto f = 1;
     for (; n > 1; n--) {
       f *= n;
@@ -32,28 +32,28 @@ void check_factorial(rpc::Caller &caller, rpc::Router &router) {
     return f;
   });
 
-  auto factorial = factorial_ep.bind(caller);
+  auto factorial = factorial_ep.bind(c);
 
   CHECK(factorial(6) == 720);
 }
 
-void check_upper(rpc::Caller &caller, rpc::Router &router) {
-  rpc::Endpoint<std::string, std::string> upper_ep = {"upper"};
+void check_upper(Client &c, Server &r) {
+  Endpoint<std::string, std::string> upper_ep = {"upper"};
 
-  upper_ep.route(router, [](std::string s) {
+  upper_ep.route(r, [](std::string s) {
     std::ranges::transform(s, s.begin(),
                            [](unsigned char c) { return std::toupper(c); });
     return s;
   });
 
-  auto upper = upper_ep.bind(caller);
+  auto upper = upper_ep.bind(c);
 
   CHECK(upper("hello") == "HELLO");
 }
 
 TEST_CASE("rpc inproc") {
-  rpc::Router router;
-  rpc::InProcCaller caller{router};
+  Server router;
+  FuncClient caller{router};
 
   check_factorial(caller, router);
   check_upper(caller, router);
@@ -62,10 +62,10 @@ TEST_CASE("rpc inproc") {
 TEST_CASE("rpc http") {
   std::string host = "localhost";
 
-  rpc::Router router;
+  Server router;
 
   httplib::Server server;
-  server.Post("/:endpoint", rpc::http_handler(router, "endpoint"));
+  server.Post("/:endpoint", HttpHandler(router, "endpoint"));
 
   int port = server.bind_to_any_port(host);
 
@@ -73,7 +73,7 @@ TEST_CASE("rpc http") {
       std::async(std::launch::async, [&] { server.listen_after_bind(); });
 
   httplib::Client client{host, port};
-  rpc::HttpCaller caller{client};
+  HttpClient caller{client};
 
   check_factorial(caller, router);
   check_upper(caller, router);

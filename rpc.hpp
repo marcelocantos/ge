@@ -20,14 +20,14 @@
 
 #include "codec.hpp"
 
-namespace ge::rpc {
+namespace ge {
 
-class Caller {
+class Client {
 public:
   virtual std::string call(const std::string &path, std::string_view req) = 0;
 };
 
-class Router {
+class Server {
 public:
   using handler = std::function<std::string(std::string_view)>;
 
@@ -55,32 +55,25 @@ private:
   }
 };
 
-class InProcCaller : public Caller {
+class FuncClient : public Client {
 public:
-  InProcCaller(Router &router) : router_{router} {}
+  FuncClient(Server &router) : router_{router} {}
 
   std::string call(const std::string &path, std::string_view req) override {
     return router_.call(path, req);
   }
 
 private:
-  Router &router_;
+  Server &router_;
 };
 
 namespace detail {
 inline const std::string octets{"application/octet-stream"};
 }
 
-auto http_handler(Router &server, std::string path_param) {
-  return [&, path_param](const httplib::Request &req, httplib::Response &res) {
-    auto resp = server.call(req.path_params.at(path_param), req.body);
-    res.set_content(resp, detail::octets);
-  };
-}
-
-class HttpCaller : public Caller {
+class HttpClient : public Client {
 public:
-  HttpCaller(httplib::Client &client) : client_{client} {}
+  HttpClient(httplib::Client &client) : client_{client} {}
 
   std::string call(const std::string &path, std::string_view req) override {
     std::string reqData{req};
@@ -97,10 +90,17 @@ private:
   static const std::string contentType_;
 };
 
+auto HttpHandler(Server &server, std::string path_param) {
+  return [&, path_param](const httplib::Request &req, httplib::Response &res) {
+    std::string resp = server.call(req.path_params.at(path_param), req.body);
+    res.set_content(resp, detail::octets);
+  };
+}
+
 template <class Req, class Resp> struct Endpoint {
   std::string path;
 
-  std::function<Resp(Req)> bind(Caller &c) {
+  auto bind(Client &c) {
     return [&c, path = path](Req req) -> Resp {
       auto reqData = codec::encoded(req);
       auto respData = c.call(path, reqData);
@@ -108,15 +108,15 @@ template <class Req, class Resp> struct Endpoint {
     };
   }
 
-  void route(Router &s, std::function<Resp(Req)> handle) {
+  void route(Server &s, std::function<Resp(Req)> handle) {
     s.route(
         path,
         [handle = std::move(handle)](std::string_view reqData) -> std::string {
-          auto req = codec::decoded<Req>(reqData);
-          auto resp = handle(req);
+          Req req = codec::decoded<Req>(reqData);
+          Resp resp = handle(req);
           return codec::encoded(resp);
         });
   }
 };
 
-} // namespace ge::rpc
+} // namespace ge
