@@ -19,13 +19,9 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include "doctest.h"
 
-#include "math.hpp"
-#include "math_ios.hpp"
+#include "json.hpp"
 
 using namespace ge;
-
-constexpr float π = std::numbers::pi;
-constexpr float rr2 = 1 / std::numbers::sqrt2;
 
 template <class T> struct approx_t {
   const T &t;

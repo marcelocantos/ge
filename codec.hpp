@@ -25,7 +25,7 @@
 
 // Encode C++ structures for efficient transmission over the wire.
 //
-// This is a library that encodes and decodes a variety of C++ data types for
+// This library encodes and decodes a variety of C++ data types for
 // storage or transmission. It supports a limited set of types out of the box
 // but can be extended arbitrarily by implementing operator%.
 //
@@ -45,27 +45,30 @@
 //  codec::decode(out, [&](char *s, size_t n) { ss.read(s, n); });
 //
 //
-// Format specification:
-//  - bool: (x, 1)
+// Format specification ([x]y denotes x bytes of y):
+//  - bool: [1]x
 //  - unsigned integers and single-byte chars:
-//    - sizeof(x) == 1: (x, 1)
-//    - < 31: (x, 1)
-//    - >= 31: (32 + n, 1) + (le(x), n) where n covers all non-zero bytes.
+//    - sizeof(x) == 1: [1]x
+//    - < 31: [1]x
+//    - >= 31: [1](32 + n) + [n]le(x) where n covers all non-zero bytes.
 //  - signed integers and single-byte chars:
-//    - sizeof(x) == 1: (x, 1)
+//    - sizeof(x) == 1: [1]x
 //    - >= 0: 2 * unsigned(x)
 //    - < 0: 2 * ~unsigned(x) - 1
-//  - multi-byte chars: (x, sizeof(x))
-//  - floating point: (le(x), sizeof(x))
+//  - multi-byte chars: [x]sizeof(x)
+//  - floating point: [sizeof(x)]le(x)
 //  - std::(shared|unique)_ptr: bool(x) + (if true) *x
-//  - std::string: unsigned(x.size()) + (x.data(), x.size())
+//  - std::string: x.size() + [x.size()]x.data()
 //  - std::array: x[0] + x[1] + ... + x[n - 1]
-//  - std::vector: unsigned(x.size()) + x[0] + x[1] + ... + x[x.size() - 1]
-//  - std::(unordered_)?map: unsigned(x.size()) + k[0] + v[0] + ...
+//  - std::vector: x.size() + x[0] + x[1] + ... + x[x.size() - 1]
+//  - std::(unordered_)?map: x.size() + k[0] + v[0] + ...
 //  - T:
-//      template <::ge::codec::Codec C> C &operator%(C &c, T &x) {
+//      template <::ge::codec::Codec C> void operator%(C &c, T &x) {
 //        // T is a struct in this example, though any type is permitted.
-//        return c % x.a % x.b % ... % x.z;
+//        c % x.a;
+//        c % x.b;
+//        ⋮
+//        c % x.z;
 //      }
 //
 // Notes:
@@ -81,6 +84,13 @@ static_assert(std::endian::native == std::endian::little,
 #endif
 
 namespace ge::codec {
+
+enum class Kind {
+  BOOL,
+  CHAR,
+  UINT,
+  INT,
+};
 
 using write = std::function<void(const char *, size_t)>;
 
@@ -108,11 +118,11 @@ namespace detail {
 
 // Swap bytes on a big endian architecture.
 template <typename T> constexpr T swap_big_endian(T x) {
-  if constexpr (std::endian::native == std::endian::little) {
+//  if constexpr (std::endian::native == std::endian::little) {
     return x;
-  } else {
-    return std::byteswap(x);
-  }
+//  } else {
+//    return std::byteswap(x);
+//  }
 }
 
 template <typename T>
@@ -137,24 +147,24 @@ concept Codec = std::same_as<C, Encoder> || std::same_as<C, Decoder>;
 
 template <std::unsigned_integral T>
   requires(detail::EncodableInt<T>)
-Encoder &operator%(Encoder &e, T x) {
+void operator%(Encoder &e, T x) {
   if constexpr (sizeof(T) == 1) {
-    return e(&x, 1);
+    e(&x, 1);
   } else if (x < 31) {
-    return e(&x, 1);
+    e(&x, 1);
   } else {
     uint8_t nbytes = 1 + (std::bit_width(x) - 1) / 8;
     uint8_t prefix = nbytes * 32 - 1;
     x = detail::swap_big_endian(x);
-    return e(&prefix, 1)(&x, nbytes);
+    e(&prefix, 1)(&x, nbytes);
   }
 }
 
 template <std::unsigned_integral T>
   requires(detail::EncodableInt<T>)
-Decoder &operator%(Decoder &d, T &x) {
+void operator%(Decoder &d, T &x) {
   if constexpr (sizeof(T) == 1) {
-    return d(&x, 1);
+    d(&x, 1);
   }
   uint8_t prefix;
   d % prefix;
@@ -166,27 +176,26 @@ Decoder &operator%(Decoder &d, T &x) {
     d(&y, nbytes);
     x = detail::swap_big_endian(y);
   }
-  return d;
 }
 
 template <std::signed_integral T>
   requires(detail::EncodableInt<T>)
-Encoder &operator%(Encoder &e, T x) {
+void operator%(Encoder &e, T x) {
   auto u = std::make_unsigned_t<T>(x);
   if constexpr (sizeof(T) == 1) {
-    return e(&x, 1);
+    e(&x, 1);
   } else if (x >= 0) {
-    return e % (2 * u);
+    e % (2 * u);
   } else {
-    return e % (2 * ~u + 1);
+    e % (2 * ~u + 1);
   }
 }
 
 template <std::signed_integral T>
   requires(detail::EncodableInt<T>)
-Decoder &operator%(Decoder &d, T &x) {
+void operator%(Decoder &d, T &x) {
   if constexpr (sizeof(T) == 1) {
-    return d(&x, 1);
+    d(&x, 1);
   } else {
     using U = std::make_unsigned_t<T>;
     U u;
@@ -196,38 +205,37 @@ Decoder &operator%(Decoder &d, T &x) {
     } else {
       x = u / 2;
     }
-    return d;
   }
 }
 
-template <detail::WideChar T> Encoder &operator%(Encoder &e, T &x) {
+template <detail::WideChar T> void operator%(Encoder &e, T &x) {
   x = detail::swap_big_endian(x);
-  return e(&x, sizeof(x));
+  e(&x, sizeof(x));
 }
 
-template <detail::WideChar T> Decoder &operator%(Decoder &d, T &x) {
+template <detail::WideChar T> void operator%(Decoder &d, T &x) {
   d(&x, sizeof(x));
   x = detail::swap_big_endian(x);
-  return d;
 }
 
-template <std::floating_point T> Encoder &operator%(Encoder &e, T &x) {
+template <std::floating_point T> void operator%(Encoder &e, T &x) {
   x = detail::swap_big_endian(x);
-  return e(&x, sizeof(T));
+  e(&x, sizeof(T));
 }
 
-template <std::floating_point T> Decoder &operator%(Decoder &d, T &x) {
+template <std::floating_point T> void operator%(Decoder &d, T &x) {
   d(&x, sizeof(T));
   x = detail::swap_big_endian(x);
-  return d;
 }
 
-template <detail::SmartPointer P> Encoder &operator%(Encoder &e, const P &x) {
+template <detail::SmartPointer P> void operator%(Encoder &e, const P &x) {
   e % bool(x);
-  return x ? e % *const_cast<typename P::element_type *>(x.get()) : e;
+  if (x) {
+    e % *const_cast<typename P::element_type *>(x.get());
+  }
 }
 
-template <detail::SmartPointer P> Decoder &operator%(Decoder &d, P &x) {
+template <detail::SmartPointer P> void operator%(Decoder &d, P &x) {
   bool exists;
   d % exists;
   if (exists) {
@@ -235,30 +243,28 @@ template <detail::SmartPointer P> Decoder &operator%(Decoder &d, P &x) {
     d % *t;
     x = P(t);
   }
-  return d;
 }
 
-template <class Ch>
-Encoder &operator%(Encoder &c, const std::basic_string<Ch> &x) {
-  return (c % x.length())(x.data(), x.length() * sizeof(Ch));
+template <class Ch> void operator%(Encoder &c, const std::basic_string<Ch> &x) {
+  c % x.length();
+  c(x.data(), x.length() * sizeof(Ch));
 }
 
-template <class Ch> Decoder &operator%(Decoder &d, std::basic_string<Ch> &x) {
+template <class Ch> void operator%(Decoder &d, std::basic_string<Ch> &x) {
   size_t n;
   d % n;
   x.resize(n);
   d(x.data(), n * sizeof(Ch));
-  return d;
 }
 
-template <Codec C, class T, size_t N> C &operator%(C &c, std::array<T, N> &x) {
+template <Codec C, class T, size_t N>
+void operator%(C &c, std::array<T, N> &x) {
   for (auto &t : x) {
     c % t;
   }
-  return c;
 }
 
-template <class T> Decoder &operator%(Decoder &d, std::vector<T> &x) {
+template <class T> void operator%(Decoder &d, std::vector<T> &x) {
   size_t n;
   d % n;
   x.clear();
@@ -268,15 +274,13 @@ template <class T> Decoder &operator%(Decoder &d, std::vector<T> &x) {
     d % t;
     x.push_back(std::move(t));
   }
-  return d;
 }
 
-template <class T> Encoder &operator%(Encoder &e, const std::vector<T> &x) {
+template <class T> void operator%(Encoder &e, const std::vector<T> &x) {
   e % x.size();
   for (auto &t : x) {
     e % const_cast<T &>(t);
   }
-  return e;
 }
 
 namespace detail {
@@ -288,26 +292,26 @@ concept AssociativeMap =
     };
 } // namespace detail
 
-template <detail::AssociativeMap M> Encoder &operator%(Encoder &e, const M &x) {
+template <detail::AssociativeMap M> void operator%(Encoder &e, const M &x) {
   e % x.size();
   for (auto [k, v] : x) {
     using K = typename M::key_type;
     using V = typename M::mapped_type;
-    e % const_cast<K &>(k) % const_cast<V &>(v);
+    e % const_cast<K &>(k);
+    e % const_cast<V &>(v);
   }
-  return e;
 }
 
-template <detail::AssociativeMap M> Decoder &operator%(Decoder &d, M &x) {
+template <detail::AssociativeMap M> void operator%(Decoder &d, M &x) {
   size_t n;
   d % n;
   while (n--) {
     typename M::key_type k;
     typename M::mapped_type v;
-    d % k % v;
+    d % k;
+    d % v;
     x[std::move(k)] = std::move(v);
   }
-  return d;
 }
 
 write make_writer(std::string &s) {

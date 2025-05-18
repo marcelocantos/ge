@@ -175,8 +175,10 @@ struct Foo {
   }
 };
 
-template <codec::Codec C> C &operator%(C &c, Foo &x) {
-  return c % x.x % x.y % x.children;
+template <codec::Codec C> void operator%(C &c, Foo &x) {
+  c % x.x;
+  c % x.y;
+  c % x.children;
 }
 
 TEST_CASE("codec roundtrip") {

@@ -13,9 +13,37 @@
 // limitations under the License.
 #pragma once
 
+#include <array>
 #include <cmath>
 
 namespace ge {
+
+// vec2 ------------------------------------------------------------------------
+
+struct vec2 {
+  float x, y;
+  bool operator==(const vec2 &) const = default;
+  explicit operator bool() const { return x || y; }
+  vec2 operator-() const { return {-x, -y}; }
+  vec2 operator+(const vec2 &v) const { return {x + v.x, y + v.y}; }
+  vec2 operator-(const vec2 &v) const { return {x - v.x, y - v.y}; }
+  vec2 operator*(float f) const { return {x * f, y * f}; }
+  vec2 operator/(float f) const { return *this * (1 / f); }
+  vec2 &operator+=(const vec2 &v) { return *this = *this + v; }
+  vec2 &operator-=(const vec2 &v) { return *this = *this - v; }
+  vec2 &operator*=(float f) { return *this = *this * f; }
+  vec2 &operator/=(float f) { return *this = *this / f; }
+  float lensq() const { return x * x + y * y; }
+  float len() const { return sqrt(lensq()); }
+  vec2 unit() const {
+    float ls = lensq();
+    return ls ? vec2((*this) * (1 / sqrt(ls))) : *this;
+  }
+};
+
+inline vec2 operator*(float f, const vec2 &u) { return u * f; }
+
+inline float dot(const vec2 &u, const vec2 &v) { return u.x * v.x + u.y * v.y; }
 
 // vec3 ------------------------------------------------------------------------
 
@@ -87,6 +115,46 @@ inline float dot(const vec4 &u, const vec4 &v) {
   return u.x * v.x + u.y * v.y + u.z * v.z + u.w * v.w;
 }
 
+// mat3 ------------------------------------------------------------------------
+
+struct mat3 {
+  vec3 a, b, c;
+
+  bool operator==(const mat3 &) const = default;
+
+  std::array<vec3, 3> &data() { return *(std::array<vec3, 3> *)(&a); }
+  const std::array<vec3, 3> &data() const {
+    return *(std::array<vec3, 3> *)(&a);
+  }
+
+  float operator()(int i, int j) const { return (&(&a)[j].x)[i]; }
+  float &operator()(int i, int j) { return (&(&a)[j].x)[i]; }
+
+  mat3 transpose() const {
+    return {
+        {a.x, b.x, c.x},
+        {a.y, b.y, c.y},
+        {a.z, b.z, c.z},
+    };
+  }
+
+  float det() const {
+    return (-c.x * b.y * a.z + b.x * c.y * a.z + c.x * a.y * b.z -
+            a.x * c.y * b.z - b.x * a.y * c.z + a.x * b.y * c.z);
+  }
+
+  mat3 inverse() const {
+    float f = 1 / det();
+    return {
+        (-c.y * b.z + b.y * c.z) * f, (+c.x * b.z - b.x * c.z) * f,
+        (-c.x * b.y + b.x * c.y) * f, (+c.y * a.z - a.y * c.z) * f,
+        (-c.x * a.z + a.x * c.z) * f, (+c.x * a.y - a.x * c.y) * f,
+        (-b.y * a.z + a.y * b.z) * f, (+b.x * a.z - a.x * b.z) * f,
+        (-b.x * a.y + a.x * b.y) * f,
+    };
+  }
+};
+
 // mat4 ------------------------------------------------------------------------
 
 struct mat4 {
@@ -128,6 +196,14 @@ struct mat4 {
 
   mat4 inverse() const;
   mat4 pow(int i) const;
+
+  inline mat3 ul3() const {
+    return {
+        {a.x, a.y, a.z},
+        {b.x, b.y, b.z},
+        {c.x, c.y, c.z},
+    };
+  }
 };
 
 inline mat4 mat4::I = {
@@ -275,6 +351,51 @@ inline mat4 LUdcmp::solve(const mat4 &m) const {
 inline mat4 mat4::inverse() const {
   mat4 lu = *this;
   return detail::ludcmp(lu).solve(I);
+}
+
+inline mat4 rotation(float radians, vec3 v) {
+  float c = cos(radians);
+  float s = sin(radians);
+
+  v = v.unit();
+  float x = v.x;
+  float y = v.y;
+  float z = v.z;
+
+  return {
+      {x * x * (1 - c) + c, y * x * (1 - c) + z * s, z * x * (1 - c) - y * s,
+       0},
+      {x * y * (1 - c) - z * s, y * y * (1 - c) + c, z * y * (1 - c) + x * s,
+       0},
+      {x * z * (1 - c) + y * s, y * z * (1 - c) - x * s, z * z * (1 - c) + c,
+       0},
+      {0, 0, 0, 1},
+  };
+}
+
+inline mat4 perspective(float fovy, float aspect, float near, float far) {
+  float ys = 1 / tan(fovy * 0.5);
+  float xs = ys / aspect;
+  float zs = far / (near - far);
+
+  return {
+      {xs, 0, 0, 0},
+      {0, ys, 0, 0},
+      {0, 0, zs, -1},
+      {0, 0, near * zs, 0},
+  };
+}
+
+inline static mat4 lookAt(vec3 eye, vec3 center, vec3 up) {
+  vec3 f = (center - eye).unit();
+  vec3 u = up.unit();
+  vec3 s = cross(f, u).unit();
+  u = cross(s, f);
+
+  return {{s.x, u.x, -f.x, 0},
+          {s.y, u.y, -f.y, 0},
+          {s.z, u.z, -f.z, 0},
+          {-dot(s, eye), -dot(u, eye), dot(f, eye), 1}};
 }
 
 } // namespace ge
