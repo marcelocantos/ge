@@ -1,0 +1,30 @@
+#pragma once
+
+#include "Mesh.h"
+#include "Texture.h"
+
+// Associates a Mesh with a Texture for rendering
+// Owns the Mesh, references shared Texture
+class Model {
+public:
+    Model() = default;
+    Model(Mesh mesh, const Texture* texture);
+
+    // Move only (due to Mesh ownership)
+    Model(Model&& other) noexcept = default;
+    Model& operator=(Model&& other) noexcept = default;
+    Model(const Model&) = delete;
+    Model& operator=(const Model&) = delete;
+
+    bool isValid() const { return mesh_.isValid() && texture_ && texture_->isValid(); }
+
+    const Mesh& mesh() const { return mesh_; }
+    const Texture* texture() const { return texture_; }
+
+    // Convenience accessors
+    const std::string& name() const { return mesh_.name(); }
+
+private:
+    Mesh mesh_;
+    const Texture* texture_ = nullptr;
+};
