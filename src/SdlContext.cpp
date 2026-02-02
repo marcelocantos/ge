@@ -1,9 +1,10 @@
 #include "SdlContext.h"
 #include <SDL3/SDL.h>
 #include <spdlog/spdlog.h>
+#include <format>
+#include <stdexcept>
 
 struct SdlContext::M {
-    bool initialized = false;
     SDL_Window* window = nullptr;
     void* nativeHandle = nullptr;
 };
@@ -12,17 +13,15 @@ SdlContext::SdlContext(const char* windowTitle, int width, int height)
     : m(std::make_unique<M>()) {
 
     if (!SDL_Init(SDL_INIT_VIDEO)) {
-        SPDLOG_ERROR("SDL_Init failed: {}", SDL_GetError());
-        return;
+        throw std::runtime_error(std::format("SDL_Init failed: {}", SDL_GetError()));
     }
 
     SPDLOG_INFO("SDL3 initialized");
 
     m->window = SDL_CreateWindow(windowTitle, width, height, SDL_WINDOW_RESIZABLE);
     if (!m->window) {
-        SPDLOG_ERROR("SDL_CreateWindow failed: {}", SDL_GetError());
         SDL_Quit();
-        return;
+        throw std::runtime_error(std::format("SDL_CreateWindow failed: {}", SDL_GetError()));
     }
 
     SPDLOG_INFO("Window created");
@@ -32,21 +31,14 @@ SdlContext::SdlContext(const char* windowTitle, int width, int height)
     m->nativeHandle = SDL_GetPointerProperty(props, SDL_PROP_WINDOW_COCOA_WINDOW_POINTER, nullptr);
 
     SPDLOG_INFO("Got native window: {}", m->nativeHandle);
-
-    m->initialized = true;
 }
 
 SdlContext::~SdlContext() {
     if (m) {
-        if (m->window) {
-            SDL_DestroyWindow(m->window);
-        }
-        if (m->initialized) {
-            SDL_Quit();
-        }
+        SDL_DestroyWindow(m->window);
+        SDL_Quit();
     }
 }
 
-bool SdlContext::isValid() const { return m->initialized; }
 SDL_Window* SdlContext::window() const { return m->window; }
 void* SdlContext::nativeWindowHandle() const { return m->nativeHandle; }

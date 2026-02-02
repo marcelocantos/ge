@@ -7,7 +7,6 @@ public:
     BgfxContext(void* nativeWindowHandle, int width, int height);
     ~BgfxContext();
 
-    bool isValid() const;
     int width() const;
     int height() const;
 

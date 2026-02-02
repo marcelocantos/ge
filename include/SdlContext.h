@@ -9,7 +9,6 @@ public:
     SdlContext(const char* windowTitle, int width, int height);
     ~SdlContext();
 
-    bool isValid() const;
     SDL_Window* window() const;
     void* nativeWindowHandle() const;
 

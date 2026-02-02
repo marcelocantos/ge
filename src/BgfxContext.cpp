@@ -3,10 +3,10 @@
 #include <bgfx/platform.h>
 #include <spdlog/spdlog.h>
 #include <cstdlib>
+#include <stdexcept>
 #include <string_view>
 
 struct BgfxContext::M {
-    bool initialized = false;
     int width = 0;
     int height = 0;
 };
@@ -27,8 +27,7 @@ BgfxContext::BgfxContext(void* nativeWindowHandle, int width, int height)
 
     SPDLOG_INFO("Initializing bgfx...");
     if (!bgfx::init(init)) {
-        SPDLOG_ERROR("bgfx::init failed");
-        return;
+        throw std::runtime_error("bgfx::init failed");
     }
 
     SPDLOG_INFO("Renderer: {}", bgfx::getRendererName(bgfx::getRendererType()));
@@ -47,16 +46,13 @@ BgfxContext::BgfxContext(void* nativeWindowHandle, int width, int height)
             bgfx::setDebug(debugFlags);
         }
     }
-
-    m->initialized = true;
 }
 
 BgfxContext::~BgfxContext() {
-    if (m && m->initialized) {
+    if (m) {
         bgfx::shutdown();
     }
 }
 
-bool BgfxContext::isValid() const { return m->initialized; }
 int BgfxContext::width() const { return m->width; }
 int BgfxContext::height() const { return m->height; }
