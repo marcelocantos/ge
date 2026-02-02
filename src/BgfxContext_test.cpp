@@ -157,8 +157,8 @@ TEST_CASE("fragment shader uniform passing") {
     initVertexLayout();
 
     auto program = sq::loadProgram(
-        "sq/shaders/compiled/test_vs.bin",
-        "sq/shaders/compiled/test_fs.bin"
+        "build/sq/shaders/test_vs.bin",
+        "build/sq/shaders/test_fs.bin"
     );
 
     bgfx::UniformHandle u_color = bgfx::createUniform("u_color", bgfx::UniformType::Vec4);

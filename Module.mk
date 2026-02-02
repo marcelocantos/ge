@@ -49,10 +49,15 @@ sq/TEST_SRC = \
 sq/TEST_OBJ = $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(sq/TEST_SRC))
 
 # Test shaders
-sq/TEST_VARYING_DEF = sq/shaders/varying.def.sc
 sq/COMPILED_TEST_SHADERS = \
-	sq/shaders/compiled/test_vs.bin \
-	sq/shaders/compiled/test_fs.bin
+	$(BUILD_DIR)/sq/shaders/test_vs.bin \
+	$(BUILD_DIR)/sq/shaders/test_fs.bin
+
+# Shared variables (parent can += to extend)
+CLEAN = bin build
+CLEAN_SHADERS = $(BUILD_DIR)/shaders $(BUILD_DIR)/sq/shaders
+COMPILED_SHADERS =
+COMPILE_DB_DEPS = $(sq/SRC) $(sq/TEST_SRC) sq/Module.mk
 
 # ────────────────────────────────────────────────
 # Rules
@@ -89,11 +94,69 @@ clean-frameworks:
 	rm -rf frameworks/*.a
 	cd sq/vendor/bgfx && $(MAKE) clean
 
-# Test shaders
-sq/shaders/compiled/%_vs.bin: sq/shaders/%_vs.sc $(sq/TEST_VARYING_DEF) $(sq/SHADERC)
-	@mkdir -p sq/shaders/compiled
-	$(sq/SHADERC) -f $< -o $@ --platform osx -p metal --type vertex --varyingdef $(sq/TEST_VARYING_DEF) $(sq/SHADER_INCLUDE)
+# Shader compilation (unified: maps any %_vs.sc / %_fs.sc to build/)
+# Each shader directory must contain its own varying.def.sc.
+.SECONDEXPANSION:
+$(BUILD_DIR)/%_vs.bin: %_vs.sc $$(dir $$*)varying.def.sc $(sq/SHADERC)
+	@mkdir -p $(dir $@)
+	$(sq/SHADERC) -f $< -o $@ --platform osx -p metal --type vertex --varyingdef $(dir $<)varying.def.sc $(sq/SHADER_INCLUDE)
 
-sq/shaders/compiled/%_fs.bin: sq/shaders/%_fs.sc $(sq/TEST_VARYING_DEF) $(sq/SHADERC)
-	@mkdir -p sq/shaders/compiled
-	$(sq/SHADERC) -f $< -o $@ --platform osx -p metal --type fragment --varyingdef $(sq/TEST_VARYING_DEF) $(sq/SHADER_INCLUDE)
+$(BUILD_DIR)/%_fs.bin: %_fs.sc $$(dir $$*)varying.def.sc $(sq/SHADERC)
+	@mkdir -p $(dir $@)
+	$(sq/SHADERC) -f $< -o $@ --platform osx -p metal --type fragment --varyingdef $(dir $<)varying.def.sc $(sq/SHADER_INCLUDE)
+
+.PHONY: shaders
+shaders: $(COMPILED_SHADERS)
+
+# ────────────────────────────────────────────────
+# Generic targets (use CLEAN, CLEAN_SHADERS, COMPILE_DB_DEPS)
+# ────────────────────────────────────────────────
+
+.PHONY: clean
+clean:
+	rm -rf $(CLEAN)
+
+.PHONY: clean-shaders
+clean-shaders:
+	rm -rf $(CLEAN_SHADERS)
+
+# Generate compile_commands.json for IDE support (clangd, VS Code).
+# compiledb captures all sub-make commands (including vendor bgfx build),
+# so we filter to only project entries afterward.
+compile_commands.json: $(COMPILE_DB_DEPS)
+	@compiledb -n make
+	@python3 -c "import json,pathlib; p=pathlib.Path('compile_commands.json'); d=json.loads(p.read_text()); p.write_text(json.dumps([e for e in d if e['directory']=='$(CURDIR)'],indent=1)+'\n')"
+
+# ────────────────────────────────────────────────
+# Developer setup (common engine prerequisites)
+# ────────────────────────────────────────────────
+
+.PHONY: sq/init
+sq/init:
+	@echo "── sq engine setup ──"
+	@command -v brew >/dev/null 2>&1 || { echo "ERROR: Homebrew not found. Install from https://brew.sh"; exit 1; }
+	@echo "  Homebrew installed"
+	@command -v xcode-select >/dev/null 2>&1 && xcode-select -p >/dev/null 2>&1 || { echo "ERROR: Xcode Command Line Tools not found. Run: xcode-select --install"; exit 1; }
+	@echo "  Xcode Command Line Tools installed"
+	@brew install git-lfs sdl3 sdl3_image sdl3_ttf
+	@git lfs install
+	@git lfs pull
+	@echo "  Dependencies installed"
+	@mkdir -p .vscode
+	@(cat .vscode/settings.json 2>/dev/null || echo '{}') | \
+		jq '. + {"files.associations": ((."files.associations" // {}) + {"*.sc": "glsl"})}' \
+		> .vscode/settings.json.tmp && \
+		mv .vscode/settings.json.tmp .vscode/settings.json
+	@echo "  VS Code: .sc -> GLSL association configured"
+	@brew install compiledb
+	@$(MAKE) compile_commands.json
+	@echo "  compile_commands.json generated"
+
+# Canned recipe for the parent to expand at the end of its init target.
+define sq/INIT_DONE
+	@echo ""
+	@echo "Setup complete. Next steps:"
+	@echo "  make              # Build the application"
+	@echo "  make run          # Build and run"
+	@echo "  make test         # Run all tests"
+endef
