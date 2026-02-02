@@ -2,45 +2,10 @@
 #include "ModelFormat.h"
 #include <istream>
 
-Mesh::Mesh(bgfx::VertexBufferHandle vbh, bgfx::IndexBufferHandle ibh,
+Mesh::Mesh(VertexBufferHandle vbh, IndexBufferHandle ibh,
            uint32_t numIndices, std::string name)
-    : vbh_(vbh), ibh_(ibh), numIndices_(numIndices), name_(std::move(name)) {}
-
-Mesh::~Mesh() {
-    if (bgfx::isValid(vbh_)) {
-        bgfx::destroy(vbh_);
-    }
-    if (bgfx::isValid(ibh_)) {
-        bgfx::destroy(ibh_);
-    }
-}
-
-Mesh::Mesh(Mesh&& other) noexcept
-    : vbh_(other.vbh_), ibh_(other.ibh_),
-      numIndices_(other.numIndices_), name_(std::move(other.name_)) {
-    other.vbh_ = BGFX_INVALID_HANDLE;
-    other.ibh_ = BGFX_INVALID_HANDLE;
-    other.numIndices_ = 0;
-}
-
-Mesh& Mesh::operator=(Mesh&& other) noexcept {
-    if (this != &other) {
-        if (bgfx::isValid(vbh_)) {
-            bgfx::destroy(vbh_);
-        }
-        if (bgfx::isValid(ibh_)) {
-            bgfx::destroy(ibh_);
-        }
-        vbh_ = other.vbh_;
-        ibh_ = other.ibh_;
-        numIndices_ = other.numIndices_;
-        name_ = std::move(other.name_);
-        other.vbh_ = BGFX_INVALID_HANDLE;
-        other.ibh_ = BGFX_INVALID_HANDLE;
-        other.numIndices_ = 0;
-    }
-    return *this;
-}
+    : vbh_(std::move(vbh)), ibh_(std::move(ibh)),
+      numIndices_(numIndices), name_(std::move(name)) {}
 
 Mesh Mesh::fromStream(std::istream& in, const std::string& name) {
     // Vertex layout matching sq::MeshVertex (pos3f + uv2f)
@@ -69,14 +34,10 @@ Mesh Mesh::fromStream(std::istream& in, const std::string& name) {
     in.read(reinterpret_cast<char*>(indexMem->data),
             static_cast<std::streamsize>(indexBytes));
 
-    bgfx::VertexBufferHandle vbh = bgfx::createVertexBuffer(vertexMem, layout);
-    bgfx::IndexBufferHandle ibh = bgfx::createIndexBuffer(indexMem);
+    VertexBufferHandle vbh(bgfx::createVertexBuffer(vertexMem, layout));
+    IndexBufferHandle ibh(bgfx::createIndexBuffer(indexMem));
 
-    if (!bgfx::isValid(vbh) || !bgfx::isValid(ibh)) {
-        if (bgfx::isValid(vbh)) bgfx::destroy(vbh);
-        if (bgfx::isValid(ibh)) bgfx::destroy(ibh);
-        return {};
-    }
+    if (!vbh.isValid() || !ibh.isValid()) return {};
 
-    return Mesh(vbh, ibh, indexCount, name);
+    return Mesh(std::move(vbh), std::move(ibh), indexCount, name);
 }

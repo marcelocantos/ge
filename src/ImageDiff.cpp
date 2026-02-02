@@ -37,14 +37,6 @@ namespace {
 
 }
 
-Comparator::Comparator() = default;
-
-Comparator::~Comparator() {
-    if (bgfx::isValid(m_program)) bgfx::destroy(m_program);
-    if (bgfx::isValid(m_texA)) bgfx::destroy(m_texA);
-    if (bgfx::isValid(m_texB)) bgfx::destroy(m_texB);
-}
-
 bool Comparator::init(const char* vsPath, const char* fsPath) {
     auto vsMem = loadShader(vsPath);
     auto fsMem = loadShader(fsPath);
@@ -52,12 +44,12 @@ bool Comparator::init(const char* vsPath, const char* fsPath) {
 
     bgfx::ShaderHandle vsh = bgfx::createShader(vsMem);
     bgfx::ShaderHandle fsh = bgfx::createShader(fsMem);
-    m_program = bgfx::createProgram(vsh, fsh, true);
+    m_program = ProgramHandle(bgfx::createProgram(vsh, fsh, true));
 
-    if (!bgfx::isValid(m_program)) return false;
+    if (!m_program.isValid()) return false;
 
-    m_texA = bgfx::createUniform("s_texA", bgfx::UniformType::Sampler);
-    m_texB = bgfx::createUniform("s_texB", bgfx::UniformType::Sampler);
+    m_texA = UniformHandle(bgfx::createUniform("s_texA", bgfx::UniformType::Sampler));
+    m_texB = UniformHandle(bgfx::createUniform("s_texB", bgfx::UniformType::Sampler));
 
     m_layout.begin()
         .add(bgfx::Attrib::Position, 2, bgfx::AttribType::Float)

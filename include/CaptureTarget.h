@@ -1,13 +1,15 @@
 #pragma once
 
-#include <bgfx/bgfx.h>
+#include "BgfxResource.h"
 
 namespace sq {
 
 // RAII offscreen render target: framebuffer + color texture for readback.
 // Constructor allocates RGBA8 color + D24S8 depth; check isValid() after.
+// The framebuffer owns both textures (destroyTextures=true); colorTexture
+// is a non-owning reference kept for readback.
 struct CaptureTarget {
-    bgfx::FrameBufferHandle framebuffer = BGFX_INVALID_HANDLE;
+    FrameBufferHandle framebuffer;
     bgfx::TextureHandle colorTexture = BGFX_INVALID_HANDLE;
 
     CaptureTarget() = default;
@@ -29,42 +31,12 @@ struct CaptureTarget {
         bgfx::FrameBufferHandle fb = bgfx::createFrameBuffer(2, textures, true);
 
         if (bgfx::isValid(fb)) {
-            framebuffer = fb;
+            framebuffer = FrameBufferHandle(fb);
             colorTexture = colorTex;
         }
     }
 
-    ~CaptureTarget() {
-        if (bgfx::isValid(framebuffer)) {
-            bgfx::destroy(framebuffer);
-        }
-    }
-
-    // Move semantics
-    CaptureTarget(CaptureTarget&& other) noexcept
-        : framebuffer(other.framebuffer), colorTexture(other.colorTexture) {
-        other.framebuffer = BGFX_INVALID_HANDLE;
-        other.colorTexture = BGFX_INVALID_HANDLE;
-    }
-
-    CaptureTarget& operator=(CaptureTarget&& other) noexcept {
-        if (this != &other) {
-            if (bgfx::isValid(framebuffer)) {
-                bgfx::destroy(framebuffer);
-            }
-            framebuffer = other.framebuffer;
-            colorTexture = other.colorTexture;
-            other.framebuffer = BGFX_INVALID_HANDLE;
-            other.colorTexture = BGFX_INVALID_HANDLE;
-        }
-        return *this;
-    }
-
-    // No copies
-    CaptureTarget(const CaptureTarget&) = delete;
-    CaptureTarget& operator=(const CaptureTarget&) = delete;
-
-    bool isValid() const { return bgfx::isValid(framebuffer); }
+    bool isValid() const { return framebuffer.isValid(); }
 };
 
 } // namespace sq

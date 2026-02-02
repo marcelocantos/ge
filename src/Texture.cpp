@@ -27,48 +27,20 @@ Texture Texture::fromFile(const char* path) {
     const bgfx::Memory* mem = bgfx::copy(surface->pixels, width * height * 4);
     SDL_DestroySurface(surface);
 
-    bgfx::TextureHandle handle = bgfx::createTexture2D(
+    TextureHandle handle(bgfx::createTexture2D(
         width, height, false, 1,
         bgfx::TextureFormat::RGBA8,
         BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP,
         mem
-    );
+    ));
 
-    if (!bgfx::isValid(handle)) {
+    if (!handle.isValid()) {
         spdlog::error("Failed to create bgfx texture: {}", path);
         return Texture();
     }
 
-    return Texture(handle, width, height);
+    return Texture(std::move(handle), width, height);
 }
 
-Texture::Texture(bgfx::TextureHandle handle, int width, int height)
-    : handle_(handle), width_(width), height_(height) {}
-
-Texture::~Texture() {
-    if (bgfx::isValid(handle_)) {
-        bgfx::destroy(handle_);
-    }
-}
-
-Texture::Texture(Texture&& other) noexcept
-    : handle_(other.handle_), width_(other.width_), height_(other.height_) {
-    other.handle_ = BGFX_INVALID_HANDLE;
-    other.width_ = 0;
-    other.height_ = 0;
-}
-
-Texture& Texture::operator=(Texture&& other) noexcept {
-    if (this != &other) {
-        if (bgfx::isValid(handle_)) {
-            bgfx::destroy(handle_);
-        }
-        handle_ = other.handle_;
-        width_ = other.width_;
-        height_ = other.height_;
-        other.handle_ = BGFX_INVALID_HANDLE;
-        other.width_ = 0;
-        other.height_ = 0;
-    }
-    return *this;
-}
+Texture::Texture(TextureHandle handle, int width, int height)
+    : handle_(std::move(handle)), width_(width), height_(height) {}

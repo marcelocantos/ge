@@ -10,12 +10,6 @@ public:
     Model() = default;
     Model(Mesh mesh, const Texture* texture);
 
-    // Move only (due to Mesh ownership)
-    Model(Model&& other) noexcept = default;
-    Model& operator=(Model&& other) noexcept = default;
-    Model(const Model&) = delete;
-    Model& operator=(const Model&) = delete;
-
     bool isValid() const { return mesh_.isValid() && texture_ && texture_->isValid(); }
 
     const Mesh& mesh() const { return mesh_; }

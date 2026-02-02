@@ -2,7 +2,7 @@
 // GPU-accelerated image difference computation
 // Uses mipmap averaging to compute RMS difference between two textures
 
-#include <bgfx/bgfx.h>
+#include "BgfxResource.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -22,9 +22,6 @@ struct Result {
 // Caller must have initialized bgfx
 class Comparator {
 public:
-    Comparator();
-    ~Comparator();
-
     // Initialize with shader paths (call once after bgfx::init)
     bool init(const char* vsPath, const char* fsPath);
 
@@ -38,10 +35,10 @@ public:
                    uint16_t width, uint16_t height);
 
 private:
-    bgfx::ProgramHandle m_program = BGFX_INVALID_HANDLE;
-    bgfx::UniformHandle m_texA = BGFX_INVALID_HANDLE;
-    bgfx::UniformHandle m_texB = BGFX_INVALID_HANDLE;
-    bgfx::VertexLayout m_layout;
+    ProgramHandle m_program;
+    UniformHandle m_texA;
+    UniformHandle m_texB;
+    bgfx::VertexLayout m_layout{};
     bool m_initialized = false;
 };
 

@@ -1,6 +1,6 @@
 #pragma once
 
-#include <bgfx/bgfx.h>
+#include "BgfxResource.h"
 
 // Pure asset class for textures - no rendering knowledge
 class Texture {
@@ -9,23 +9,16 @@ public:
     static Texture fromFile(const char* path);
 
     Texture() = default;
-    ~Texture();
 
-    // Move only
-    Texture(Texture&& other) noexcept;
-    Texture& operator=(Texture&& other) noexcept;
-    Texture(const Texture&) = delete;
-    Texture& operator=(const Texture&) = delete;
-
-    bool isValid() const { return bgfx::isValid(handle_); }
+    bool isValid() const { return handle_.isValid(); }
     bgfx::TextureHandle handle() const { return handle_; }
     int width() const { return width_; }
     int height() const { return height_; }
 
 private:
-    Texture(bgfx::TextureHandle handle, int width, int height);
+    Texture(TextureHandle handle, int width, int height);
 
-    bgfx::TextureHandle handle_ = BGFX_INVALID_HANDLE;
+    TextureHandle handle_;
     int width_ = 0;
     int height_ = 0;
 };
