@@ -26,6 +26,7 @@ SQ_SRC = \
 	$(SQ_DIR)/src/ShaderUtil.cpp
 
 SQ_OBJ = $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(SQ_SRC))
+SQ_LIB = $(BUILD_DIR)/libsq.a
 
 # Triangle library (C code, used by precompute tool)
 SQ_TRIANGLE_SRC = $(SQ_DIR)/vendor/src/triangle.c
@@ -50,6 +51,11 @@ SQ_SHADER_INCLUDE = -i $(SQ_DIR)/vendor/bgfx/src
 $(BUILD_DIR)/$(SQ_DIR)/src/%.o: $(SQ_DIR)/src/%.cpp
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) $(SDL_CFLAGS) -MMD -MP -c $< -o $@
+
+# Static library
+$(SQ_LIB): $(SQ_OBJ)
+	@mkdir -p $(dir $@)
+	$(AR) rcs $@ $^
 
 # Triangle library
 $(SQ_TRIANGLE_OBJ): $(SQ_TRIANGLE_SRC)
