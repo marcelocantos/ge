@@ -41,6 +41,19 @@ sq/FRAMEWORK_LIBS = $(sq/BGFX_LIB) $(sq/BX_LIB) $(sq/BIMG_LIB)
 sq/SHADERC = sq/vendor/bgfx/.build/osx-arm64/bin/shadercRelease
 sq/SHADER_INCLUDE = -i sq/vendor/bgfx/src
 
+# Test sources
+sq/TEST_SRC = \
+	sq/src/main_test.cpp \
+	sq/src/BgfxContext_test.cpp \
+	sq/src/DampedRotation_test.cpp
+sq/TEST_OBJ = $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(sq/TEST_SRC))
+
+# Test shaders
+sq/TEST_VARYING_DEF = sq/shaders/varying.def.sc
+sq/COMPILED_TEST_SHADERS = \
+	sq/shaders/compiled/test_vs.bin \
+	sq/shaders/compiled/test_fs.bin
+
 # ────────────────────────────────────────────────
 # Rules
 # ────────────────────────────────────────────────
@@ -75,3 +88,12 @@ frameworks: $(sq/FRAMEWORK_LIBS)
 clean-frameworks:
 	rm -rf frameworks/*.a
 	cd sq/vendor/bgfx && $(MAKE) clean
+
+# Test shaders
+sq/shaders/compiled/%_vs.bin: sq/shaders/%_vs.sc $(sq/TEST_VARYING_DEF) $(sq/SHADERC)
+	@mkdir -p sq/shaders/compiled
+	$(sq/SHADERC) -f $< -o $@ --platform osx -p metal --type vertex --varyingdef $(sq/TEST_VARYING_DEF) $(sq/SHADER_INCLUDE)
+
+sq/shaders/compiled/%_fs.bin: sq/shaders/%_fs.sc $(sq/TEST_VARYING_DEF) $(sq/SHADERC)
+	@mkdir -p sq/shaders/compiled
+	$(sq/SHADERC) -f $< -o $@ --platform osx -p metal --type fragment --varyingdef $(sq/TEST_VARYING_DEF) $(sq/SHADER_INCLUDE)
