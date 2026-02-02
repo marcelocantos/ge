@@ -8,11 +8,6 @@ public:
     // Load texture from image file (PNG, etc.)
     static Texture fromFile(const char* path);
 
-    // Load left or right half of a texture (for splitting large world textures)
-    // rightHalf=false: loads left half (x=0 to width/2)
-    // rightHalf=true: loads right half (x=width/2 to width)
-    static Texture fromFileHalf(const char* path, bool rightHalf);
-
     Texture() = default;
     ~Texture();
 

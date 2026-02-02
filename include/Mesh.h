@@ -1,6 +1,7 @@
 #pragma once
 
 #include <bgfx/bgfx.h>
+#include <iosfwd>
 #include <string>
 
 // Pure asset class for mesh geometry - no rendering knowledge
@@ -9,6 +10,12 @@ public:
     Mesh() = default;
     Mesh(bgfx::VertexBufferHandle vbh, bgfx::IndexBufferHandle ibh,
          uint32_t numIndices, std::string name);
+
+    // Load a mesh from a binary stream.
+    // Reads vertex_count (u32), index_count (u32), vertex data, index data.
+    // The stream must be positioned right before vertex_count; any framing
+    // (tags, application-specific metadata) should be consumed by the caller.
+    static Mesh fromStream(std::istream& in, const std::string& name);
     ~Mesh();
 
     // Move only
