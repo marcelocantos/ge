@@ -1,5 +1,6 @@
 #include "Mesh.h"
 #include "ModelFormat.h"
+#include <format>
 #include <istream>
 #include <stdexcept>
 
@@ -40,6 +41,6 @@ Mesh Mesh::fromStream(std::istream& in, const std::string& name) {
         IndexBufferHandle ibh(bgfx::createIndexBuffer(indexMem));
         return Mesh(std::move(vbh), std::move(ibh), indexCount, name);
     } catch (const std::exception& e) {
-        throw std::runtime_error("Failed to create mesh " + name + ": " + e.what());
+        throw std::runtime_error(std::format("Failed to create mesh {}: {}", name, e.what()));
     }
 }
