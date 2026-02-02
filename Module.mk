@@ -1,77 +1,77 @@
 # sq engine module
-# Included by the project Makefile. Expects BUILD_DIR, CXX, and . to be defined.
+# Included by the project Makefile. Expects BUILD_DIR and CXX to be defined.sq:= sq
 
 # ────────────────────────────────────────────────
 # Variables exported to parent
 # ────────────────────────────────────────────────
 
-$(.)/INCLUDES = \
-	-I$(.)/include \
-	-I$(.)/vendor/include \
-	-I$(.)/vendor/spdlog/include \
-	-I$(.)/vendor/bgfx/include \
-	-I$(.)/vendor/bx/include \
-	-I$(.)/vendor/bimg/include \
-	-I$(.)/vendor/bx/include/compat/osx
+sq/INCLUDES = \
+	-Isq/include \
+	-Isq/vendor/include \
+	-Isq/vendor/spdlog/include \
+	-Isq/vendor/bgfx/include \
+	-Isq/vendor/bx/include \
+	-Isq/vendor/bimg/include \
+	-Isq/vendor/bx/include/compat/osx
 
-$(.)/SRC = \
-	$(.)/src/BgfxContext.cpp \
-	$(.)/src/SdlContext.cpp \
-	$(.)/src/Texture.cpp \
-	$(.)/src/Mesh.cpp \
-	$(.)/src/Model.cpp \
-	$(.)/src/ManifestLoader.cpp \
-	$(.)/src/ShaderUtil.cpp
+sq/SRC = \
+	sq/src/BgfxContext.cpp \
+	sq/src/SdlContext.cpp \
+	sq/src/Texture.cpp \
+	sq/src/Mesh.cpp \
+	sq/src/Model.cpp \
+	sq/src/ManifestLoader.cpp \
+	sq/src/ShaderUtil.cpp
 
-$(.)/OBJ = $(patsubst %.cpp,$(BUILD_DIR)/%.o,$($(.)/SRC))
-$(.)/LIB = $(BUILD_DIR)/libsq.a
+sq/OBJ = $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(sq/SRC))
+sq/LIB = $(BUILD_DIR)/libsq.a
 
 # Triangle library (C code, used by precompute tool)
-$(.)/TRIANGLE_SRC = $(.)/vendor/src/triangle.c
-$(.)/TRIANGLE_OBJ = $(BUILD_DIR)/$(.)/vendor/triangle.o
-$(.)/TRIANGLE_CFLAGS = -O2 -I$(.)/vendor/include -DTRILIBRARY -DREAL=double -DANSI_DECLARATORS -DNO_TIMER
+sq/TRIANGLE_SRC = sq/vendor/src/triangle.c
+sq/TRIANGLE_OBJ = $(BUILD_DIR)/sq/vendor/triangle.o
+sq/TRIANGLE_CFLAGS = -O2 -Isq/vendor/include -DTRILIBRARY -DREAL=double -DANSI_DECLARATORS -DNO_TIMER
 
 # Framework libraries (bgfx, bx, bimg)
-$(.)/BGFX_LIB = frameworks/libbgfx.a
-$(.)/BX_LIB   = frameworks/libbx.a
-$(.)/BIMG_LIB  = frameworks/libbimg.a
-$(.)/FRAMEWORK_LIBS = $($(.)/BGFX_LIB) $($(.)/BX_LIB) $($(.)/BIMG_LIB)
+sq/BGFX_LIB = frameworks/libbgfx.a
+sq/BX_LIB   = frameworks/libbx.a
+sq/BIMG_LIB  = frameworks/libbimg.a
+sq/FRAMEWORK_LIBS = $(sq/BGFX_LIB) $(sq/BX_LIB) $(sq/BIMG_LIB)
 
 # Shader compiler
-$(.)/SHADERC = $(.)/vendor/bgfx/.build/osx-arm64/bin/shadercRelease
-$(.)/SHADER_INCLUDE = -i $(.)/vendor/bgfx/src
+sq/SHADERC = sq/vendor/bgfx/.build/osx-arm64/bin/shadercRelease
+sq/SHADER_INCLUDE = -i sq/vendor/bgfx/src
 
 # ────────────────────────────────────────────────
 # Rules
 # ────────────────────────────────────────────────
 
 # Engine objects
-$(BUILD_DIR)/$(.)/src/%.o: $(.)/src/%.cpp
+$(BUILD_DIR)/sq/src/%.o: sq/src/%.cpp
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) $(SDL_CFLAGS) -MMD -MP -c $< -o $@
 
 # Static library
-$($(.)/LIB): $($(.)/OBJ)
+$(sq/LIB): $(sq/OBJ)
 	@mkdir -p $(dir $@)
 	$(AR) rcs $@ $^
 
 # Triangle library
-$($(.)/TRIANGLE_OBJ): $($(.)/TRIANGLE_SRC)
+$(sq/TRIANGLE_OBJ): $(sq/TRIANGLE_SRC)
 	@mkdir -p $(dir $@)
-	$(CC) $($(.)/TRIANGLE_CFLAGS) -c $< -o $@
+	$(CC) $(sq/TRIANGLE_CFLAGS) -c $< -o $@
 
 # Framework libraries (bgfx build produces all three)
-$($(.)/FRAMEWORK_LIBS):
+$(sq/FRAMEWORK_LIBS):
 	@echo "Building bgfx, bx, and bimg libraries..."
 	@mkdir -p frameworks
-	cd $(.)/vendor/bgfx && $(MAKE) osx-arm64-release
-	cp $(.)/vendor/bgfx/.build/osx-arm64/bin/libbgfxRelease.a $($(.)/BGFX_LIB)
-	cp $(.)/vendor/bgfx/.build/osx-arm64/bin/libbxRelease.a $($(.)/BX_LIB)
-	cp $(.)/vendor/bgfx/.build/osx-arm64/bin/libbimgRelease.a $($(.)/BIMG_LIB)
+	cd sq/vendor/bgfx && $(MAKE) osx-arm64-release
+	cp sq/vendor/bgfx/.build/osx-arm64/bin/libbgfxRelease.a $(sq/BGFX_LIB)
+	cp sq/vendor/bgfx/.build/osx-arm64/bin/libbxRelease.a $(sq/BX_LIB)
+	cp sq/vendor/bgfx/.build/osx-arm64/bin/libbimgRelease.a $(sq/BIMG_LIB)
 
 .PHONY: frameworks clean-frameworks
-frameworks: $($(.)/FRAMEWORK_LIBS)
+frameworks: $(sq/FRAMEWORK_LIBS)
 
 clean-frameworks:
 	rm -rf frameworks/*.a
-	cd $(.)/vendor/bgfx && $(MAKE) clean
+	cd sq/vendor/bgfx && $(MAKE) clean
