@@ -2,6 +2,8 @@
 #include <bgfx/bgfx.h>
 #include <bgfx/platform.h>
 #include <spdlog/spdlog.h>
+#include <cstdlib>
+#include <string_view>
 
 struct BgfxContext::M {
     bool initialized = false;
@@ -23,13 +25,29 @@ BgfxContext::BgfxContext(void* nativeWindowHandle, int width, int height)
     init.resolution.height = height;
     init.resolution.reset = BGFX_RESET_VSYNC | BGFX_RESET_DEPTH_CLAMP;
 
-    spdlog::info("Initializing bgfx...");
+    SPDLOG_INFO("Initializing bgfx...");
     if (!bgfx::init(init)) {
-        spdlog::error("bgfx::init failed");
+        SPDLOG_ERROR("bgfx::init failed");
         return;
     }
 
-    spdlog::info("Renderer: {}", bgfx::getRendererName(bgfx::getRendererType()));
+    SPDLOG_INFO("Renderer: {}", bgfx::getRendererName(bgfx::getRendererType()));
+
+    // BGFX_DEBUG env: "wireframe"/"1" for wireframe, "stats" for stats overlay
+    if (const char* debugEnv = std::getenv("BGFX_DEBUG")) {
+        uint32_t debugFlags = 0;
+        std::string_view debug = debugEnv;
+        if (debug == "wireframe" || debug == "1") {
+            debugFlags |= BGFX_DEBUG_WIREFRAME;
+        }
+        if (debug == "stats") {
+            debugFlags |= BGFX_DEBUG_STATS;
+        }
+        if (debugFlags) {
+            bgfx::setDebug(debugFlags);
+        }
+    }
+
     m->initialized = true;
 }
 

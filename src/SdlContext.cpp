@@ -12,26 +12,26 @@ SdlContext::SdlContext(const char* windowTitle, int width, int height)
     : m(std::make_unique<M>()) {
 
     if (!SDL_Init(SDL_INIT_VIDEO)) {
-        spdlog::error("SDL_Init failed: {}", SDL_GetError());
+        SPDLOG_ERROR("SDL_Init failed: {}", SDL_GetError());
         return;
     }
 
-    spdlog::info("SDL3 initialized");
+    SPDLOG_INFO("SDL3 initialized");
 
     m->window = SDL_CreateWindow(windowTitle, width, height, SDL_WINDOW_RESIZABLE);
     if (!m->window) {
-        spdlog::error("SDL_CreateWindow failed: {}", SDL_GetError());
+        SPDLOG_ERROR("SDL_CreateWindow failed: {}", SDL_GetError());
         SDL_Quit();
         return;
     }
 
-    spdlog::info("Window created");
+    SPDLOG_INFO("Window created");
 
     // Get native window handle for bgfx
     SDL_PropertiesID props = SDL_GetWindowProperties(m->window);
     m->nativeHandle = SDL_GetPointerProperty(props, SDL_PROP_WINDOW_COCOA_WINDOW_POINTER, nullptr);
 
-    spdlog::info("Got native window: {}", m->nativeHandle);
+    SPDLOG_INFO("Got native window: {}", m->nativeHandle);
 
     m->initialized = true;
 }

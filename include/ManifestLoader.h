@@ -4,9 +4,11 @@
 #include "Mesh.h"
 #include "Texture.h"
 #include <filesystem>
+#include <format>
 #include <fstream>
 #include <memory>
 #include <spdlog/spdlog.h>
+#include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -41,86 +43,76 @@ struct Manifest {
 
 template<typename Meta = nlohmann::json>
 std::unique_ptr<Manifest<Meta>> loadManifest(const std::string& path) {
-    SPDLOG_INFO("Loading manifest: {}", path);
-
-    std::ifstream f(path);
-    if (!f) {
-        SPDLOG_ERROR("Failed to open manifest: {}", path);
-        return nullptr;
-    }
-
-    ManifestDoc<Meta> schema;
     try {
-        schema = nlohmann::json::parse(f).template get<ManifestDoc<Meta>>();
-    } catch (const nlohmann::json::exception& e) {
-        SPDLOG_ERROR("Failed to parse manifest {}: {}", path, e.what());
-        return nullptr;
-    }
+        SPDLOG_INFO("Loading manifest: {}", path);
 
-    auto baseDir = std::filesystem::path(path).parent_path();
-    auto manifest = std::make_unique<Manifest<Meta>>();
+        std::ifstream f(path);
+        if (!f) {
+            throw std::runtime_error("file not found");
+        }
 
-    // Load textures
-    for (const auto& [key, relPath] : schema.textures) {
-        std::string texPath = (baseDir / relPath).string();
-        Texture tex = Texture::fromFile(texPath.c_str());
-        if (tex.isValid()) {
+        auto schema = nlohmann::json::parse(f).template get<ManifestDoc<Meta>>();
+        auto baseDir = std::filesystem::path(path).parent_path();
+        auto manifest = std::make_unique<Manifest<Meta>>();
+
+        // Load textures
+        for (const auto& [key, relPath] : schema.textures) {
+            std::string texPath = (baseDir / relPath).string();
             manifest->textures.emplace(
-                key, std::make_unique<Texture>(std::move(tex)));
-        } else {
-            SPDLOG_ERROR("Failed to load texture '{}': {}", key, texPath);
-        }
-    }
-
-    // Load mesh pack
-    std::unordered_map<std::string, Mesh> meshMap;
-    if (!schema.mesh_file.empty()) {
-        std::string meshPath = (baseDir / schema.mesh_file).string();
-        meshMap = detail::loadMeshPack(meshPath);
-    }
-
-    // Build model entries
-    for (auto& [modelName, modelDef] : schema.models) {
-        typename Manifest<Meta>::Entry entry;
-        entry.name = modelName;
-        entry.metadata = std::move(modelDef.meta);
-
-        for (const auto& meshRef : modelDef.meshes) {
-            auto meshIt = meshMap.find(meshRef.name);
-            if (meshIt == meshMap.end()) {
-                SPDLOG_WARN("Mesh '{}' not found for model '{}'",
-                            meshRef.name, modelName);
-                continue;
-            }
-
-            const Texture* texPtr = nullptr;
-            auto texIt = manifest->textures.find(meshRef.texture);
-            if (texIt != manifest->textures.end()) {
-                texPtr = texIt->second.get();
-            } else {
-                SPDLOG_WARN("Texture '{}' not found for mesh '{}'",
-                            meshRef.texture, meshRef.name);
-            }
-
-            typename Manifest<Meta>::Part part;
-            part.mesh = std::move(meshIt->second);
-            part.texture = texPtr;
-            entry.parts.push_back(std::move(part));
-
-            meshMap.erase(meshIt);
+                key, std::make_unique<Texture>(Texture::fromFile(texPath.c_str())));
         }
 
-        manifest->entries.push_back(std::move(entry));
-    }
+        // Load mesh pack
+        std::unordered_map<std::string, Mesh> meshMap;
+        if (!schema.mesh_file.empty()) {
+            std::string meshPath = (baseDir / schema.mesh_file).string();
+            meshMap = detail::loadMeshPack(meshPath);
+        }
 
-    if (!meshMap.empty()) {
-        SPDLOG_WARN("{} meshes in pack not referenced by any model",
-                    meshMap.size());
-    }
+        // Build model entries
+        for (auto& [modelName, modelDef] : schema.models) {
+            typename Manifest<Meta>::Entry entry;
+            entry.name = modelName;
+            entry.metadata = std::move(modelDef.meta);
 
-    SPDLOG_INFO("Manifest loaded: {} models, {} textures",
-                manifest->entries.size(), manifest->textures.size());
-    return manifest;
+            for (const auto& meshRef : modelDef.meshes) {
+                auto meshIt = meshMap.find(meshRef.name);
+                if (meshIt == meshMap.end()) {
+                    throw std::runtime_error(
+                        std::format("mesh '{}' not found for model '{}'",
+                                    meshRef.name, modelName));
+                }
+
+                auto texIt = manifest->textures.find(meshRef.texture);
+                if (texIt == manifest->textures.end()) {
+                    throw std::runtime_error(
+                        std::format("texture '{}' not found for mesh '{}'",
+                                    meshRef.texture, meshRef.name));
+                }
+
+                typename Manifest<Meta>::Part part;
+                part.mesh = std::move(meshIt->second);
+                part.texture = texIt->second.get();
+                entry.parts.push_back(std::move(part));
+
+                meshMap.erase(meshIt);
+            }
+
+            manifest->entries.push_back(std::move(entry));
+        }
+
+        if (!meshMap.empty()) {
+            SPDLOG_WARN("{} meshes in pack not referenced by any model",
+                        meshMap.size());
+        }
+
+        SPDLOG_INFO("Manifest loaded: {} models, {} textures",
+                    manifest->entries.size(), manifest->textures.size());
+        return manifest;
+    } catch (const std::exception& e) {
+        throw std::runtime_error(
+            std::format("Failed to load manifest {}: {}", path, e.what()));
+    }
 }
 
 } // namespace sq
