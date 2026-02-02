@@ -1,5 +1,5 @@
 #include "ImageDiff.h"
-#include <fstream>
+#include "ShaderUtil.h"
 #include <vector>
 #include <algorithm>
 #include <cstring>
@@ -22,31 +22,10 @@ namespace {
 
     const uint16_t kQuadIndices[] = {0, 2, 1, 1, 2, 3};
 
-    const bgfx::Memory* loadShader(const char* path) {
-        std::ifstream f(path, std::ios::binary | std::ios::ate);
-        if (!f) return nullptr;
-
-        auto size = f.tellg();
-        f.seekg(0);
-
-        const bgfx::Memory* mem = bgfx::alloc(static_cast<uint32_t>(size) + 1);
-        f.read(reinterpret_cast<char*>(mem->data), size);
-        mem->data[size] = '\0';
-        return mem;
-    }
-
 }
 
 bool Comparator::init(const char* vsPath, const char* fsPath) {
-    auto vsMem = loadShader(vsPath);
-    auto fsMem = loadShader(fsPath);
-    if (!vsMem || !fsMem) return false;
-
-    bgfx::ShaderHandle vsh = bgfx::createShader(vsMem);
-    bgfx::ShaderHandle fsh = bgfx::createShader(fsMem);
-    m_program = ProgramHandle(bgfx::createProgram(vsh, fsh, true));
-
-    if (!m_program.isValid()) return false;
+    m_program = sq::loadProgram(vsPath, fsPath);
 
     m_texA = UniformHandle(bgfx::createUniform("s_texA", bgfx::UniformType::Sampler));
     m_texB = UniformHandle(bgfx::createUniform("s_texB", bgfx::UniformType::Sampler));

@@ -1,6 +1,7 @@
 #include "Mesh.h"
 #include "ModelFormat.h"
 #include <istream>
+#include <stdexcept>
 
 Mesh::Mesh(VertexBufferHandle vbh, IndexBufferHandle ibh,
            uint32_t numIndices, std::string name)
@@ -34,10 +35,11 @@ Mesh Mesh::fromStream(std::istream& in, const std::string& name) {
     in.read(reinterpret_cast<char*>(indexMem->data),
             static_cast<std::streamsize>(indexBytes));
 
-    VertexBufferHandle vbh(bgfx::createVertexBuffer(vertexMem, layout));
-    IndexBufferHandle ibh(bgfx::createIndexBuffer(indexMem));
-
-    if (!vbh.isValid() || !ibh.isValid()) return {};
-
-    return Mesh(std::move(vbh), std::move(ibh), indexCount, name);
+    try {
+        VertexBufferHandle vbh(bgfx::createVertexBuffer(vertexMem, layout));
+        IndexBufferHandle ibh(bgfx::createIndexBuffer(indexMem));
+        return Mesh(std::move(vbh), std::move(ibh), indexCount, name);
+    } catch (const std::exception& e) {
+        throw std::runtime_error("Failed to create mesh " + name + ": " + e.what());
+    }
 }

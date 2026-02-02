@@ -1,6 +1,7 @@
 #include "Texture.h"
 #include <SDL3_image/SDL_image.h>
 #include <spdlog/spdlog.h>
+#include <stdexcept>
 
 Texture Texture::fromFile(const char* path) {
     SDL_Surface* surface = IMG_Load(path);
@@ -27,19 +28,18 @@ Texture Texture::fromFile(const char* path) {
     const bgfx::Memory* mem = bgfx::copy(surface->pixels, width * height * 4);
     SDL_DestroySurface(surface);
 
-    TextureHandle handle(bgfx::createTexture2D(
-        width, height, false, 1,
-        bgfx::TextureFormat::RGBA8,
-        BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP,
-        mem
-    ));
-
-    if (!handle.isValid()) {
-        spdlog::error("Failed to create bgfx texture: {}", path);
-        return Texture();
+    try {
+        TextureHandle handle(bgfx::createTexture2D(
+            width, height, false, 1,
+            bgfx::TextureFormat::RGBA8,
+            BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP,
+            mem
+        ));
+        return Texture(std::move(handle), width, height);
+    } catch (const std::exception& e) {
+        throw std::runtime_error(
+            fmt::format("Failed to create texture {}: {}", path, e.what()));
     }
-
-    return Texture(std::move(handle), width, height);
 }
 
 Texture::Texture(TextureHandle handle, int width, int height)

@@ -1,13 +1,21 @@
 #pragma once
 
 #include <bgfx/bgfx.h>
+#include <stdexcept>
 
-// RAII wrapper for bgfx resources
+// RAII wrapper for bgfx resources.
+// Default construction creates an invalid (empty) handle.
+// Explicit construction from a raw bgfx handle throws if the handle is invalid.
 template<typename T>
 class BgfxResource {
 public:
     BgfxResource() : handle{BGFX_INVALID_HANDLE} {}
-    explicit BgfxResource(T h) : handle(h) {}
+
+    explicit BgfxResource(T h) : handle(h) {
+        if (!bgfx::isValid(handle)) {
+            throw std::runtime_error("bgfx resource creation failed");
+        }
+    }
 
     // Move semantics
     BgfxResource(BgfxResource&& other) noexcept : handle(other.handle) {

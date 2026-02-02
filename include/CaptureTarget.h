@@ -5,7 +5,6 @@
 namespace sq {
 
 // RAII offscreen render target: framebuffer + color texture for readback.
-// Constructor allocates RGBA8 color + D24S8 depth; check isValid() after.
 // The framebuffer owns both textures (destroyTextures=true); colorTexture
 // is a non-owning reference kept for readback.
 struct CaptureTarget {
@@ -28,15 +27,9 @@ struct CaptureTarget {
         );
 
         bgfx::TextureHandle textures[2] = {colorTex, depthTex};
-        bgfx::FrameBufferHandle fb = bgfx::createFrameBuffer(2, textures, true);
-
-        if (bgfx::isValid(fb)) {
-            framebuffer = FrameBufferHandle(fb);
-            colorTexture = colorTex;
-        }
+        framebuffer = FrameBufferHandle(bgfx::createFrameBuffer(2, textures, true));
+        colorTexture = colorTex;
     }
-
-    bool isValid() const { return framebuffer.isValid(); }
 };
 
 } // namespace sq
