@@ -1,5 +1,5 @@
 #include "MeshInternal.h"
-#include "ModelFormat.h"
+#include <sq/ModelFormat.h>
 #include <bgfx/bgfx.h>
 #include <format>
 #include <istream>

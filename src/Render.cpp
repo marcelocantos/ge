@@ -1,4 +1,4 @@
-#include "Render.h"
+#include <sq/Render.h>
 #include "MeshInternal.h"
 #include "TextureInternal.h"
 #include "ProgramInternal.h"

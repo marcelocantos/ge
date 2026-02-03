@@ -1,6 +1,6 @@
 #pragma once
 
-#include "BgfxResource.h"
+#include <sq/GpuResource.h>
 
 namespace sq {
 

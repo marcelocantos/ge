@@ -156,7 +156,7 @@ $(UNIT_TEST): $(sq/TEST_OBJ) $(sq/LIB) $(sq/FRAMEWORK_LIBS) $(sq/COMPILED_TEST_S
 
 ### GPU Resource Management
 
-- **`BgfxResource<T>`** — RAII move-only wrapper for any bgfx handle. Throws on invalid handle at construction. Type aliases: `VertexBufferHandle`, `IndexBufferHandle`, `ShaderHandle`, `ProgramHandle`, `TextureHandle`, `UniformHandle`, `FrameBufferHandle`.
+- **`GpuResource<T>`** — RAII move-only wrapper for any bgfx handle. Throws on invalid handle at construction. Type aliases: `VertexBufferHandle`, `IndexBufferHandle`, `ShaderHandle`, `ProgramHandle`, `TextureHandle`, `UniformHandle`, `FrameBufferHandle`.
 - **`CaptureTarget`** — Offscreen framebuffer + RGBA8 color texture for pixel readback.
 - **`ShaderUtil`** — `sq::loadProgram(vsPath, fsPath)` loads compiled shader binaries into a `ProgramHandle`.
 
@@ -197,4 +197,4 @@ Test shaders in `sq/shaders/` are compiled by rules in `Module.mk` and used by `
 - `sq::` — Engine types (`CaptureTarget`, `loadManifest`, `loadProgram`, `MeshVertex`)
 - `sq::detail::` — Internal helpers (`loadMeshPack`)
 - `imgdiff::` — Image comparison utilities
-- Top-level — `BgfxResource`, `Mesh`, `Texture`, `Model`, `DampedRotation`, `DampedValue`, `DeltaTimer`, `BgfxContext`, `SdlContext`
+- Top-level — `GpuResource`, `Mesh`, `Texture`, `Model`, `DampedRotation`, `DampedValue`, `DeltaTimer`, `BgfxContext`, `SdlContext`

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Program.h"
+#include <sq/Program.h>
 
 namespace sq {
 

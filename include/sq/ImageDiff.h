@@ -2,7 +2,7 @@
 // GPU-accelerated image difference computation
 // Uses mipmap averaging to compute RMS difference between two textures
 
-#include "BgfxResource.h"
+#include <sq/GpuResource.h>
 #include <algorithm>
 #include <cmath>
 #include <cstdint>

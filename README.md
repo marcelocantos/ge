@@ -46,7 +46,7 @@ Module.mk       Build rules and exported variables
 
 | Header | Description |
 |--------|-------------|
-| `BgfxResource.h` | Move-only RAII wrapper for bgfx handles (`VertexBufferHandle`, `ProgramHandle`, `TextureHandle`, etc.) |
+| `GpuResource.h` | Move-only RAII wrapper for bgfx handles (`VertexBufferHandle`, `ProgramHandle`, `TextureHandle`, etc.) |
 | `CaptureTarget.h` | Offscreen framebuffer with RGBA8 color texture for readback |
 | `ShaderUtil.h` | `sq::loadProgram()` — load compiled vertex + fragment shaders |
 

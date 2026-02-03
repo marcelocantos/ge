@@ -1,4 +1,4 @@
-#include "ImageDiff.h"
+#include <sq/ImageDiff.h>
 #include <bgfx/bgfx.h>
 #include <format>
 #include <fstream>

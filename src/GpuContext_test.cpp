@@ -1,5 +1,5 @@
 #include "doctest.h"
-#include "BgfxResource.h"
+#include <sq/GpuResource.h>
 
 #include <bgfx/bgfx.h>
 #include <bgfx/platform.h>
@@ -31,7 +31,7 @@ ProgramHandle loadTestProgram(const char* vsPath, const char* fsPath) {
     return ProgramHandle(bgfx::createProgram(vsh, fsh, false));
 }
 
-class BgfxTestFixture {
+class GpuTestFixture {
 public:
     static constexpr int WIDTH = 64;
     static constexpr int HEIGHT = 64;
@@ -151,7 +151,7 @@ void initVertexLayout() {
 } // namespace
 
 TEST_CASE("bgfx renders clear color correctly") {
-    BgfxTestFixture fix;
+    GpuTestFixture fix;
     REQUIRE_NOTHROW(fix.init());
 
     bgfx::setViewClear(0, BGFX_CLEAR_COLOR, 0xFF0000FF, 1.0f, 0);
@@ -171,7 +171,7 @@ TEST_CASE("bgfx renders clear color correctly") {
 }
 
 TEST_CASE("fragment shader uniform passing") {
-    BgfxTestFixture fix;
+    GpuTestFixture fix;
     REQUIRE_NOTHROW(fix.init());
 
     initVertexLayout();

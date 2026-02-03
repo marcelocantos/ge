@@ -1,8 +1,8 @@
 #pragma once
 // Internal header - only for sq/ implementation files
 
-#include "Mesh.h"
-#include "BgfxResource.h"
+#include <sq/Mesh.h>
+#include <sq/GpuResource.h>
 
 struct Mesh::M {
     VertexBufferHandle vbh;

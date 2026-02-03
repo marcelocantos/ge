@@ -1,8 +1,8 @@
 #pragma once
 
-#include "ManifestSchema.h"
-#include "Mesh.h"
-#include "Texture.h"
+#include <sq/ManifestSchema.h>
+#include <sq/Mesh.h>
+#include <sq/Texture.h>
 #include <filesystem>
 #include <format>
 #include <fstream>

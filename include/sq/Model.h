@@ -1,7 +1,7 @@
 #pragma once
 
-#include "Mesh.h"
-#include "Texture.h"
+#include <sq/Mesh.h>
+#include <sq/Texture.h>
 
 // Associates a Mesh with a Texture for rendering
 // Owns the Mesh, references shared Texture

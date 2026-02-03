@@ -46,7 +46,7 @@ sq/SHADER_INCLUDE = -i sq/vendor/bgfx/src
 # Test sources
 sq/TEST_SRC = \
 	sq/src/main_test.cpp \
-	sq/src/BgfxContext_test.cpp \
+	sq/src/GpuContext_test.cpp \
 	sq/src/DampedRotation_test.cpp
 sq/TEST_OBJ = $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(sq/TEST_SRC))
 

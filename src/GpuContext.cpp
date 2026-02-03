@@ -1,4 +1,4 @@
-#include "GpuContext.h"
+#include <sq/GpuContext.h>
 #include <bgfx/bgfx.h>
 #include <bgfx/platform.h>
 #include <spdlog/spdlog.h>

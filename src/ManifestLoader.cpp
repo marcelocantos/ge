@@ -1,5 +1,5 @@
-#include "ManifestLoader.h"
-#include "ModelFormat.h"
+#include <sq/ManifestLoader.h>
+#include <sq/ModelFormat.h>
 #include <cstring>
 #include <format>
 #include <stdexcept>
