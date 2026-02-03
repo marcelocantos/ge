@@ -1,4 +1,4 @@
-#include "doctest.h"
+#include <doctest.h>
 #include <sq/DampedRotation.h>
 
 TEST_CASE("DampedRotation starts at identity") {

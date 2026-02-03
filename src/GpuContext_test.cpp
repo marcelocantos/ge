@@ -1,4 +1,4 @@
-#include "doctest.h"
+#include <doctest.h>
 #include <sq/BgfxResource.h>
 
 #include <bgfx/bgfx.h>

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "linalg.h"
+#include <linalg.h>
 #include <cmath>
 
 using namespace linalg::aliases;
