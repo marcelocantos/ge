@@ -1,5 +1,6 @@
 #pragma once
 
+#include <linalg.h>
 #include <webgpu/webgpu_cpp.h>
 #include <memory>
 
@@ -25,7 +26,7 @@ public:
     void present();                         // Submit frame to display
 
     // Resize handling
-    void resize(int width, int height);
+    void resize(linalg::vec<int,2> size);
 
     int width() const;
     int height() const;

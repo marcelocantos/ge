@@ -5,6 +5,45 @@
 #include <stdexcept>
 #include <string>
 
+// Context for event watch - stored in handle, used as userdata for SDL callback
+struct EventWatchContext {
+    SdlContext::EventFilter filter;
+};
+
+// EventWatchHandle implementation uses EventWatchContext
+struct EventWatchHandle::M {
+    EventWatchContext ctx;
+};
+
+// SDL event watch callback - forwards to user's event filter
+static bool eventWatch(void* userdata, SDL_Event* event) {
+    auto* ctx = static_cast<EventWatchContext*>(userdata);
+    if (ctx->filter) {
+        return ctx->filter(*event);
+    }
+    return true;
+}
+
+// EventWatchHandle implementation
+EventWatchHandle::EventWatchHandle(std::unique_ptr<M> impl) : impl_(std::move(impl)) {}
+
+EventWatchHandle::~EventWatchHandle() {
+    if (impl_) {
+        SDL_RemoveEventWatch(eventWatch, &impl_->ctx);
+    }
+}
+
+EventWatchHandle::EventWatchHandle(EventWatchHandle&& other) noexcept = default;
+EventWatchHandle& EventWatchHandle::operator=(EventWatchHandle&& other) noexcept {
+    if (this != &other) {
+        if (impl_) {
+            SDL_RemoveEventWatch(eventWatch, &impl_->ctx);
+        }
+        impl_ = std::move(other.impl_);
+    }
+    return *this;
+}
+
 struct SdlContext::M {
     SDL_Window* window = nullptr;
     SDL_MetalView metalView = nullptr;
@@ -54,4 +93,11 @@ SDL_Window* SdlContext::window() const { return m->window; }
 
 void* SdlContext::metalLayer() const {
     return m->metalView ? SDL_Metal_GetLayer(m->metalView) : nullptr;
+}
+
+EventWatchHandle SdlContext::addEventWatch(EventFilter filter) {
+    auto impl = std::make_unique<EventWatchHandle::M>();
+    impl->ctx.filter = std::move(filter);
+    SDL_AddEventWatch(eventWatch, &impl->ctx);
+    return EventWatchHandle(std::move(impl));
 }

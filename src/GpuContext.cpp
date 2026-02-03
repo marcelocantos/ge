@@ -157,14 +157,14 @@ void GpuContext::present() {
     m->surface.Present();
 }
 
-void GpuContext::resize(int width, int height) {
+void GpuContext::resize(linalg::vec<int,2> size) {
     // Reconfigure surface - don't update cached dimensions here,
     // they'll be updated from the actual texture in currentFrameView()
     wgpu::SurfaceConfiguration config{
         .device = m->device,
         .format = m->swapChainFormat,
-        .width = static_cast<uint32_t>(width),
-        .height = static_cast<uint32_t>(height),
+        .width = static_cast<uint32_t>(size.x),
+        .height = static_cast<uint32_t>(size.y),
         .alphaMode = wgpu::CompositeAlphaMode::Opaque,
         .presentMode = wgpu::PresentMode::Fifo,
     };
