@@ -146,6 +146,10 @@ wgpu::TextureView GpuContext::currentFrameView() {
         return nullptr;
     }
 
+    // Update cached dimensions from actual texture (handles HiDPI/resize timing issues)
+    m->width = static_cast<int>(m->surfaceTexture.texture.GetWidth());
+    m->height = static_cast<int>(m->surfaceTexture.texture.GetHeight());
+
     return m->surfaceTexture.texture.CreateView();
 }
 
@@ -154,14 +158,8 @@ void GpuContext::present() {
 }
 
 void GpuContext::resize(int width, int height) {
-    if (width == m->width && height == m->height) {
-        return;
-    }
-
-    m->width = width;
-    m->height = height;
-
-    // Reconfigure surface with new size
+    // Reconfigure surface - don't update cached dimensions here,
+    // they'll be updated from the actual texture in currentFrameView()
     wgpu::SurfaceConfiguration config{
         .device = m->device,
         .format = m->swapChainFormat,
@@ -171,8 +169,6 @@ void GpuContext::resize(int width, int height) {
         .presentMode = wgpu::PresentMode::Fifo,
     };
     m->surface.Configure(&config);
-
-    SPDLOG_INFO("WebGPU resized: {}x{}", width, height);
 }
 
 int GpuContext::width() const {
