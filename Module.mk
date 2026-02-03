@@ -13,9 +13,11 @@ sq/INCLUDES = \
 	-Isq/vendor/dawn/include
 
 # Dawn (WebGPU) libraries
+# Order matters: dawn_proc first (provides switchable wgpu* stubs), then webgpu_dawn (native impl)
+sq/DAWN_PROC_LIB = sq/vendor/dawn/lib/macos-arm64/libdawn_proc.a
 sq/DAWN_LIB = sq/vendor/dawn/lib/macos-arm64/libwebgpu_dawn.a
 sq/DAWN_WIRE_LIB = sq/vendor/dawn/lib/macos-arm64/libdawn_wire.a
-sq/DAWN_LIBS = $(sq/DAWN_LIB) $(sq/DAWN_WIRE_LIB)
+sq/DAWN_LIBS = $(sq/DAWN_PROC_LIB) $(sq/DAWN_LIB) $(sq/DAWN_WIRE_LIB)
 
 sq/SRC = \
 	sq/src/GpuContext.cpp \

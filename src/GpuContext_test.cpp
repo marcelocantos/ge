@@ -3,6 +3,9 @@
 #include <sq/Pipeline.h>
 #include <sq/BindGroup.h>
 #include <sq/CaptureTarget.h>
+#include <sq/WireTransport.h>
+#include <dawn/dawn_proc.h>
+#include <dawn/native/DawnNative.h>
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_metal.h>
 #include <spdlog/spdlog.h>
@@ -225,4 +228,76 @@ TEST_CASE("fragment shader uniform passing" * doctest::skip(true)) {
     CHECK_MESSAGE(b < 0.1f, "Blue channel should be low");
 
     fix.shutdown();
+}
+
+TEST_CASE("dawnProcSetProcs with native procs") {
+    // Set native Dawn procs - this is the normal desktop rendering path
+    dawnProcSetProcs(&dawn::native::GetProcs());
+
+    // Verify we can create a WebGPU instance through the proc table
+    WGPUInstanceDescriptor desc{};
+    WGPUInstance instance = wgpuCreateInstance(&desc);
+    REQUIRE(instance != nullptr);
+
+    wgpuInstanceRelease(instance);
+
+    // Reset procs to null (good practice)
+    dawnProcSetProcs(nullptr);
+
+    SPDLOG_INFO("dawnProcSetProcs native test passed");
+}
+
+TEST_CASE("dawnProcSetProcs with wire procs") {
+    // First set up native procs for the server side
+    DawnProcTable nativeProcs = dawn::native::GetProcs();
+
+    // Create wire transport
+    sq::WireTransport transport;
+    transport.initialize(nativeProcs);
+
+    // Set wire procs globally - all wgpu* calls now go through wire
+    dawnProcSetProcs(&transport.wireProcs());
+
+    // Verify wire procs are active by checking the proc table
+    CHECK(transport.wireProcs().createInstance != nullptr);
+
+    // Reset procs to null
+    dawnProcSetProcs(nullptr);
+
+    SPDLOG_INFO("dawnProcSetProcs wire test passed");
+}
+
+TEST_CASE("dawnProcSetProcs GpuContext with native procs") {
+    // Set native procs before creating GpuContext
+    dawnProcSetProcs(&dawn::native::GetProcs());
+
+    if (!SDL_Init(SDL_INIT_VIDEO)) {
+        dawnProcSetProcs(nullptr);
+        FAIL("SDL_Init failed");
+        return;
+    }
+
+    SDL_Window* window = SDL_CreateWindow("Test", 64, 64, SDL_WINDOW_HIDDEN | SDL_WINDOW_METAL);
+    REQUIRE(window != nullptr);
+
+    SDL_MetalView metalView = SDL_Metal_CreateView(window);
+    REQUIRE(metalView != nullptr);
+
+    void* metalLayer = SDL_Metal_GetLayer(metalView);
+
+    // GpuContext should work with native procs set
+    std::unique_ptr<sq::GpuContext> ctx;
+    REQUIRE_NOTHROW(ctx = std::make_unique<sq::GpuContext>(metalLayer, 64, 64));
+
+    CHECK(ctx->device() != nullptr);
+    CHECK(ctx->queue() != nullptr);
+
+    SPDLOG_INFO("dawnProcSetProcs GpuContext test passed");
+
+    ctx.reset();
+    SDL_Metal_DestroyView(metalView);
+    SDL_DestroyWindow(window);
+    SDL_Quit();
+
+    dawnProcSetProcs(nullptr);
 }
