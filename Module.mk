@@ -26,7 +26,8 @@ sq/SRC = \
 	sq/src/ManifestLoader.cpp \
 	sq/src/Pipeline.cpp \
 	sq/src/BindGroup.cpp \
-	sq/src/CaptureTarget.cpp
+	sq/src/CaptureTarget.cpp \
+	sq/src/WireTransport.cpp
 
 sq/OBJ = $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(sq/SRC))
 sq/LIB = $(BUILD_DIR)/libsq.a
@@ -43,7 +44,8 @@ sq/FRAMEWORK_LIBS = $(sq/DAWN_LIBS)
 sq/TEST_SRC = \
 	sq/src/main_test.cpp \
 	sq/src/GpuContext_test.cpp \
-	sq/src/DampedRotation_test.cpp
+	sq/src/DampedRotation_test.cpp \
+	sq/src/WireTransport_test.cpp
 sq/TEST_OBJ = $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(sq/TEST_SRC))
 
 # Shared variables (parent can += to extend)

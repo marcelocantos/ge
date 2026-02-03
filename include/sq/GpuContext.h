@@ -6,7 +6,9 @@
 
 namespace sq {
 
-// RAII wrapper for WebGPU lifecycle (device, queue, surface/swapchain)
+// RAII wrapper for WebGPU lifecycle (device, queue, surface/swapchain).
+// Uses whatever procs are set via dawnProcSetProcs() - call that in main()
+// before creating GpuContext to choose native vs wire rendering.
 class GpuContext {
 public:
     // Initialize WebGPU with a native Metal layer (CAMetalLayer* on macOS)
