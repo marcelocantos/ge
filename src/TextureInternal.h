@@ -2,7 +2,7 @@
 // Internal header - only for sq/ implementation files
 
 #include <sq/Texture.h>
-#include <sq/GpuResource.h>
+#include <sq/BgfxResource.h>
 
 struct Texture::M {
     TextureHandle handle;

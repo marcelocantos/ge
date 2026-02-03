@@ -2,7 +2,7 @@
 // Internal header - only for sq/ implementation files
 
 #include <sq/Mesh.h>
-#include <sq/GpuResource.h>
+#include <sq/BgfxResource.h>
 
 struct Mesh::M {
     VertexBufferHandle vbh;

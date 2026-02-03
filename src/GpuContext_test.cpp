@@ -1,5 +1,5 @@
 #include "doctest.h"
-#include <sq/GpuResource.h>
+#include <sq/BgfxResource.h>
 
 #include <bgfx/bgfx.h>
 #include <bgfx/platform.h>
