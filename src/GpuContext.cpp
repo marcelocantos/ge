@@ -1,4 +1,4 @@
-#include "BgfxContext.h"
+#include "GpuContext.h"
 #include <bgfx/bgfx.h>
 #include <bgfx/platform.h>
 #include <spdlog/spdlog.h>
@@ -6,12 +6,12 @@
 #include <stdexcept>
 #include <string_view>
 
-struct BgfxContext::M {
+struct GpuContext::M {
     int width = 0;
     int height = 0;
 };
 
-BgfxContext::BgfxContext(void* nativeWindowHandle, int width, int height)
+GpuContext::GpuContext(void* nativeWindowHandle, int width, int height)
     : m(std::make_unique<M>()) {
 
     m->width = width;
@@ -25,9 +25,9 @@ BgfxContext::BgfxContext(void* nativeWindowHandle, int width, int height)
     init.resolution.height = height;
     init.resolution.reset = BGFX_RESET_VSYNC | BGFX_RESET_DEPTH_CLAMP;
 
-    SPDLOG_INFO("Initializing bgfx...");
+    SPDLOG_INFO("Initializing GPU...");
     if (!bgfx::init(init)) {
-        throw std::runtime_error("bgfx::init failed");
+        throw std::runtime_error("GPU initialization failed");
     }
 
     SPDLOG_INFO("Renderer: {}", bgfx::getRendererName(bgfx::getRendererType()));
@@ -48,11 +48,11 @@ BgfxContext::BgfxContext(void* nativeWindowHandle, int width, int height)
     }
 }
 
-BgfxContext::~BgfxContext() {
+GpuContext::~GpuContext() {
     if (m) {
         bgfx::shutdown();
     }
 }
 
-int BgfxContext::width() const { return m->width; }
-int BgfxContext::height() const { return m->height; }
+int GpuContext::width() const { return m->width; }
+int GpuContext::height() const { return m->height; }

@@ -1,7 +1,19 @@
-#include "Texture.h"
+#include "TextureInternal.h"
 #include <SDL3_image/SDL_image.h>
+#include <bgfx/bgfx.h>
 #include <format>
 #include <stdexcept>
+
+Texture::Texture() : m(std::make_unique<M>()) {}
+Texture::~Texture() = default;
+Texture::Texture(Texture&&) noexcept = default;
+Texture& Texture::operator=(Texture&&) noexcept = default;
+
+Texture::Texture(std::unique_ptr<M> impl) : m(std::move(impl)) {}
+
+bool Texture::isValid() const { return m && m->handle.isValid(); }
+int Texture::width() const { return m ? m->width : 0; }
+int Texture::height() const { return m ? m->height : 0; }
 
 Texture Texture::fromFile(const char* path) {
     try {
@@ -27,18 +39,18 @@ Texture Texture::fromFile(const char* path) {
         const bgfx::Memory* mem = bgfx::copy(surface->pixels, width * height * 4);
         SDL_DestroySurface(surface);
 
-        TextureHandle handle(bgfx::createTexture2D(
+        auto impl = std::make_unique<M>();
+        impl->handle = TextureHandle(bgfx::createTexture2D(
             width, height, false, 1,
             bgfx::TextureFormat::RGBA8,
             BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP,
             mem
         ));
-        return Texture(std::move(handle), width, height);
+        impl->width = width;
+        impl->height = height;
+        return Texture(std::move(impl));
     } catch (const std::exception& e) {
         throw std::runtime_error(
             std::format("Failed to load texture {}: {}", path, e.what()));
     }
 }
-
-Texture::Texture(TextureHandle handle, int width, int height)
-    : handle_(std::move(handle)), width_(width), height_(height) {}

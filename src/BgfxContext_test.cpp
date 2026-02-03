@@ -1,15 +1,35 @@
 #include "doctest.h"
-#include "ShaderUtil.h"
+#include "BgfxResource.h"
 
 #include <bgfx/bgfx.h>
 #include <bgfx/platform.h>
 #include <SDL3/SDL.h>
 #include <spdlog/spdlog.h>
 #include <format>
+#include <fstream>
 #include <stdexcept>
 #include <vector>
 
 namespace {
+
+ProgramHandle loadTestProgram(const char* vsPath, const char* fsPath) {
+    auto loadShaderMem = [](const char* path) -> const bgfx::Memory* {
+        std::ifstream file(path, std::ios::binary | std::ios::ate);
+        if (!file) {
+            throw std::runtime_error(std::format("shader not found: {}", path));
+        }
+        auto size = file.tellg();
+        file.seekg(0);
+        const bgfx::Memory* mem = bgfx::alloc(static_cast<uint32_t>(size) + 1);
+        file.read(reinterpret_cast<char*>(mem->data), size);
+        mem->data[size] = '\0';
+        return mem;
+    };
+
+    ShaderHandle vsh(bgfx::createShader(loadShaderMem(vsPath)));
+    ShaderHandle fsh(bgfx::createShader(loadShaderMem(fsPath)));
+    return ProgramHandle(bgfx::createProgram(vsh, fsh, false));
+}
 
 class BgfxTestFixture {
 public:
@@ -156,7 +176,7 @@ TEST_CASE("fragment shader uniform passing") {
 
     initVertexLayout();
 
-    auto program = sq::loadProgram(
+    auto program = loadTestProgram(
         "build/sq/shaders/test_vs.bin",
         "build/sq/shaders/test_fs.bin"
     );

@@ -1,13 +1,23 @@
-#include "Mesh.h"
+#include "MeshInternal.h"
 #include "ModelFormat.h"
+#include <bgfx/bgfx.h>
 #include <format>
 #include <istream>
 #include <stdexcept>
 
-Mesh::Mesh(VertexBufferHandle vbh, IndexBufferHandle ibh,
-           uint32_t numIndices, std::string name)
-    : vbh_(std::move(vbh)), ibh_(std::move(ibh)),
-      numIndices_(numIndices), name_(std::move(name)) {}
+Mesh::Mesh() : m(std::make_unique<M>()) {}
+Mesh::~Mesh() = default;
+Mesh::Mesh(Mesh&&) noexcept = default;
+Mesh& Mesh::operator=(Mesh&&) noexcept = default;
+
+Mesh::Mesh(std::unique_ptr<M> impl) : m(std::move(impl)) {}
+
+bool Mesh::isValid() const { return m && m->vbh.isValid(); }
+uint32_t Mesh::numIndices() const { return m ? m->numIndices : 0; }
+const std::string& Mesh::name() const {
+    static const std::string empty;
+    return m ? m->name : empty;
+}
 
 Mesh Mesh::fromStream(std::istream& in, const std::string& name) {
     // Vertex layout matching sq::MeshVertex (pos3f + uv2f)
@@ -37,9 +47,12 @@ Mesh Mesh::fromStream(std::istream& in, const std::string& name) {
             static_cast<std::streamsize>(indexBytes));
 
     try {
-        VertexBufferHandle vbh(bgfx::createVertexBuffer(vertexMem, layout));
-        IndexBufferHandle ibh(bgfx::createIndexBuffer(indexMem));
-        return Mesh(std::move(vbh), std::move(ibh), indexCount, name);
+        auto impl = std::make_unique<M>();
+        impl->vbh = VertexBufferHandle(bgfx::createVertexBuffer(vertexMem, layout));
+        impl->ibh = IndexBufferHandle(bgfx::createIndexBuffer(indexMem));
+        impl->numIndices = indexCount;
+        impl->name = name;
+        return Mesh(std::move(impl));
     } catch (const std::exception& e) {
         throw std::runtime_error(std::format("Failed to create mesh {}: {}", name, e.what()));
     }

@@ -1,9 +1,18 @@
-#include "ShaderUtil.h"
+#include "ProgramInternal.h"
+#include <bgfx/bgfx.h>
 #include <format>
 #include <fstream>
 #include <stdexcept>
 
-namespace sq {
+Program::Program() : m(std::make_unique<M>()) {}
+Program::~Program() = default;
+Program::Program(Program&&) noexcept = default;
+Program& Program::operator=(Program&&) noexcept = default;
+
+Program::Program(std::unique_ptr<M> impl) : m(std::move(impl)) {}
+
+bool Program::isValid() const { return m && m->handle.isValid(); }
+
 namespace {
 
 const bgfx::Memory* loadShaderMem(const char* path) {
@@ -29,15 +38,16 @@ const bgfx::Memory* loadShaderMem(const char* path) {
 
 } // anonymous namespace
 
-ProgramHandle loadProgram(const char* vsPath, const char* fsPath) {
+Program Program::load(const char* vsPath, const char* fsPath) {
     try {
         ShaderHandle vsh(bgfx::createShader(loadShaderMem(vsPath)));
         ShaderHandle fsh(bgfx::createShader(loadShaderMem(fsPath)));
-        return ProgramHandle(bgfx::createProgram(vsh, fsh, false));
+
+        auto impl = std::make_unique<M>();
+        impl->handle = ProgramHandle(bgfx::createProgram(vsh, fsh, false));
+        return Program(std::move(impl));
     } catch (const std::exception& e) {
         throw std::runtime_error(
             std::format("Failed to link program {} + {}: {}", vsPath, fsPath, e.what()));
     }
 }
-
-} // namespace sq

@@ -15,13 +15,15 @@ sq/INCLUDES = \
 	-Isq/vendor/bx/include/compat/osx
 
 sq/SRC = \
-	sq/src/BgfxContext.cpp \
+	sq/src/GpuContext.cpp \
 	sq/src/SdlContext.cpp \
 	sq/src/Texture.cpp \
 	sq/src/Mesh.cpp \
 	sq/src/Model.cpp \
 	sq/src/ManifestLoader.cpp \
-	sq/src/ShaderUtil.cpp
+	sq/src/Program.cpp \
+	sq/src/Render.cpp \
+	sq/src/ImageDiff.cpp
 
 sq/OBJ = $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(sq/SRC))
 sq/LIB = $(BUILD_DIR)/libsq.a

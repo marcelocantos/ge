@@ -1,31 +1,34 @@
 #pragma once
 
-#include "BgfxResource.h"
+#include <cstdint>
 #include <iosfwd>
+#include <memory>
 #include <string>
 
-// Pure asset class for mesh geometry - no rendering knowledge
+class Renderer;
+
+// Pure asset class for mesh geometry - no rendering knowledge exposed in header
 class Mesh {
 public:
-    Mesh() = default;
-    Mesh(VertexBufferHandle vbh, IndexBufferHandle ibh,
-         uint32_t numIndices, std::string name);
+    Mesh();
+    ~Mesh();
+    Mesh(Mesh&&) noexcept;
+    Mesh& operator=(Mesh&&) noexcept;
 
     // Load a mesh from a binary stream.
     // Reads vertex_count (u32), index_count (u32), vertex data, index data.
-    // The stream must be positioned right before vertex_count; any framing
-    // (tags, application-specific metadata) should be consumed by the caller.
     static Mesh fromStream(std::istream& in, const std::string& name);
 
-    bool isValid() const { return vbh_.isValid(); }
-    bgfx::VertexBufferHandle vertexBuffer() const { return vbh_; }
-    bgfx::IndexBufferHandle indexBuffer() const { return ibh_; }
-    uint32_t numIndices() const { return numIndices_; }
-    const std::string& name() const { return name_; }
+    bool isValid() const;
+    uint32_t numIndices() const;
+    const std::string& name() const;
 
 private:
-    VertexBufferHandle vbh_;
-    IndexBufferHandle ibh_;
-    uint32_t numIndices_ = 0;
-    std::string name_;
+    struct M;
+    std::unique_ptr<M> m;
+
+    Mesh(std::unique_ptr<M> impl);
+    friend class Renderer;
+    friend void setVertexBufferImpl(const Mesh&);
+    friend void setIndexBufferImpl(const Mesh&);
 };

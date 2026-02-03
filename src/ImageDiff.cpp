@@ -1,10 +1,36 @@
 #include "ImageDiff.h"
-#include "ShaderUtil.h"
+#include <bgfx/bgfx.h>
+#include <format>
+#include <fstream>
 #include <vector>
 #include <algorithm>
 #include <cstring>
+#include <stdexcept>
 
 namespace imgdiff {
+
+namespace {
+
+ProgramHandle loadProgramInternal(const char* vsPath, const char* fsPath) {
+    auto loadShaderMem = [](const char* path) -> const bgfx::Memory* {
+        std::ifstream file(path, std::ios::binary | std::ios::ate);
+        if (!file) {
+            throw std::runtime_error(std::format("shader not found: {}", path));
+        }
+        auto size = file.tellg();
+        file.seekg(0);
+        const bgfx::Memory* mem = bgfx::alloc(static_cast<uint32_t>(size) + 1);
+        file.read(reinterpret_cast<char*>(mem->data), size);
+        mem->data[size] = '\0';
+        return mem;
+    };
+
+    ShaderHandle vsh(bgfx::createShader(loadShaderMem(vsPath)));
+    ShaderHandle fsh(bgfx::createShader(loadShaderMem(fsPath)));
+    return ProgramHandle(bgfx::createProgram(vsh, fsh, false));
+}
+
+} // anonymous namespace
 
 namespace {
     // Fullscreen quad vertices (position + UV)
@@ -25,7 +51,7 @@ namespace {
 }
 
 bool Comparator::init(const char* vsPath, const char* fsPath) {
-    m_program = sq::loadProgram(vsPath, fsPath);
+    m_program = loadProgramInternal(vsPath, fsPath);
 
     m_texA = UniformHandle(bgfx::createUniform("s_texA", bgfx::UniformType::Sampler));
     m_texB = UniformHandle(bgfx::createUniform("s_texB", bgfx::UniformType::Sampler));

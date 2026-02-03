@@ -1,24 +1,30 @@
 #pragma once
 
-#include "BgfxResource.h"
+#include <memory>
 
-// Pure asset class for textures - no rendering knowledge
+class Renderer;
+class Uniform;
+
+// Pure asset class for textures - no rendering knowledge exposed in header
 class Texture {
 public:
+    Texture();
+    ~Texture();
+    Texture(Texture&&) noexcept;
+    Texture& operator=(Texture&&) noexcept;
+
     // Load texture from image file (PNG, etc.)
     static Texture fromFile(const char* path);
 
-    Texture() = default;
-
-    bool isValid() const { return handle_.isValid(); }
-    bgfx::TextureHandle handle() const { return handle_; }
-    int width() const { return width_; }
-    int height() const { return height_; }
+    bool isValid() const;
+    int width() const;
+    int height() const;
 
 private:
-    Texture(TextureHandle handle, int width, int height);
+    struct M;
+    std::unique_ptr<M> m;
 
-    TextureHandle handle_;
-    int width_ = 0;
-    int height_ = 0;
+    Texture(std::unique_ptr<M> impl);
+    friend class Renderer;
+    friend void setTextureImpl(uint8_t, const Uniform&, const Texture&);
 };
