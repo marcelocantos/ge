@@ -56,10 +56,11 @@ sq/COMPILED_TEST_SHADERS = \
 	$(BUILD_DIR)/sq/shaders/test_fs.bin
 
 # Shared variables (parent can += to extend)
-CLEAN = bin build
+CLEAN = bin build deps.dot deps.svg deps.png
 CLEAN_SHADERS = $(BUILD_DIR)/shaders $(BUILD_DIR)/sq/shaders
 COMPILED_SHADERS =
 COMPILE_DB_DEPS = $(sq/SRC) $(sq/TEST_SRC) sq/Module.mk
+sq/DEPGRAPH_DEPS = $(sq/SRC) $(wildcard sq/include/sq/*.h) sq/tools/depgraph.py
 
 # ────────────────────────────────────────────────
 # Rules
@@ -121,6 +122,22 @@ clean:
 .PHONY: clean-shaders
 clean-shaders:
 	rm -rf $(CLEAN_SHADERS)
+
+# ────────────────────────────────────────────────
+# Dependency graph (parent can extend sq/DEPGRAPH_DEPS)
+# ────────────────────────────────────────────────
+
+.PHONY: depgraph clean-depgraph
+depgraph: deps.svg
+
+deps.svg: $(sq/DEPGRAPH_DEPS)
+	python3 sq/tools/depgraph.py --format svg --output deps
+
+deps.dot: $(sq/DEPGRAPH_DEPS)
+	python3 sq/tools/depgraph.py --format dot --output deps
+
+clean-depgraph:
+	rm -f deps.dot deps.svg deps.png
 
 # Generate compile_commands.json for IDE support (clangd, VS Code).
 # compiledb captures all sub-make commands (including vendor bgfx build),
