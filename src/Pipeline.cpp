@@ -1,4 +1,5 @@
 #include <sq/Pipeline.h>
+#include <sq/ModelFormat.h>
 #include <spdlog/spdlog.h>
 #include <fstream>
 #include <sstream>
@@ -194,6 +195,13 @@ Pipeline Pipeline::load(wgpu::Device device, const char* wgslPath, const Pipelin
 
     SPDLOG_INFO("Loading pipeline from {}", wgslPath);
     return create(device, desc);
+}
+
+std::vector<VertexAttribute> meshVertexAttributes() {
+    return {
+        {wgpu::VertexFormat::Float32x3, offsetof(MeshVertex, x), 0},  // position
+        {wgpu::VertexFormat::Float32x2, offsetof(MeshVertex, u), 1},  // texcoord
+    };
 }
 
 } // namespace sq

@@ -15,6 +15,9 @@ struct VertexAttribute {
     uint32_t shaderLocation;
 };
 
+// Returns vertex attributes for MeshVertex (position + texcoord)
+std::vector<VertexAttribute> meshVertexAttributes();
+
 // Blend mode presets
 enum class BlendMode {
     None,       // No blending (opaque)

@@ -2,8 +2,9 @@
 
 #include <webgpu/webgpu_cpp.h>
 #include <sq/WgpuResource.h>
-#include <memory>
 #include <cstddef>
+#include <cstring>
+#include <memory>
 
 namespace sq {
 
@@ -83,5 +84,25 @@ wgpu::BindGroupLayout createBindGroupLayout(
 // Common bind group layout helpers
 wgpu::BindGroupLayout createUniformBufferLayout(wgpu::Device device, uint32_t binding, wgpu::ShaderStage visibility);
 wgpu::BindGroupLayout createTextureLayout(wgpu::Device device, uint32_t samplerBinding, uint32_t textureBinding);
+
+// Create an immediate uniform bind group with data baked into a mapped buffer.
+// Use this for per-draw uniforms where you need unique data per draw call.
+// The buffer is created with mappedAtCreation=true, data is copied, then unmapped.
+template <typename T>
+wgpu::BindGroup createImmediateUniform(wgpu::Device device, wgpu::BindGroupLayout layout,
+                                        uint32_t binding, const T& data) {
+    wgpu::BufferDescriptor bufDesc{
+        .usage = wgpu::BufferUsage::Uniform | wgpu::BufferUsage::CopyDst,
+        .size = sizeof(T),
+        .mappedAtCreation = true,
+    };
+    wgpu::Buffer buffer = device.CreateBuffer(&bufDesc);
+    std::memcpy(buffer.GetMappedRange(), &data, sizeof(T));
+    buffer.Unmap();
+
+    wgpu::BindGroupEntry entry{.binding = binding, .buffer = buffer, .size = sizeof(T)};
+    wgpu::BindGroupDescriptor desc{.layout = layout, .entryCount = 1, .entries = &entry};
+    return device.CreateBindGroup(&desc);
+}
 
 } // namespace sq
