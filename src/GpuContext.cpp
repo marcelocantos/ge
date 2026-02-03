@@ -1,58 +1,186 @@
 #include <sq/GpuContext.h>
-#include <bgfx/bgfx.h>
-#include <bgfx/platform.h>
+#include <dawn/native/DawnNative.h>
 #include <spdlog/spdlog.h>
-#include <cstdlib>
+#include <memory>
 #include <stdexcept>
-#include <string_view>
+
+namespace sq {
 
 struct GpuContext::M {
+    std::unique_ptr<dawn::native::Instance> dawnInstance;
+    wgpu::Instance instance;
+    wgpu::Adapter adapter;
+    wgpu::Device device;
+    wgpu::Queue queue;
+    wgpu::Surface surface;
+    wgpu::TextureFormat swapChainFormat = wgpu::TextureFormat::BGRA8Unorm;
+
     int width = 0;
     int height = 0;
+
+    // Current frame's surface texture (acquired each frame)
+    wgpu::SurfaceTexture surfaceTexture;
 };
 
-GpuContext::GpuContext(void* nativeWindowHandle, int width, int height)
+GpuContext::GpuContext(void* nativeLayer, int width, int height)
     : m(std::make_unique<M>()) {
 
     m->width = width;
     m->height = height;
 
-    bgfx::renderFrame();
+    SPDLOG_INFO("Initializing WebGPU (Dawn)...");
 
-    bgfx::Init init;
-    init.platformData.nwh = nativeWindowHandle;
-    init.resolution.width = width;
-    init.resolution.height = height;
-    init.resolution.reset = BGFX_RESET_VSYNC | BGFX_RESET_DEPTH_CLAMP;
+    // Create Dawn instance
+    wgpu::InstanceDescriptor instanceDesc{};
+    m->dawnInstance = std::make_unique<dawn::native::Instance>(&instanceDesc);
+    m->instance = wgpu::Instance(m->dawnInstance->Get());
 
-    SPDLOG_INFO("Initializing GPU...");
-    if (!bgfx::init(init)) {
-        throw std::runtime_error("GPU initialization failed");
+    // Create surface from Metal layer
+    WGPUSurfaceSourceMetalLayer metalSource = WGPU_SURFACE_SOURCE_METAL_LAYER_INIT;
+    metalSource.layer = nativeLayer;
+
+    WGPUSurfaceDescriptor surfaceDesc{};
+    surfaceDesc.nextInChain = reinterpret_cast<WGPUChainedStruct*>(&metalSource);
+
+    m->surface = wgpu::Surface::Acquire(
+        wgpuInstanceCreateSurface(m->instance.Get(), &surfaceDesc));
+
+    if (!m->surface) {
+        throw std::runtime_error("Failed to create WebGPU surface");
     }
 
-    SPDLOG_INFO("Renderer: {}", bgfx::getRendererName(bgfx::getRendererType()));
-
-    // BGFX_DEBUG env: "wireframe"/"1" for wireframe, "stats" for stats overlay
-    if (const char* debugEnv = std::getenv("BGFX_DEBUG")) {
-        uint32_t debugFlags = 0;
-        std::string_view debug = debugEnv;
-        if (debug == "wireframe" || debug == "1") {
-            debugFlags |= BGFX_DEBUG_WIREFRAME;
-        }
-        if (debug == "stats") {
-            debugFlags |= BGFX_DEBUG_STATS;
-        }
-        if (debugFlags) {
-            bgfx::setDebug(debugFlags);
-        }
+    // Request adapter
+    wgpu::RequestAdapterOptions adapterOpts{
+        .powerPreference = wgpu::PowerPreference::HighPerformance,
+        .compatibleSurface = m->surface,
+    };
+    auto adapters = m->dawnInstance->EnumerateAdapters(&adapterOpts);
+    if (adapters.empty()) {
+        throw std::runtime_error("No WebGPU adapters found");
     }
+
+    // Use first compatible adapter
+    m->adapter = wgpu::Adapter(adapters[0].Get());
+
+    wgpu::AdapterInfo adapterInfo{};
+    m->adapter.GetInfo(&adapterInfo);
+    SPDLOG_INFO("WebGPU adapter: {} ({})",
+                std::string_view(adapterInfo.device.data, adapterInfo.device.length),
+                std::string_view(adapterInfo.description.data, adapterInfo.description.length));
+
+    // Request device
+    wgpu::DeviceDescriptor deviceDesc{};
+    deviceDesc.SetDeviceLostCallback(
+        wgpu::CallbackMode::AllowSpontaneous,
+        [](const wgpu::Device&, wgpu::DeviceLostReason reason, wgpu::StringView message) {
+            // Don't log when device is intentionally destroyed during shutdown
+            if (reason == wgpu::DeviceLostReason::Destroyed) {
+                return;
+            }
+            SPDLOG_ERROR("WebGPU device lost: {} - {}",
+                        static_cast<int>(reason),
+                        std::string_view(message.data, message.length));
+        });
+    deviceDesc.SetUncapturedErrorCallback(
+        [](const wgpu::Device&, wgpu::ErrorType type, wgpu::StringView message) {
+            SPDLOG_ERROR("WebGPU error: {} - {}",
+                        static_cast<int>(type),
+                        std::string_view(message.data, message.length));
+        });
+
+    m->device = m->adapter.CreateDevice(&deviceDesc);
+    if (!m->device) {
+        throw std::runtime_error("Failed to create WebGPU device");
+    }
+
+    m->queue = m->device.GetQueue();
+
+    // Configure surface (swap chain)
+    wgpu::SurfaceCapabilities caps{};
+    m->surface.GetCapabilities(m->adapter, &caps);
+
+    // Use first available format (typically BGRA8Unorm on macOS)
+    if (caps.formatCount > 0) {
+        m->swapChainFormat = caps.formats[0];
+    }
+
+    wgpu::SurfaceConfiguration config{
+        .device = m->device,
+        .format = m->swapChainFormat,
+        .width = static_cast<uint32_t>(width),
+        .height = static_cast<uint32_t>(height),
+        .alphaMode = wgpu::CompositeAlphaMode::Opaque,
+        .presentMode = wgpu::PresentMode::Fifo,  // VSync
+    };
+    m->surface.Configure(&config);
+
+    SPDLOG_INFO("WebGPU initialized: {}x{}, format={}",
+                width, height, static_cast<int>(m->swapChainFormat));
 }
 
 GpuContext::~GpuContext() {
-    if (m) {
-        bgfx::shutdown();
+    if (m && m->device) {
+        m->device.Destroy();
     }
 }
 
-int GpuContext::width() const { return m->width; }
-int GpuContext::height() const { return m->height; }
+wgpu::Device GpuContext::device() const {
+    return m->device;
+}
+
+wgpu::Queue GpuContext::queue() const {
+    return m->queue;
+}
+
+wgpu::TextureFormat GpuContext::swapChainFormat() const {
+    return m->swapChainFormat;
+}
+
+wgpu::TextureView GpuContext::currentFrameView() {
+    m->surface.GetCurrentTexture(&m->surfaceTexture);
+
+    if (m->surfaceTexture.status != wgpu::SurfaceGetCurrentTextureStatus::SuccessOptimal &&
+        m->surfaceTexture.status != wgpu::SurfaceGetCurrentTextureStatus::SuccessSuboptimal) {
+        SPDLOG_WARN("Failed to get current surface texture: {}",
+                    static_cast<int>(m->surfaceTexture.status));
+        return nullptr;
+    }
+
+    return m->surfaceTexture.texture.CreateView();
+}
+
+void GpuContext::present() {
+    m->surface.Present();
+}
+
+void GpuContext::resize(int width, int height) {
+    if (width == m->width && height == m->height) {
+        return;
+    }
+
+    m->width = width;
+    m->height = height;
+
+    // Reconfigure surface with new size
+    wgpu::SurfaceConfiguration config{
+        .device = m->device,
+        .format = m->swapChainFormat,
+        .width = static_cast<uint32_t>(width),
+        .height = static_cast<uint32_t>(height),
+        .alphaMode = wgpu::CompositeAlphaMode::Opaque,
+        .presentMode = wgpu::PresentMode::Fifo,
+    };
+    m->surface.Configure(&config);
+
+    SPDLOG_INFO("WebGPU resized: {}x{}", width, height);
+}
+
+int GpuContext::width() const {
+    return m->width;
+}
+
+int GpuContext::height() const {
+    return m->height;
+}
+
+} // namespace sq

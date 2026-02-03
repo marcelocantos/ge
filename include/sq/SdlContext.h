@@ -10,7 +10,9 @@ public:
     ~SdlContext();
 
     SDL_Window* window() const;
-    void* nativeWindowHandle() const;
+
+    // For WebGPU/Dawn: returns CAMetalLayer* on macOS
+    void* metalLayer() const;
 
 private:
     struct M;

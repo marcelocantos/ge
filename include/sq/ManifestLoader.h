@@ -1,10 +1,10 @@
 #pragma once
 
+#include <webgpu/webgpu_cpp.h>
 #include <sq/ManifestSchema.h>
 #include <sq/Mesh.h>
 #include <sq/Texture.h>
 #include <filesystem>
-#include <format>
 #include <fstream>
 #include <memory>
 #include <spdlog/spdlog.h>
@@ -18,7 +18,7 @@ namespace sq {
 namespace detail {
 // Load all named meshes from a binary mesh pack into a map.
 // Defined in ManifestLoader.cpp.
-std::unordered_map<std::string, Mesh> loadMeshPack(const std::string& path);
+std::unordered_map<std::string, Mesh> loadMeshPack(wgpu::Device device, const std::string& path);
 } // namespace detail
 
 template<typename Meta = nlohmann::json>
@@ -42,7 +42,7 @@ struct Manifest {
 };
 
 template<typename Meta = nlohmann::json>
-std::unique_ptr<Manifest<Meta>> loadManifest(const std::string& path) {
+std::unique_ptr<Manifest<Meta>> loadManifest(wgpu::Device device, wgpu::Queue queue, const std::string& path) {
     try {
         SPDLOG_INFO("Loading manifest: {}", path);
 
@@ -59,14 +59,14 @@ std::unique_ptr<Manifest<Meta>> loadManifest(const std::string& path) {
         for (const auto& [key, relPath] : schema.textures) {
             std::string texPath = (baseDir / relPath).string();
             manifest->textures.emplace(
-                key, std::make_unique<Texture>(Texture::fromFile(texPath.c_str())));
+                key, std::make_unique<Texture>(Texture::fromFile(device, queue, texPath.c_str())));
         }
 
         // Load mesh pack
         std::unordered_map<std::string, Mesh> meshMap;
         if (!schema.mesh_file.empty()) {
             std::string meshPath = (baseDir / schema.mesh_file).string();
-            meshMap = detail::loadMeshPack(meshPath);
+            meshMap = detail::loadMeshPack(device, meshPath);
         }
 
         // Build model entries
@@ -79,15 +79,13 @@ std::unique_ptr<Manifest<Meta>> loadManifest(const std::string& path) {
                 auto meshIt = meshMap.find(meshRef.name);
                 if (meshIt == meshMap.end()) {
                     throw std::runtime_error(
-                        std::format("mesh '{}' not found for model '{}'",
-                                    meshRef.name, modelName));
+                        std::string("mesh '") + meshRef.name + "' not found for model '" + modelName + "'");
                 }
 
                 auto texIt = manifest->textures.find(meshRef.texture);
                 if (texIt == manifest->textures.end()) {
                     throw std::runtime_error(
-                        std::format("texture '{}' not found for mesh '{}'",
-                                    meshRef.texture, meshRef.name));
+                        std::string("texture '") + meshRef.texture + "' not found for mesh '" + meshRef.name + "'");
                 }
 
                 typename Manifest<Meta>::Part part;
@@ -111,7 +109,7 @@ std::unique_ptr<Manifest<Meta>> loadManifest(const std::string& path) {
         return manifest;
     } catch (const std::exception& e) {
         throw std::runtime_error(
-            std::format("Failed to load manifest {}: {}", path, e.what()));
+            std::string("Failed to load manifest ") + path + ": " + e.what());
     }
 }
 

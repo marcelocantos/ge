@@ -1,35 +1,32 @@
 #pragma once
 
-#include <sq/BgfxResource.h>
+#include <webgpu/webgpu_cpp.h>
+#include <sq/WgpuResource.h>
+#include <vector>
+#include <cstdint>
 
 namespace sq {
 
-// RAII offscreen render target: framebuffer + color texture for readback.
-// The framebuffer owns both textures (destroyTextures=true); colorTexture
-// is a non-owning reference kept for readback.
-struct CaptureTarget {
-    FrameBufferHandle framebuffer;
-    bgfx::TextureHandle colorTexture = BGFX_INVALID_HANDLE;
-
+// Offscreen render target for capturing rendered frames (useful for testing)
+class CaptureTarget {
+public:
     CaptureTarget() = default;
+    CaptureTarget(wgpu::Device device, int width, int height);
 
-    CaptureTarget(int width, int height) {
-        bgfx::TextureHandle colorTex = bgfx::createTexture2D(
-            width, height, false, 1,
-            bgfx::TextureFormat::RGBA8,
-            BGFX_TEXTURE_RT | BGFX_TEXTURE_BLIT_DST
-        );
+    wgpu::TextureView colorView() const;
+    wgpu::TextureFormat format() const { return wgpu::TextureFormat::RGBA8Unorm; }
 
-        bgfx::TextureHandle depthTex = bgfx::createTexture2D(
-            width, height, false, 1,
-            bgfx::TextureFormat::D24S8,
-            BGFX_TEXTURE_RT
-        );
+    int width() const { return width_; }
+    int height() const { return height_; }
 
-        bgfx::TextureHandle textures[2] = {colorTex, depthTex};
-        framebuffer = FrameBufferHandle(bgfx::createFrameBuffer(2, textures, true));
-        colorTexture = colorTex;
-    }
+    // Read pixels back to CPU (synchronous, blocks until complete)
+    std::vector<uint8_t> readPixels(wgpu::Device device, wgpu::Queue queue);
+
+private:
+    WgpuTexture colorTexture_;
+    WgpuTextureView colorView_;
+    int width_ = 0;
+    int height_ = 0;
 };
 
 } // namespace sq

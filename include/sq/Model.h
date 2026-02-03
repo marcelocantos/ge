@@ -2,6 +2,9 @@
 
 #include <sq/Mesh.h>
 #include <sq/Texture.h>
+#include <string>
+
+namespace sq {
 
 // Associates a Mesh with a Texture for rendering
 // Owns the Mesh, references shared Texture
@@ -22,3 +25,5 @@ private:
     Mesh mesh_;
     const Texture* texture_ = nullptr;
 };
+
+} // namespace sq

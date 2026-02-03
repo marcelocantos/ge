@@ -1,8 +1,6 @@
 #pragma once
-// GPU-accelerated image difference computation
-// Uses mipmap averaging to compute RMS difference between two textures
+// Image difference computation utilities
 
-#include <sq/BgfxResource.h>
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -16,33 +14,7 @@ struct Result {
     bool valid;         // True if comparison succeeded
 };
 
-// Compare two textures on GPU
-// Returns RMS difference via mipmap reduction
-// Textures must be same dimensions
-// Caller must have initialized bgfx
-class Comparator {
-public:
-    // Initialize with shader paths (call once after bgfx::init)
-    bool init(const char* vsPath, const char* fsPath);
-
-    // Compare two textures, returns RMS diff in [0, 1]
-    // 0 = identical, 1 = maximally different
-    Result compare(bgfx::TextureHandle texA, bgfx::TextureHandle texB,
-                   uint16_t width, uint16_t height);
-
-    // Compare raw pixel data (uploads to GPU, compares, downloads result)
-    Result compare(const uint8_t* dataA, const uint8_t* dataB,
-                   uint16_t width, uint16_t height);
-
-private:
-    ProgramHandle m_program;
-    UniformHandle m_texA;
-    UniformHandle m_texB;
-    bgfx::VertexLayout m_layout{};
-    bool m_initialized = false;
-};
-
-// Simple CPU fallback for when GPU isn't available or for small images
+// CPU-based image comparison
 inline Result compareCPU(const uint8_t* dataA, const uint8_t* dataB,
                          uint32_t width, uint32_t height, uint32_t channels = 4) {
     if (!dataA || !dataB || width == 0 || height == 0) {
