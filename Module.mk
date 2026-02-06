@@ -10,7 +10,8 @@ sq/INCLUDES = \
 	-Isq/include \
 	-Isq/vendor/include \
 	-Isq/vendor/spdlog/include \
-	-Isq/vendor/dawn/include
+	-Isq/vendor/dawn/include \
+	-Isq/vendor/github.com/nayuki/QR-Code-generator/cpp
 
 # Dawn (WebGPU) libraries
 # Order matters: dawn_proc first (provides switchable wgpu* stubs), then webgpu_dawn (native impl)
@@ -30,7 +31,8 @@ sq/SRC = \
 	sq/src/BindGroup.cpp \
 	sq/src/CaptureTarget.cpp \
 	sq/src/WireTransport.cpp \
-	sq/src/WireSession.cpp
+	sq/src/WireSession.cpp \
+	sq/vendor/github.com/nayuki/QR-Code-generator/cpp/qrcodegen.cpp
 
 sq/OBJ = $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(sq/SRC))
 sq/LIB = $(BUILD_DIR)/libsq.a
@@ -74,6 +76,11 @@ $(BUILD_DIR)/sq/src/%.o: sq/src/%.cpp
 $(sq/LIB): $(sq/OBJ)
 	@mkdir -p $(dir $@)
 	$(AR) rcs $@ $^
+
+# Vendor C++ sources
+$(BUILD_DIR)/sq/vendor/%.o: sq/vendor/%.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -MMD -MP -c $< -o $@
 
 # Triangle library
 $(sq/TRIANGLE_OBJ): $(sq/TRIANGLE_SRC)

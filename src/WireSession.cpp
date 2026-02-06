@@ -10,9 +10,12 @@
 #include <dawn/wire/WireClient.h>
 #include <webgpu/webgpu_cpp.h>
 
+#include <qrcodegen.hpp>
+
 #include <csignal>
 #include <cstdlib>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 namespace {
@@ -108,6 +111,44 @@ std::string resolveListenAddr() {
     return "42069";
 }
 
+// Get the first non-loopback IPv4 address by connecting a UDP socket
+// to a public address (no packets are actually sent).
+std::string getLanAddress(asio::io_context& io) {
+    try {
+        asio::ip::udp::socket sock(io, asio::ip::udp::v4());
+        sock.connect(asio::ip::udp::endpoint(asio::ip::make_address("8.8.8.8"), 80));
+        auto addr = sock.local_endpoint().address();
+        sock.close();
+        if (!addr.is_loopback()) {
+            return addr.to_string();
+        }
+    } catch (...) {}
+    return "127.0.0.1";
+}
+
+void printQrCode(const std::string& url) {
+    auto qr = qrcodegen::QrCode::encodeText(url.c_str(), qrcodegen::QrCode::Ecc::LOW);
+    int size = qr.getSize();
+
+    // Use Unicode block elements: two rows per character line
+    // Upper half = top row, lower half = bottom row
+    std::string out("\n");
+    for (int y = -1; y < size + 1; y += 2) {
+        out += "  ";
+        for (int x = -1; x < size + 1; x++) {
+            bool top = (y >= 0 && y < size) ? qr.getModule(x, y) : false;
+            bool bot = (y + 1 >= 0 && y + 1 < size) ? qr.getModule(x, y + 1) : false;
+            if (top && bot)        out += "\u2588";
+            else if (top && !bot)  out += "\u2580";
+            else if (!top && bot)  out += "\u2584";
+            else                   out += " ";
+        }
+        out += "\n";
+    }
+    out += "  " + url + "\n";
+    fprintf(stderr, "%s", out.c_str());
+}
+
 } // namespace
 
 namespace sq {
@@ -142,7 +183,10 @@ WireSession::WireSession()
     acceptor.bind(endpoint);
     acceptor.listen();
 
+    auto lanIp = getLanAddress(m->io);
+    auto url = "yourworld://" + lanIp + ":" + std::to_string(port);
     SPDLOG_INFO("Waiting for receiver connection...");
+    printQrCode(url);
     acceptor.accept(m->socket);
     SPDLOG_INFO("Receiver connected from {}",
                 m->socket.remote_endpoint().address().to_string());

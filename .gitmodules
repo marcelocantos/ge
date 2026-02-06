@@ -19,3 +19,6 @@
 [submodule "vendor/github.com/libsdl-org/SDL"]
 	path = vendor/github.com/libsdl-org/SDL
 	url = https://github.com/libsdl-org/SDL
+[submodule "vendor/github.com/nayuki/QR-Code-generator"]
+	path = vendor/github.com/nayuki/QR-Code-generator
+	url = https://github.com/nayuki/QR-Code-generator
