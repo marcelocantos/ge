@@ -3,8 +3,8 @@
 //
 // Usage: bin/receiver [host:port] [width] [height]
 // Examples:
-//   bin/receiver                         # Connect to localhost:8080, 390x844
-//   bin/receiver 192.168.1.100:8080      # Connect to specific host
+//   bin/receiver                          # Connect to localhost:42069, 390x844
+//   bin/receiver 192.168.1.100:42069     # Connect to specific host
 //   bin/receiver localhost:9000 1080 1920 # Custom port and dimensions
 
 #define ASIO_STANDALONE
@@ -33,7 +33,7 @@ enum class ConnectionResult { Quit, Disconnected };
 constexpr int kDefaultWidth = 390;
 constexpr int kDefaultHeight = 844;
 constexpr char kDefaultHost[] = "localhost";
-constexpr uint16_t kDefaultPort = 8080;
+constexpr uint16_t kDefaultPort = 42069;
 
 // CommandSerializer that sends responses over TCP
 class SocketSerializer : public dawn::wire::CommandSerializer {

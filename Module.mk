@@ -29,7 +29,8 @@ sq/SRC = \
 	sq/src/Pipeline.cpp \
 	sq/src/BindGroup.cpp \
 	sq/src/CaptureTarget.cpp \
-	sq/src/WireTransport.cpp
+	sq/src/WireTransport.cpp \
+	sq/src/WireSession.cpp
 
 sq/OBJ = $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(sq/SRC))
 sq/LIB = $(BUILD_DIR)/libsq.a
