@@ -24,7 +24,7 @@ target_compile_definitions(main PRIVATE ASIO_STANDALONE)
 target_include_directories(main PRIVATE
     ${SQ_ROOT}/include
     ${SQ_ROOT}/vendor/include
-    ${SQ_ROOT}/vendor/spdlog/include
+    ${SQ_ROOT}/vendor/github.com/gabime/spdlog/include
     ${SQ_ROOT}/vendor/dawn/include
     ${SQ_ROOT}/vendor/asio/include
     ${SQ_ROOT}/tools

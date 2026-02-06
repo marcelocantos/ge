@@ -7,8 +7,8 @@
 [submodule "vendor/github.com/bkaradzic/bimg"]
 	path = vendor/github.com/bkaradzic/bimg
 	url = https://github.com/bkaradzic/bimg.git
-[submodule "vendor/spdlog"]
-	path = vendor/spdlog
+[submodule "vendor/github.com/gabime/spdlog"]
+	path = vendor/github.com/gabime/spdlog
 	url = https://github.com/gabime/spdlog.git
 [submodule "vendor/asio"]
 	path = vendor/asio

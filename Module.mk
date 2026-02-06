@@ -9,7 +9,7 @@ sq := sq
 sq/INCLUDES = \
 	-Isq/include \
 	-Isq/vendor/include \
-	-Isq/vendor/spdlog/include \
+	-Isq/vendor/github.com/gabime/spdlog/include \
 	-Isq/vendor/dawn/include \
 	-Isq/vendor/github.com/nayuki/QR-Code-generator/cpp
 

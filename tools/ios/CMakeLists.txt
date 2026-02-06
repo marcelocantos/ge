@@ -22,7 +22,7 @@ target_compile_definitions(Receiver PRIVATE ASIO_STANDALONE SQ_IOS)
 target_include_directories(Receiver PRIVATE
     ${SQ_ROOT}/include
     ${SQ_ROOT}/vendor/include
-    ${SQ_ROOT}/vendor/spdlog/include
+    ${SQ_ROOT}/vendor/github.com/gabime/spdlog/include
     ${SQ_ROOT}/vendor/dawn/include
     ${SQ_ROOT}/vendor/asio/include
     ${SQ_ROOT}/vendor/github.com/libsdl-org/SDL/include
