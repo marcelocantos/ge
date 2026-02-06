@@ -13,3 +13,9 @@
 [submodule "vendor/asio"]
 	path = vendor/asio
 	url = https://github.com/chriskohlhoff/asio.git
+[submodule "vendor/github.com/google/dawn"]
+	path = vendor/github.com/google/dawn
+	url = https://dawn.googlesource.com/dawn
+[submodule "vendor/github.com/libsdl-org/SDL"]
+	path = vendor/github.com/libsdl-org/SDL
+	url = https://github.com/libsdl-org/SDL

@@ -92,6 +92,15 @@ $(sq/RECEIVER): $(sq/RECEIVER_OBJ) $(sq/LIB) $(sq/DAWN_LIBS)
 
 # Dawn libraries are prebuilt; no build rule needed
 
+# iOS Xcode project generation
+.PHONY: sq/ios
+sq/ios:
+	cd sq/tools/ios && cmake -G Xcode -B build/xcode \
+	    -DCMAKE_SYSTEM_NAME=iOS \
+	    -DCMAKE_OSX_ARCHITECTURES=arm64 \
+	    -DCMAKE_OSX_DEPLOYMENT_TARGET=16.0
+	@echo "Open sq/tools/ios/build/xcode/Receiver.xcodeproj in Xcode"
+
 # ────────────────────────────────────────────────
 # Generic targets (use CLEAN, CLEAN_SHADERS, COMPILE_DB_DEPS)
 # ────────────────────────────────────────────────
