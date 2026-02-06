@@ -43,7 +43,7 @@ sq/TRIANGLE_OBJ = $(BUILD_DIR)/sq/vendor/triangle.o
 sq/TRIANGLE_CFLAGS = -O2 -Isq/vendor/include -DTRILIBRARY -DREAL=double -DANSI_DECLARATORS -DNO_TIMER
 
 # Wire receiver tool (standalone binary)
-sq/RECEIVER_SRC = sq/tools/receiver.cpp
+sq/RECEIVER_SRC = sq/tools/receiver.cpp sq/tools/receiver_core.cpp
 sq/RECEIVER_OBJ = $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(sq/RECEIVER_SRC))
 sq/RECEIVER = bin/receiver
 

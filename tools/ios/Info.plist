@@ -17,5 +17,7 @@
     <dict/>
     <key>NSLocalNetworkUsageDescription</key>
     <string>Connect to game server on local network</string>
+    <key>NSCameraUsageDescription</key>
+    <string>Scan QR code to connect to game server</string>
 </dict>
 </plist>

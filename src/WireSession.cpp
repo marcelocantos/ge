@@ -184,7 +184,7 @@ WireSession::WireSession()
     acceptor.listen();
 
     auto lanIp = getLanAddress(m->io);
-    auto url = "yourworld://" + lanIp + ":" + std::to_string(port);
+    auto url = "squz-remote://" + lanIp + ":" + std::to_string(port);
     SPDLOG_INFO("Waiting for receiver connection...");
     printQrCode(url);
     acceptor.accept(m->socket);

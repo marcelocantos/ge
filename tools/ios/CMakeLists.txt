@@ -5,17 +5,19 @@ set(CMAKE_CXX_STANDARD 20)
 set(SQ_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../..)
 set(DEPS_BUILD ${CMAKE_CURRENT_SOURCE_DIR}/build)
 
-# Sources — receiver + CommandSerializer/CommandHandler base impls
+# Sources — iOS entry point + shared receiver + wire transport + QR scanner
 set(SOURCES
-    ${SQ_ROOT}/tools/receiver.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/main.mm
+    ${SQ_ROOT}/tools/receiver_core.cpp
     ${SQ_ROOT}/src/WireTransport.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/QRScanner.mm
 )
 
 add_executable(Receiver MACOSX_BUNDLE ${SOURCES})
 
-target_compile_definitions(Receiver PRIVATE ASIO_STANDALONE)
+target_compile_definitions(Receiver PRIVATE ASIO_STANDALONE SQ_IOS)
 
-# Headers (engine + header-only vendors)
+# Headers (engine + header-only vendors + iOS-specific)
 target_include_directories(Receiver PRIVATE
     ${SQ_ROOT}/include
     ${SQ_ROOT}/vendor/include
@@ -23,6 +25,8 @@ target_include_directories(Receiver PRIVATE
     ${SQ_ROOT}/vendor/dawn/include
     ${SQ_ROOT}/vendor/asio/include
     ${SQ_ROOT}/vendor/github.com/libsdl-org/SDL/include
+    ${SQ_ROOT}/tools
+    ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
 # Dawn (iOS arm64 — built by build-deps.sh)
@@ -67,4 +71,5 @@ set_target_properties(Receiver PROPERTIES
     MACOSX_BUNDLE_INFO_PLIST ${CMAKE_CURRENT_SOURCE_DIR}/Info.plist
     XCODE_ATTRIBUTE_TARGETED_DEVICE_FAMILY "1,2"
     XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "com.squz.receiver"
+    XCODE_ATTRIBUTE_DEVELOPMENT_TEAM "SWA3H3N7TW"
 )
