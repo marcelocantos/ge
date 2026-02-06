@@ -144,6 +144,29 @@ GpuContext::GpuContext(void* nativeLayer, int width, int height, WireTransport* 
                 width, height, static_cast<int>(m->swapChainFormat));
 }
 
+GpuContext::GpuContext(wgpu::Device device, wgpu::Queue queue, wgpu::Surface surface,
+                       wgpu::TextureFormat format, int width, int height)
+    : m(std::make_unique<M>()) {
+    m->device = device;
+    m->queue = queue;
+    m->surface = surface;
+    m->swapChainFormat = format;
+    m->width = width;
+    m->height = height;
+
+    wgpu::SurfaceConfiguration config{
+        .device = device,
+        .format = format,
+        .width = static_cast<uint32_t>(width),
+        .height = static_cast<uint32_t>(height),
+        .alphaMode = wgpu::CompositeAlphaMode::Opaque,
+        .presentMode = wgpu::PresentMode::Fifo,
+    };
+    surface.Configure(&config);
+
+    SPDLOG_INFO("GpuContext (wire mode): {}x{}, format={}", width, height, static_cast<int>(format));
+}
+
 GpuContext::~GpuContext() {
     if (m && m->device) {
         m->device.Destroy();

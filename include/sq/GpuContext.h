@@ -17,6 +17,12 @@ public:
     // If wireTransport is provided, native resources are created and injected
     // into the wire, with all subsequent operations going through the wire.
     GpuContext(void* nativeLayer, int width, int height, WireTransport* wireTransport = nullptr);
+
+    // Wire-mode constructor: uses pre-created resources from a WireClient.
+    // No native instance/adapter creation — device, queue, and surface are
+    // already obtained through the wire and configured by the caller.
+    GpuContext(wgpu::Device device, wgpu::Queue queue, wgpu::Surface surface,
+              wgpu::TextureFormat format, int width, int height);
     ~GpuContext();
 
     GpuContext(const GpuContext&) = delete;
