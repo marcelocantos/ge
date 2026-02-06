@@ -24,7 +24,7 @@ target_include_directories(Receiver PRIVATE
     ${SQ_ROOT}/vendor/include
     ${SQ_ROOT}/vendor/github.com/gabime/spdlog/include
     ${SQ_ROOT}/vendor/dawn/include
-    ${SQ_ROOT}/vendor/asio/include
+    ${SQ_ROOT}/vendor/github.com/chriskohlhoff/asio/include
     ${SQ_ROOT}/vendor/github.com/libsdl-org/SDL/include
     ${SQ_ROOT}/tools
     ${CMAKE_CURRENT_SOURCE_DIR}

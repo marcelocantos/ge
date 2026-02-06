@@ -10,8 +10,8 @@
 [submodule "vendor/github.com/gabime/spdlog"]
 	path = vendor/github.com/gabime/spdlog
 	url = https://github.com/gabime/spdlog.git
-[submodule "vendor/asio"]
-	path = vendor/asio
+[submodule "vendor/github.com/chriskohlhoff/asio"]
+	path = vendor/github.com/chriskohlhoff/asio
 	url = https://github.com/chriskohlhoff/asio.git
 [submodule "vendor/github.com/libsdl-org/SDL"]
 	path = vendor/github.com/libsdl-org/SDL
