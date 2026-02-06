@@ -2,16 +2,27 @@
 #include <asio.hpp>
 
 #include <sq/WireSession.h>
+#include <sq/DeltaTimer.h>
 #include <sq/Protocol.h>
+#include <SDL3/SDL.h>
 #include <spdlog/spdlog.h>
 #include <dawn/dawn_proc.h>
 #include <dawn/wire/WireClient.h>
 #include <webgpu/webgpu_cpp.h>
 
+#include <csignal>
+#include <cstdlib>
 #include <stdexcept>
 #include <vector>
 
 namespace {
+
+// Signal flag shared between WireSession::run() and the OS signal handler.
+volatile std::sig_atomic_t g_running = 1;
+
+void signalHandler(int) {
+    g_running = 0;
+}
 
 // CommandSerializer that sends wire commands over TCP
 class SocketSerializer : public dawn::wire::CommandSerializer {
@@ -44,7 +55,6 @@ public:
         return wire::kMaxMessageSize;
     }
 
-    // Process any responses from the receiver
     void processResponses(dawn::wire::WireClient& client) {
         while (socket_.available() > 0) {
             wire::MessageHeader header{};
@@ -82,6 +92,12 @@ void parseListenAddr(const std::string& listenAddr, std::string& address, uint16
     }
 }
 
+std::string resolveListenAddr() {
+    const char* env = std::getenv("SQ_WIRE_ADDR");
+    if (env && env[0]) return env;
+    return "42069";
+}
+
 } // namespace
 
 namespace sq {
@@ -95,16 +111,15 @@ struct WireSession::M {
     std::unique_ptr<GpuContext> gfx;
 };
 
-WireSession::WireSession(const std::string& listenAddr,
-                         std::function<bool()> shouldContinue)
+WireSession::WireSession()
     : m(std::make_unique<M>())
 {
-    auto cont = [&]{ return !shouldContinue || shouldContinue(); };
+    auto addr = resolveListenAddr();
 
     // Parse address
     std::string address = "0.0.0.0";
-    uint16_t port = 8080;
-    parseListenAddr(listenAddr, address, port);
+    uint16_t port = 42069;
+    parseListenAddr(addr, address, port);
 
     SPDLOG_INFO("Starting wire server on {}:{}...", address, port);
 
@@ -188,7 +203,7 @@ WireSession::WireSession(const std::string& listenAddr,
         });
 
     m->serializer->Flush();
-    while (!adapterReceived && cont()) {
+    while (!adapterReceived && g_running) {
         m->io.poll();
         m->serializer->processResponses(*m->wireClient);
         m->instance.ProcessEvents();
@@ -230,7 +245,7 @@ WireSession::WireSession(const std::string& listenAddr,
         });
 
     m->serializer->Flush();
-    while (!deviceReceived && cont()) {
+    while (!deviceReceived && g_running) {
         m->io.poll();
         m->serializer->processResponses(*m->wireClient);
         m->instance.ProcessEvents();
@@ -264,6 +279,30 @@ void WireSession::flush() {
     m->serializer->processResponses(*m->wireClient);
     m->instance.ProcessEvents();
     m->serializer->Flush();
+}
+
+void WireSession::run(std::function<void(float dt)> onFrame) {
+    std::signal(SIGINT, signalHandler);
+    std::signal(SIGTERM, signalHandler);
+
+    // Flush any resource creation commands issued between construction and run()
+    flush();
+
+    DeltaTimer frameTimer;
+
+    SPDLOG_INFO("Entering render loop (Ctrl+C to stop)...");
+
+    while (g_running) {
+        float dt = frameTimer.tick();
+
+        flush();
+        onFrame(dt);
+        flush();
+
+        SDL_Delay(16);
+    }
+
+    SPDLOG_INFO("Shutting down...");
 }
 
 } // namespace sq
