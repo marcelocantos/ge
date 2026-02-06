@@ -1,6 +1,7 @@
 #pragma once
 
 #include <sq/GpuContext.h>
+#include <SDL3/SDL_events.h>
 #include <functional>
 #include <memory>
 
@@ -31,8 +32,10 @@ public:
 
     // Run the render loop.  Installs SIGINT/SIGTERM handlers, calls onFrame
     // each iteration with the frame delta, and manages flush cadence.
+    // onEvent (optional) is called for each SDL event received from the receiver.
     // Returns when the process receives a termination signal.
-    void run(std::function<void(float dt)> onFrame);
+    void run(std::function<void(float dt)> onFrame,
+             std::function<void(const SDL_Event&)> onEvent = {});
 
 private:
     struct M;

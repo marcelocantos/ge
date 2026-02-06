@@ -78,6 +78,16 @@ private:
     std::vector<char> buffer_;
 };
 
+void sendEvent(asio::ip::tcp::socket& socket, const SDL_Event& event) {
+    wire::MessageHeader header{wire::kSdlEventMagic, sizeof(SDL_Event)};
+    try {
+        asio::write(socket, asio::buffer(&header, sizeof(header)));
+        asio::write(socket, asio::buffer(&event, sizeof(event)));
+    } catch (const std::exception& e) {
+        SPDLOG_WARN("Failed to send SDL event: {}", e.what());
+    }
+}
+
 class Receiver {
 public:
     Receiver(std::string host, uint16_t port, int width, int height)
@@ -307,10 +317,22 @@ private:
             // 1. Process SDL events
             SDL_Event event;
             while (SDL_PollEvent(&event)) {
-                if (event.type == SDL_EVENT_QUIT)
-                    return ConnectionResult::Quit;
-                if (event.type == SDL_EVENT_KEY_DOWN && event.key.key == SDLK_Q)
-                    return ConnectionResult::Quit;
+                switch (event.type) {
+                    case SDL_EVENT_QUIT:
+                        return ConnectionResult::Quit;
+                    case SDL_EVENT_KEY_DOWN:
+                        if (event.key.key == SDLK_Q)
+                            return ConnectionResult::Quit;
+                        break;
+                    case SDL_EVENT_FINGER_DOWN:
+                    case SDL_EVENT_FINGER_MOTION:
+                    case SDL_EVENT_FINGER_UP:
+                    case SDL_EVENT_MOUSE_BUTTON_DOWN:
+                    case SDL_EVENT_MOUSE_BUTTON_UP:
+                    case SDL_EVENT_MOUSE_MOTION:
+                        sendEvent(socket, event);
+                        break;
+                }
             }
 
             // 2. Process Asio events (check for incoming data)

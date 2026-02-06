@@ -55,23 +55,33 @@ public:
         return wire::kMaxMessageSize;
     }
 
-    void processResponses(dawn::wire::WireClient& client) {
+    void processResponses(dawn::wire::WireClient& client,
+                           const std::function<void(const SDL_Event&)>& onEvent) {
         while (socket_.available() > 0) {
             wire::MessageHeader header{};
             asio::read(socket_, asio::buffer(&header, sizeof(header)));
 
-            if (header.magic != wire::kWireResponseMagic) {
-                SPDLOG_ERROR("Invalid response magic: 0x{:08X}", header.magic);
-                return;
-            }
+            if (header.magic == wire::kWireResponseMagic) {
+                responseBuffer_.resize(header.length);
+                asio::read(socket_, asio::buffer(responseBuffer_.data(), header.length));
 
-            responseBuffer_.resize(header.length);
-            asio::read(socket_, asio::buffer(responseBuffer_.data(), header.length));
-
-            const volatile char* result = client.HandleCommands(
-                responseBuffer_.data(), responseBuffer_.size());
-            if (result == nullptr) {
-                SPDLOG_ERROR("WireClient failed to handle responses");
+                const volatile char* result = client.HandleCommands(
+                    responseBuffer_.data(), responseBuffer_.size());
+                if (result == nullptr) {
+                    SPDLOG_ERROR("WireClient failed to handle responses");
+                }
+            } else if (header.magic == wire::kSdlEventMagic) {
+                SDL_Event event{};
+                asio::read(socket_, asio::buffer(&event, sizeof(event)));
+                if (onEvent) {
+                    onEvent(event);
+                }
+            } else {
+                SPDLOG_ERROR("Unknown message magic: 0x{:08X}", header.magic);
+                if (header.length > 0 && header.length <= wire::kMaxMessageSize) {
+                    responseBuffer_.resize(header.length);
+                    asio::read(socket_, asio::buffer(responseBuffer_.data(), header.length));
+                }
             }
         }
     }
@@ -109,6 +119,7 @@ struct WireSession::M {
     std::unique_ptr<dawn::wire::WireClient> wireClient;
     wgpu::Instance instance;
     std::unique_ptr<GpuContext> gfx;
+    std::function<void(const SDL_Event&)> onEvent;
 };
 
 WireSession::WireSession()
@@ -205,7 +216,7 @@ WireSession::WireSession()
     m->serializer->Flush();
     while (!adapterReceived && g_running) {
         m->io.poll();
-        m->serializer->processResponses(*m->wireClient);
+        m->serializer->processResponses(*m->wireClient, m->onEvent);
         m->instance.ProcessEvents();
     }
 
@@ -247,7 +258,7 @@ WireSession::WireSession()
     m->serializer->Flush();
     while (!deviceReceived && g_running) {
         m->io.poll();
-        m->serializer->processResponses(*m->wireClient);
+        m->serializer->processResponses(*m->wireClient, m->onEvent);
         m->instance.ProcessEvents();
     }
 
@@ -276,12 +287,15 @@ GpuContext& WireSession::gpu() {
 }
 
 void WireSession::flush() {
-    m->serializer->processResponses(*m->wireClient);
+    m->serializer->processResponses(*m->wireClient, m->onEvent);
     m->instance.ProcessEvents();
     m->serializer->Flush();
 }
 
-void WireSession::run(std::function<void(float dt)> onFrame) {
+void WireSession::run(std::function<void(float dt)> onFrame,
+                      std::function<void(const SDL_Event&)> onEvent) {
+    m->onEvent = std::move(onEvent);
+
     std::signal(SIGINT, signalHandler);
     std::signal(SIGTERM, signalHandler);
 

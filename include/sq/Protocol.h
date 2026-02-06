@@ -10,6 +10,7 @@ constexpr uint32_t kDeviceInfoMagic = 0x59573244;   // "YW2D"
 constexpr uint32_t kSessionInitMagic = 0x59573253;  // "YW2S"
 constexpr uint32_t kWireCommandMagic = 0x59573243;  // "YW2C"
 constexpr uint32_t kWireResponseMagic = 0x59573252; // "YW2R"
+constexpr uint32_t kSdlEventMagic = 0x59573249;    // "YW2I"
 
 constexpr uint16_t kProtocolVersion = 1;
 constexpr size_t kMaxMessageSize = 512 * 1024 * 1024;  // 512MB (initial resource uploads can be large)
@@ -55,7 +56,7 @@ struct SessionReady {
 
 // Header for wire command/response messages
 struct MessageHeader {
-    uint32_t magic;   // kWireCommandMagic or kWireResponseMagic
+    uint32_t magic;   // kWireCommandMagic, kWireResponseMagic, or kSdlEventMagic
     uint32_t length;  // Payload length in bytes
 };
 
