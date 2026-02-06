@@ -17,7 +17,7 @@ When the phone disconnects (app backgrounded, Wi-Fi drop, etc.), the server wait
 
 Both platforms require a one-time Dawn cross-compilation. The prebuilt libraries are committed to the repo via Git LFS, so **if you just cloned the repo you already have them** and can skip the "Build dependencies" step.
 
-You only need to re-run `build-deps.sh` if you update the Dawn submodule.
+You only need to re-run `build-deps.sh` if you update the Dawn version (the commit hash at the top of each script).
 
 ### Common
 
@@ -153,14 +153,12 @@ Create `sq/tools/android/local.properties` with `sdk.dir=<path to your Android S
 
 Google Code Scanner requires Google Play Services. It won't work on emulators or devices without Play Services.
 
-### iOS: build-deps.sh fails
+### build-deps.sh fails
 
-Make sure the Dawn submodule and its dependencies are fully checked out:
+The script clones Dawn into a local build directory on first run. If it fails partway through, delete the build directory and retry:
 
 ```bash
-cd sq
-git submodule update --init vendor/github.com/google/dawn
-python3 vendor/github.com/google/dawn/tools/fetch_dawn_dependencies.py
+rm -rf sq/tools/ios/build    # or sq/tools/android/build
 ```
 
 ### Server dies on disconnect

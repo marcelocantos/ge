@@ -1,6 +1,6 @@
 #!/bin/bash
 # Cross-compile Dawn and SDL3 for iOS arm64.
-# Run once (or after updating submodules).
+# Run once (or after updating the Dawn version).
 #
 # Usage: cd sq/tools/ios && bash build-deps.sh
 
@@ -11,16 +11,23 @@ VENDOR="$(pwd)/../../vendor"
 BUILD="$(pwd)/build"
 JOBS=$(sysctl -n hw.ncpu)
 
+# Dawn version — update this commit hash when upgrading Dawn
+DAWN_COMMIT="4764cd21387f41d979d6bdd662d08ec0f8bf267b"
+DAWN_REPO="https://dawn.googlesource.com/dawn"
+
 # ── Dawn ──────────────────────────────────────────────
 
-DAWN_SRC="$VENDOR/github.com/google/dawn"
+DAWN_SRC="$BUILD/dawn-src"
 DAWN_BUILD="$BUILD/dawn"
 
-if [ ! -e "$DAWN_SRC/.git" ]; then
-    echo "ERROR: Dawn submodule not initialised. Run:"
-    echo "  cd sq && git submodule update --init vendor/github.com/google/dawn"
-    exit 1
+if [ ! -d "$DAWN_SRC/.git" ]; then
+    echo "==> Cloning Dawn..."
+    git clone "$DAWN_REPO" "$DAWN_SRC"
 fi
+
+echo "==> Checking out Dawn $DAWN_COMMIT..."
+git -C "$DAWN_SRC" fetch origin
+git -C "$DAWN_SRC" checkout "$DAWN_COMMIT"
 
 echo "==> Fetching Dawn dependencies..."
 python3 "$DAWN_SRC/tools/fetch_dawn_dependencies.py"
