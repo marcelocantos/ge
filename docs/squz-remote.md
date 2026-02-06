@@ -22,7 +22,7 @@ You only need to re-run `build-deps.sh` if you update the Dawn version (the comm
 ### Common
 
 - macOS with Xcode Command Line Tools
-- The `sq` submodule fully initialised: `git submodule update --init --recursive`
+- The `sq` submodule initialised: `git submodule update --init`
 
 ### iOS
 
@@ -37,6 +37,17 @@ You only need to re-run `build-deps.sh` if you update the Dawn version (the comm
   - CMake (via SDK Manager > SDK Tools)
 - A USB-connected Android device with Developer Mode enabled
 - Java 17+ (bundled with Android Studio, or install separately)
+
+## Desktop receiver
+
+For quick iteration without a phone, use the desktop receiver:
+
+```bash
+make receiver           # Build
+bin/receiver            # Run (connects to localhost:42069 by default)
+```
+
+Run `make run` in another terminal to start the server. The desktop receiver connects automatically without QR scanning.
 
 ## iOS
 
@@ -66,16 +77,6 @@ This runs CMake to generate `sq/tools/ios/build/xcode/Receiver.xcodeproj`.
 
 The app opens a camera viewfinder for QR scanning.
 
-### Connect to the game server
-
-In a separate terminal:
-
-```bash
-make run
-```
-
-The server prints a QR code in the terminal. Point the phone's camera at it. The game should appear on the phone within a few seconds.
-
 ## Android
 
 ### Build dependencies (one-time)
@@ -97,37 +98,23 @@ Create `sq/tools/android/local.properties` (git-ignored) with your SDK path:
 sdk.dir=/Users/YOUR_USERNAME/Library/Android/sdk
 ```
 
-### Build the APK
+### Build and install
 
 ```bash
-make sq/android
-```
-
-Or equivalently:
-
-```bash
-cd sq/tools/android
-./gradlew assembleDebug
-```
-
-The APK is at `sq/tools/android/app/build/outputs/apk/debug/app-debug.apk`.
-
-### Install on device
-
-With your Android device connected via USB:
-
-```bash
+make sq/android         # Build APK
 adb install sq/tools/android/app/build/outputs/apk/debug/app-debug.apk
 ```
 
-Or combine build + install:
+Or build and install in one step:
 
 ```bash
 cd sq/tools/android
 ./gradlew installDebug
 ```
 
-### Connect to the game server
+Launch "Squz Remote" from the app drawer. It opens Google's barcode scanner for QR scanning.
+
+## Connecting to the game server
 
 In a separate terminal:
 
@@ -135,15 +122,16 @@ In a separate terminal:
 make run
 ```
 
-Launch "Squz Remote" from the app drawer. It opens Google's barcode scanner to scan the QR code printed in the terminal. The game should appear on the phone within a few seconds.
+The server prints a QR code in the terminal. Scan it with the phone. The game should appear within a few seconds.
+
+Both devices must be on the same Wi-Fi network. The QR code encodes `squz-remote://<lan-ip>:42069`.
 
 ## Troubleshooting
 
-### Server shows "Waiting for receiver connection..." but the phone doesn't connect
+### Phone doesn't connect after scanning
 
-- Both devices must be on the same Wi-Fi network
 - Check that port 42069 isn't blocked by a firewall
-- The QR code encodes `squz-remote://<lan-ip>:42069` - verify the IP is reachable from the phone
+- Verify the server's LAN IP is reachable from the phone (`ping` from the phone)
 
 ### Android: "SDK location not found"
 
@@ -160,7 +148,3 @@ The script clones Dawn into a local build directory on first run. If it fails pa
 ```bash
 rm -rf sq/tools/ios/build    # or sq/tools/android/build
 ```
-
-### Server dies on disconnect
-
-This was fixed - the server now waits for a new connection when the receiver disconnects. If you're seeing crashes, make sure you have the latest code.

@@ -30,11 +30,12 @@ target_include_directories(Receiver PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
-# Dawn (iOS arm64 — built by build-deps.sh)
+# Dawn (iOS arm64 — prebuilt, committed via LFS)
+set(DAWN_LIB_DIR ${SQ_ROOT}/vendor/dawn/lib/ios-arm64)
 target_link_libraries(Receiver PRIVATE
-    ${DEPS_BUILD}/dawn/src/dawn/libdawn_proc.a
-    ${DEPS_BUILD}/dawn/src/dawn/native/libwebgpu_dawn.a
-    ${DEPS_BUILD}/dawn/src/dawn/wire/libdawn_wire.a
+    ${DAWN_LIB_DIR}/libdawn_proc.a
+    ${DAWN_LIB_DIR}/libwebgpu_dawn.a
+    ${DAWN_LIB_DIR}/libdawn_wire.a
 )
 
 # SDL3 (iOS arm64 — built by build-deps.sh)

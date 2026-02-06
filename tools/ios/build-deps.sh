@@ -58,6 +58,14 @@ cmake -S "$DAWN_SRC" -B "$DAWN_BUILD" \
 echo "==> Building Dawn (this takes a while)..."
 cmake --build "$DAWN_BUILD" -j$JOBS
 
+# ── Install Dawn libs to vendor ───────────────────────
+
+DEST="$VENDOR/dawn/lib/ios-arm64"
+mkdir -p "$DEST"
+cp "$DAWN_BUILD/src/dawn/libdawn_proc.a" "$DEST/"
+cp "$DAWN_BUILD/src/dawn/native/libwebgpu_dawn.a" "$DEST/"
+cp "$DAWN_BUILD/src/dawn/wire/libdawn_wire.a" "$DEST/"
+
 # ── SDL3 ──────────────────────────────────────────────
 
 SDL_SRC="$VENDOR/github.com/libsdl-org/SDL"
