@@ -1,6 +1,6 @@
 # sq/ Engine Module
 
-Reusable rendering and asset engine built on bgfx + SDL3. Consumed as a git submodule; build integration via `Module.mk`.
+Reusable rendering and asset engine built on Dawn (WebGPU) + SDL3. Consumed as a git submodule; build integration via `Module.mk`.
 
 ## Module.mk Integration
 
@@ -41,14 +41,15 @@ Engine-internal variables use the `sq/` prefix. These are read-only — the pare
 
 | Variable | Contents |
 |----------|----------|
-| `sq/INCLUDES` | `-I` flags for engine + vendor headers |
+| `sq/INCLUDES` | `-I` flags for engine + vendor headers (includes Dawn) |
 | `sq/SRC`, `sq/OBJ` | Engine source files and derived objects |
 | `sq/LIB` | Static library path (`$(BUILD_DIR)/libsq.a`) |
-| `sq/FRAMEWORK_LIBS` | bgfx, bx, bimg static libraries |
+| `sq/DAWN_LIBS` | Dawn static libraries (dawn_proc, webgpu_dawn, dawn_wire) |
+| `sq/FRAMEWORK_LIBS` | Alias for `$(sq/DAWN_LIBS)` |
 | `sq/TEST_SRC`, `sq/TEST_OBJ` | Unit test sources and objects |
-| `sq/COMPILED_TEST_SHADERS` | Compiled test shader binaries |
 | `sq/TRIANGLE_OBJ` | Triangle library object (for tools that need triangulation) |
-| `sq/SHADERC` | Path to the bgfx shader compiler binary |
+| `sq/RECEIVER_SRC`, `sq/RECEIVER_OBJ` | Wire receiver source and object |
+| `sq/RECEIVER` | Wire receiver binary path (`bin/receiver`) |
 
 ### Shared Variables
 
@@ -57,44 +58,13 @@ Module.mk provides sensible defaults for project-wide variables. The parent exte
 | Variable | Default | Parent extends with |
 |----------|---------|---------------------|
 | `CLEAN` | `bin build` | Additional directories for `make clean` |
-| `CLEAN_SHADERS` | `$(BUILD_DIR)/shaders $(BUILD_DIR)/sq/shaders` | Additional shader output directories |
-| `COMPILED_SHADERS` | *(empty)* | App shader binaries, e.g. `$(BUILD_DIR)/shaders/foo_vs.bin` |
-| `COMPILE_DB_DEPS` | `$(sq/SRC) $(sq/TEST_SRC) sq/Module.mk` | App sources and Makefile |
+| `COMPILE_DB_DEPS` | `$(sq/SRC) $(sq/TEST_SRC) $(sq/RECEIVER_SRC) sq/Module.mk` | App sources and Makefile |
 
 Example:
 
 ```makefile
 # After the -include sq/Module.mk line:
-COMPILED_SHADERS += \
-	$(BUILD_DIR)/shaders/atlas_vs.bin \
-	$(BUILD_DIR)/shaders/atlas_fs.bin
-
 COMPILE_DB_DEPS += $(SRC) Makefile
-```
-
-### Shader Compilation
-
-Module.mk provides two unified pattern rules (vertex and fragment) that map any `%_vs.sc` / `%_fs.sc` source to `$(BUILD_DIR)/%_vs.bin` / `%_fs.bin`. The rules use `.SECONDEXPANSION:` to automatically locate the `varying.def.sc` in the same directory as the shader source.
-
-To add app shaders, place them in any directory with a `varying.def.sc` alongside them, then append to `COMPILED_SHADERS`:
-
-```
-shaders/
-  atlas_vs.sc
-  atlas_fs.sc
-  varying.def.sc      # must exist in the same directory as the .sc files
-```
-
-```makefile
-COMPILED_SHADERS += \
-	$(BUILD_DIR)/shaders/atlas_vs.bin \
-	$(BUILD_DIR)/shaders/atlas_fs.bin
-```
-
-At runtime, load compiled shaders from `build/`:
-
-```cpp
-auto program = sq::loadProgram("build/shaders/atlas_vs.bin", "build/shaders/atlas_fs.bin");
 ```
 
 ### Generic Targets
@@ -104,10 +74,6 @@ Module.mk defines these targets so the parent doesn't need to:
 | Target | Action |
 |--------|--------|
 | `clean` | `rm -rf $(CLEAN)` |
-| `clean-shaders` | `rm -rf $(CLEAN_SHADERS)` |
-| `shaders` | Build `$(COMPILED_SHADERS)` |
-| `frameworks` | Build bgfx/bx/bimg static libraries |
-| `clean-frameworks` | Remove framework libraries and clean bgfx build |
 | `compile_commands.json` | Generate clangd compile database from `$(COMPILE_DB_DEPS)` |
 
 ### Developer Setup
@@ -124,18 +90,17 @@ init: sq/init
 
 ### Linking
 
-Link the app against `$(sq/LIB)` and the framework libraries:
+Link the app against `$(sq/LIB)` and the Dawn libraries:
 
 ```makefile
-$(APP): $(APP_OBJ) $(sq/LIB) $(sq/FRAMEWORK_LIBS) $(COMPILED_SHADERS)
-	$(CXX) $(APP_OBJ) $(sq/LIB) $(FRAMEWORKS) $(LIBS) $(SDL_LIBS) -o $@
+$(APP): $(APP_OBJ) $(sq/LIB) $(sq/FRAMEWORK_LIBS)
+	$(CXX) $(APP_OBJ) $(sq/LIB) $(sq/DAWN_LIBS) $(FRAMEWORKS) $(SDL_LIBS) -o $@
 ```
 
-Link unit tests against `$(sq/TEST_OBJ)` and depend on `$(sq/COMPILED_TEST_SHADERS)`:
+Link the receiver:
 
 ```makefile
-$(UNIT_TEST): $(sq/TEST_OBJ) $(sq/LIB) $(sq/FRAMEWORK_LIBS) $(sq/COMPILED_TEST_SHADERS)
-	$(CXX) $(sq/TEST_OBJ) $(sq/LIB) $(FRAMEWORKS) $(LIBS) $(SDL_LIBS) -o $@
+receiver: $(sq/RECEIVER)
 ```
 
 ## Module Structure
@@ -144,25 +109,34 @@ $(UNIT_TEST): $(sq/TEST_OBJ) $(sq/LIB) $(sq/FRAMEWORK_LIBS) $(sq/COMPILED_TEST_S
 |-----------|----------|
 | `include/` | Public headers (one per class) |
 | `src/` | Implementation files + test files (`*_test.cpp`) |
-| `shaders/` | Test shaders only (app shaders live in the parent) |
-| `vendor/` | Third-party dependencies: bgfx, bx, bimg, spdlog, linalg.h, earcut.hpp, doctest, Triangle |
+| `tools/` | Standalone binaries (`receiver.cpp`) |
+| `vendor/` | Third-party dependencies: Dawn, spdlog, linalg.h, earcut.hpp, doctest, Triangle, asio |
 
 ## Public API
 
+### Wire Transport
+
+- **`WireSession`** — TCP wire server session. Listens for a receiver connection, performs the Dawn wire handshake, acquires adapter/device/queue through wire. Owns the resulting `GpuContext`. `run()` manages the render loop with signal handling and frame timing. pImpl.
+- **`WireTransport`** — In-process wire transport connecting WireClient to WireServer via memory buffers. Used for testing. pImpl.
+- **`Protocol`** — Wire protocol structs (`DeviceInfo`, `SessionInit`, `SessionReady`, `MessageHeader`) and magic numbers. Header-only.
+
 ### Platform
 
-- **`BgfxContext`** — RAII bgfx init/shutdown with native window handle. pImpl.
-- **`SdlContext`** — RAII SDL3 window creation. pImpl.
+- **`GpuContext`** — WebGPU device/queue/surface lifecycle. Supports native init (from `SdlContext`) or wire-mode init (device, queue, surface, format, dimensions). `currentFrameView()` + `present()` for frame rendering. pImpl.
+- **`SdlContext`** — RAII SDL3 window creation with Metal layer for WebGPU surface. pImpl.
 
-### GPU Resource Management
+### GPU Resources
 
-- **`GpuResource<T>`** — RAII move-only wrapper for any bgfx handle. Throws on invalid handle at construction. Type aliases: `VertexBufferHandle`, `IndexBufferHandle`, `ShaderHandle`, `ProgramHandle`, `TextureHandle`, `UniformHandle`, `FrameBufferHandle`.
-- **`CaptureTarget`** — Offscreen framebuffer + RGBA8 color texture for pixel readback.
-- **`ShaderUtil`** — `sq::loadProgram(vsPath, fsPath)` loads compiled shader binaries into a `ProgramHandle`.
+- **`WgpuResource<T>`** — RAII move-only wrapper for WebGPU handles. Type aliases: `BufferHandle`, `TextureHandle`, `SamplerHandle`, etc.
+- **`Pipeline`** — WebGPU render pipeline created from WGSL shader source with bind group layouts. pImpl.
+- **`BindGroupBuilder`** — Builder pattern for constructing bind groups with buffers, textures, and samplers.
+- **`UniformBuffer`** — GPU buffer for uniform data with queue-based writes.
+- **`CaptureTarget`** — Offscreen RGBA8 render target for pixel readback.
+- **`ShaderUtil`** — `sq::loadProgram()` loads compiled shader binaries.
 
 ### Assets
 
-- **`Mesh`** — Vertex + index buffer pair. `Mesh::fromStream()` reads binary format (vertex count, index count, vertex data, index data). Vertex layout: position (3f) + texcoord (2f).
+- **`Mesh`** — Vertex + index buffer pair. `Mesh::fromStream()` reads binary format. Vertex layout: position (3f) + texcoord (2f).
 - **`Texture`** — GPU texture from image file. `Texture::fromFile()` loads via SDL3_image, converts to RGBA8.
 - **`Model`** — Pairs a `Mesh` with a `const Texture*`.
 - **`ModelFormat`** — `sq::MeshVertex` struct (x, y, z, u, v).
@@ -170,7 +144,7 @@ $(UNIT_TEST): $(sq/TEST_OBJ) $(sq/LIB) $(sq/FRAMEWORK_LIBS) $(sq/COMPILED_TEST_S
 ### Manifest System
 
 - **`ManifestSchema`** — JSON-serializable types: `MeshRef`, `ModelDef<Meta>`, `ManifestDoc<Meta>`. Templated on application-specific metadata.
-- **`ManifestLoader`** — `sq::loadManifest<Meta>(path)` loads a JSON manifest + binary mesh pack + textures. Returns `std::unique_ptr<Manifest<Meta>>` containing `textures` map, `entries` vector (each with `name`, `parts[]`, `metadata`).
+- **`ManifestLoader`** — `sq::loadManifest<Meta>(path)` loads a JSON manifest + binary mesh pack + textures. Returns `std::unique_ptr<Manifest<Meta>>`.
 
 ### Animation
 
@@ -180,7 +154,7 @@ $(UNIT_TEST): $(sq/TEST_OBJ) $(sq/LIB) $(sq/FRAMEWORK_LIBS) $(sq/COMPILED_TEST_S
 
 ### Testing
 
-- **`ImageDiff`** — `imgdiff::compareCPU()` for pixel-level RMS comparison. `imgdiff::Comparator` for GPU-accelerated comparison via mipmap reduction.
+- **`ImageDiff`** — `imgdiff::compareCPU()` for pixel-level RMS comparison.
 
 ## Tests
 
@@ -190,11 +164,10 @@ Unit tests use doctest. `sq/src/main_test.cpp` provides the test runner; other `
 make unit-test    # Build and run sq unit tests
 ```
 
-Test shaders in `sq/shaders/` are compiled by rules in `Module.mk` and used by `BgfxContext_test.cpp` for GPU rendering tests.
-
 ## Namespaces
 
-- `sq::` — Engine types (`CaptureTarget`, `loadManifest`, `loadProgram`, `MeshVertex`)
+- `sq::` — Engine types (`GpuContext`, `WireSession`, `Pipeline`, `loadManifest`, `loadProgram`, `MeshVertex`)
+- `sq::wire::` — Wire protocol constants and types (`DeviceInfo`, `SessionInit`, `kMaxMessageSize`)
 - `sq::detail::` — Internal helpers (`loadMeshPack`)
 - `imgdiff::` — Image comparison utilities
-- Top-level — `GpuResource`, `Mesh`, `Texture`, `Model`, `DampedRotation`, `DampedValue`, `DeltaTimer`, `BgfxContext`, `SdlContext`
+- Top-level — `Mesh`, `Texture`, `Model`, `DampedRotation`, `DampedValue`, `DeltaTimer`, `SdlContext`
