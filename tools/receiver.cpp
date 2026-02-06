@@ -78,14 +78,11 @@ private:
     std::vector<char> buffer_;
 };
 
+// Throws on write failure (caller treats as disconnect).
 void sendEvent(asio::ip::tcp::socket& socket, const SDL_Event& event) {
     wire::MessageHeader header{wire::kSdlEventMagic, sizeof(SDL_Event)};
-    try {
-        asio::write(socket, asio::buffer(&header, sizeof(header)));
-        asio::write(socket, asio::buffer(&event, sizeof(event)));
-    } catch (const std::exception& e) {
-        SPDLOG_WARN("Failed to send SDL event: {}", e.what());
-    }
+    asio::write(socket, asio::buffer(&header, sizeof(header)));
+    asio::write(socket, asio::buffer(&event, sizeof(event)));
 }
 
 class Receiver {
@@ -330,7 +327,12 @@ private:
                     case SDL_EVENT_MOUSE_BUTTON_DOWN:
                     case SDL_EVENT_MOUSE_BUTTON_UP:
                     case SDL_EVENT_MOUSE_MOTION:
-                        sendEvent(socket, event);
+                        try {
+                            sendEvent(socket, event);
+                        } catch (const std::exception&) {
+                            SPDLOG_WARN("Connection lost (event send)");
+                            return ConnectionResult::Disconnected;
+                        }
                         break;
                 }
             }
