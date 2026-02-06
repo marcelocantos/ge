@@ -71,6 +71,44 @@
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
     _previewLayer.frame = self.view.bounds;
+
+    // Sync preview rotation with interface orientation
+    AVCaptureConnection *connection = _previewLayer.connection;
+    if (!connection) return;
+
+    UIInterfaceOrientation orientation =
+        self.view.window.windowScene.interfaceOrientation;
+
+    if (@available(iOS 17.0, *)) {
+        CGFloat angle;
+        switch (orientation) {
+        case UIInterfaceOrientationPortrait:           angle = 90;  break;
+        case UIInterfaceOrientationPortraitUpsideDown: angle = 270; break;
+        case UIInterfaceOrientationLandscapeRight:     angle = 0;   break;
+        case UIInterfaceOrientationLandscapeLeft:      angle = 180; break;
+        default:                                       angle = 90;  break;
+        }
+        if ([connection isVideoRotationAngleSupported:angle])
+            connection.videoRotationAngle = angle;
+    } else {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+        AVCaptureVideoOrientation vo;
+        switch (orientation) {
+        case UIInterfaceOrientationPortrait:
+            vo = AVCaptureVideoOrientationPortrait; break;
+        case UIInterfaceOrientationPortraitUpsideDown:
+            vo = AVCaptureVideoOrientationPortraitUpsideDown; break;
+        case UIInterfaceOrientationLandscapeRight:
+            vo = AVCaptureVideoOrientationLandscapeRight; break;
+        case UIInterfaceOrientationLandscapeLeft:
+            vo = AVCaptureVideoOrientationLandscapeLeft; break;
+        default:
+            vo = AVCaptureVideoOrientationPortrait; break;
+        }
+        connection.videoOrientation = vo;
+#pragma clang diagnostic pop
+    }
 }
 
 - (void)captureOutput:(AVCaptureOutput *)output
