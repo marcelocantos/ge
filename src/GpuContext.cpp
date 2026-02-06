@@ -131,7 +131,7 @@ GpuContext::GpuContext(void* nativeLayer, int width, int height, WireTransport* 
         .format = m->swapChainFormat,
         .width = static_cast<uint32_t>(width),
         .height = static_cast<uint32_t>(height),
-        .alphaMode = wgpu::CompositeAlphaMode::Opaque,
+        .alphaMode = wgpu::CompositeAlphaMode::Auto,
         .presentMode = wgpu::PresentMode::Fifo,
     };
     m->surface.Configure(&config);
@@ -159,7 +159,7 @@ GpuContext::GpuContext(wgpu::Device device, wgpu::Queue queue, wgpu::Surface sur
         .format = format,
         .width = static_cast<uint32_t>(width),
         .height = static_cast<uint32_t>(height),
-        .alphaMode = wgpu::CompositeAlphaMode::Opaque,
+        .alphaMode = wgpu::CompositeAlphaMode::Auto,
         .presentMode = wgpu::PresentMode::Fifo,
     };
     surface.Configure(&config);
@@ -214,7 +214,7 @@ void GpuContext::resize(linalg::vec<int,2> size) {
         .format = m->swapChainFormat,
         .width = static_cast<uint32_t>(size.x),
         .height = static_cast<uint32_t>(size.y),
-        .alphaMode = wgpu::CompositeAlphaMode::Opaque,
+        .alphaMode = wgpu::CompositeAlphaMode::Auto,
         .presentMode = wgpu::PresentMode::Fifo,
     };
     m->surface.Configure(&config);

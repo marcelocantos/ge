@@ -9,6 +9,7 @@ set(DEPS_BUILD ${CMAKE_CURRENT_SOURCE_DIR}/build)
 set(SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/main.mm
     ${SQ_ROOT}/tools/receiver_core.cpp
+    ${SQ_ROOT}/tools/receiver_platform_apple.cpp
     ${SQ_ROOT}/src/WireTransport.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/QRScanner.mm
 )

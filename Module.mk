@@ -43,7 +43,7 @@ sq/TRIANGLE_OBJ = $(BUILD_DIR)/sq/vendor/triangle.o
 sq/TRIANGLE_CFLAGS = -O2 -Isq/vendor/include -DTRILIBRARY -DREAL=double -DANSI_DECLARATORS -DNO_TIMER
 
 # Wire receiver tool (standalone binary)
-sq/RECEIVER_SRC = sq/tools/receiver.cpp sq/tools/receiver_core.cpp
+sq/RECEIVER_SRC = sq/tools/receiver.cpp sq/tools/receiver_core.cpp sq/tools/receiver_platform_apple.cpp
 sq/RECEIVER_OBJ = $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(sq/RECEIVER_SRC))
 sq/RECEIVER = bin/receiver
 
@@ -107,6 +107,12 @@ sq/ios:
 	    -DCMAKE_OSX_ARCHITECTURES=arm64 \
 	    -DCMAKE_OSX_DEPLOYMENT_TARGET=16.0
 	@echo "Open sq/tools/ios/build/xcode/Receiver.xcodeproj in Xcode"
+
+# Android APK build
+.PHONY: sq/android
+sq/android:
+	cd sq/tools/android && ./gradlew assembleDebug
+	@echo "APK: sq/tools/android/app/build/outputs/apk/debug/app-debug.apk"
 
 # ────────────────────────────────────────────────
 # Generic targets (use CLEAN, CLEAN_SHADERS, COMPILE_DB_DEPS)

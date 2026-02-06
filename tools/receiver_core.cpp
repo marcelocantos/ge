@@ -5,9 +5,9 @@
 #include <asio.hpp>
 
 #include "Receiver.h"
+#include "receiver_platform.h"
 
 #include <SDL3/SDL.h>
-#include <SDL3/SDL_metal.h>
 #include <spdlog/spdlog.h>
 #include <dawn/native/DawnNative.h>
 #include <dawn/dawn_proc.h>
@@ -81,7 +81,6 @@ struct Receiver::M {
     int backoffMs = 10;
 
     SDL_Window* window = nullptr;
-    SDL_MetalView metalView = nullptr;
 
     std::unique_ptr<dawn::native::Instance> dawnInstance;
     wgpu::Adapter adapter;
@@ -141,22 +140,13 @@ void Receiver::M::initWindow() {
 
     SPDLOG_INFO("SDL3 initialized");
 
-    window = SDL_CreateWindow("Wire Receiver", width, height, SDL_WINDOW_METAL);
+    window = SDL_CreateWindow("Wire Receiver", width, height, platform::windowFlags());
     if (!window) {
         SDL_Quit();
         throw std::runtime_error(std::string("SDL_CreateWindow failed: ") + SDL_GetError());
     }
 
     SPDLOG_INFO("Window created: {}x{}", width, height);
-
-    metalView = SDL_Metal_CreateView(window);
-    if (!metalView) {
-        SDL_DestroyWindow(window);
-        SDL_Quit();
-        throw std::runtime_error(std::string("SDL_Metal_CreateView failed: ") + SDL_GetError());
-    }
-
-    SPDLOG_INFO("Metal view created");
 }
 
 void Receiver::M::initGpu() {
@@ -167,18 +157,11 @@ void Receiver::M::initGpu() {
     wgpu::InstanceDescriptor instanceDesc{};
     dawnInstance = std::make_unique<dawn::native::Instance>(&instanceDesc);
 
-    void* metalLayer = SDL_Metal_GetLayer(metalView);
-    WGPUSurfaceSourceMetalLayer metalSource = WGPU_SURFACE_SOURCE_METAL_LAYER_INIT;
-    metalSource.layer = metalLayer;
-
-    WGPUSurfaceDescriptor surfaceDesc{};
-    surfaceDesc.nextInChain = reinterpret_cast<WGPUChainedStruct*>(&metalSource);
-
-    surface = wgpu::Surface::Acquire(
-        wgpuInstanceCreateSurface(dawnInstance->Get(), &surfaceDesc));
-    if (!surface) {
+    auto rawSurface = platform::createSurface(dawnInstance->Get(), window);
+    if (!rawSurface) {
         throw std::runtime_error("Failed to create WebGPU surface");
     }
+    surface = wgpu::Surface::Acquire(rawSurface);
 
     wgpu::RequestAdapterOptions adapterOpts{
         .powerPreference = wgpu::PowerPreference::HighPerformance,
