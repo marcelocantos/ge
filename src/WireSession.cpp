@@ -336,8 +336,8 @@ void WireSession::flush() {
     m->serializer->Flush();
 }
 
-void WireSession::run(std::function<void(float dt)> onFrame,
-                      std::function<void(const SDL_Event&)> onEvent) {
+WireSession::StopReason WireSession::run(std::function<void(float dt)> onFrame,
+                                         std::function<void(const SDL_Event&)> onEvent) {
     m->onEvent = std::move(onEvent);
 
     std::signal(SIGINT, signalHandler);
@@ -353,14 +353,20 @@ void WireSession::run(std::function<void(float dt)> onFrame,
     while (g_running) {
         float dt = frameTimer.tick();
 
-        flush();
-        onFrame(dt);
-        flush();
+        try {
+            flush();
+            onFrame(dt);
+            flush();
+        } catch (const asio::system_error& e) {
+            SPDLOG_WARN("Receiver disconnected: {}", e.what());
+            return StopReason::Disconnected;
+        }
 
         SDL_Delay(16);
     }
 
     SPDLOG_INFO("Shutting down...");
+    return StopReason::Signal;
 }
 
 } // namespace sq

@@ -30,12 +30,14 @@ public:
     // Flush wire commands to receiver and process responses.
     void flush();
 
+    enum class StopReason { Signal, Disconnected };
+
     // Run the render loop.  Installs SIGINT/SIGTERM handlers, calls onFrame
     // each iteration with the frame delta, and manages flush cadence.
     // onEvent (optional) is called for each SDL event received from the receiver.
-    // Returns when the process receives a termination signal.
-    void run(std::function<void(float dt)> onFrame,
-             std::function<void(const SDL_Event&)> onEvent = {});
+    // Returns Signal on SIGINT/SIGTERM, Disconnected if the receiver drops.
+    StopReason run(std::function<void(float dt)> onFrame,
+                   std::function<void(const SDL_Event&)> onEvent = {});
 
 private:
     struct M;
