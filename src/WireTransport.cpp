@@ -69,12 +69,20 @@ struct WireTransport::M {
     std::unique_ptr<dawn::wire::WireClient> wireClient;
     std::unique_ptr<dawn::wire::WireServer> wireServer;
     const DawnProcTable* wireProcs = nullptr;
+    const DawnProcTable* nativeProcs = nullptr;
+
+    // Stored from injectInstance for surface injection
+    WGPUInstance clientInstance = nullptr;
+    dawn::wire::Handle instanceHandle = {0, 0};
 };
 
 WireTransport::WireTransport() : m(std::make_unique<M>()) {}
 WireTransport::~WireTransport() = default;
 
 void WireTransport::initialize(const DawnProcTable& nativeProcs) {
+    // Store native procs for creating resources to inject
+    m->nativeProcs = &nativeProcs;
+
     // Create serializers for bidirectional communication
     m->clientSerializer = std::make_unique<MemorySerializer>();
     m->serverSerializer = std::make_unique<MemorySerializer>();
@@ -102,6 +110,10 @@ const DawnProcTable& WireTransport::wireProcs() const {
     return *m->wireProcs;
 }
 
+const DawnProcTable& WireTransport::nativeProcs() const {
+    return *m->nativeProcs;
+}
+
 WGPUInstance WireTransport::injectInstance(WGPUInstance nativeInstance) {
     // Reserve a client-side instance
     auto reservation = m->wireClient->ReserveInstance();
@@ -112,10 +124,37 @@ WGPUInstance WireTransport::injectInstance(WGPUInstance nativeInstance) {
         return nullptr;
     }
 
+    // Store for later use in injectSurface
+    m->clientInstance = reservation.instance;
+    m->instanceHandle = reservation.handle;
+
     SPDLOG_INFO("Injected instance: handle={{id={}, gen={}}}",
                 reservation.handle.id, reservation.handle.generation);
 
     return reservation.instance;
+}
+
+WGPUSurface WireTransport::injectSurface(WGPUSurface nativeSurface) {
+    if (!m->clientInstance) {
+        SPDLOG_ERROR("injectSurface: must call injectInstance first");
+        return nullptr;
+    }
+
+    // Reserve a client-side surface using the stored instance
+    // NOTE: ReserveSurface currently blocks - this is a known issue.
+    // See: https://github.com/user/project/issues/XXX
+    auto reservation = m->wireClient->ReserveSurface(m->clientInstance, nullptr);
+
+    // Inject the native surface into the server using the stored instance handle
+    if (!m->wireServer->InjectSurface(nativeSurface, reservation.handle, m->instanceHandle)) {
+        SPDLOG_ERROR("Failed to inject surface into wire server");
+        return nullptr;
+    }
+
+    SPDLOG_INFO("Injected surface: handle={{id={}, gen={}}}",
+                reservation.handle.id, reservation.handle.generation);
+
+    return reservation.surface;
 }
 
 void WireTransport::flush() {

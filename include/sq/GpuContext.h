@@ -6,13 +6,17 @@
 
 namespace sq {
 
+class WireTransport;  // Forward declaration
+
 // RAII wrapper for WebGPU lifecycle (device, queue, surface/swapchain).
 // Uses whatever procs are set via dawnProcSetProcs() - call that in main()
 // before creating GpuContext to choose native vs wire rendering.
 class GpuContext {
 public:
-    // Initialize WebGPU with a native Metal layer (CAMetalLayer* on macOS)
-    GpuContext(void* nativeLayer, int width, int height);
+    // Initialize WebGPU with a native Metal layer (CAMetalLayer* on macOS).
+    // If wireTransport is provided, native resources are created and injected
+    // into the wire, with all subsequent operations going through the wire.
+    GpuContext(void* nativeLayer, int width, int height, WireTransport* wireTransport = nullptr);
     ~GpuContext();
 
     GpuContext(const GpuContext&) = delete;

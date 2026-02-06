@@ -25,9 +25,18 @@ public:
     // Use this instead of native procs for all WebGPU calls.
     const DawnProcTable& wireProcs() const;
 
+    // Get the native proc table (for creating resources to inject).
+    const DawnProcTable& nativeProcs() const;
+
     // Reserve a client-side instance handle and inject the server-side instance.
     // Returns the client-side WGPUInstance to use.
+    // Also stores the wire handle internally for surface injection.
     WGPUInstance injectInstance(WGPUInstance nativeInstance);
+
+    // Reserve a client-side surface handle and inject the server-side surface.
+    // Must be called after injectInstance.
+    // Returns the client-side WGPUSurface to use.
+    WGPUSurface injectSurface(WGPUSurface nativeSurface);
 
     // Flush pending commands from client to server and responses back.
     // Call this after batches of WebGPU operations.
