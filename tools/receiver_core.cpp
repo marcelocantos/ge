@@ -305,9 +305,6 @@ ConnectionResult Receiver::M::connectAndRun() {
                         return ConnectionResult::Quit;
                     break;
                 case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
-                case SDL_EVENT_FINGER_DOWN:
-                case SDL_EVENT_FINGER_MOTION:
-                case SDL_EVENT_FINGER_UP:
                 case SDL_EVENT_MOUSE_BUTTON_DOWN:
                 case SDL_EVENT_MOUSE_BUTTON_UP:
                 case SDL_EVENT_MOUSE_MOTION:
