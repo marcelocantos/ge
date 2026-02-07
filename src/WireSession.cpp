@@ -287,6 +287,13 @@ WireSession::WireSession()
             SPDLOG_ERROR("WebGPU error: {}", std::string_view(message.data, message.length));
         });
 
+    wgpu::FeatureName astcFeature = wgpu::FeatureName::TextureCompressionASTC;
+    if (adapter.HasFeature(astcFeature)) {
+        deviceDesc.requiredFeatureCount = 1;
+        deviceDesc.requiredFeatures = &astcFeature;
+        SPDLOG_INFO("Requesting ASTC texture compression");
+    }
+
     adapter.RequestDevice(
         &deviceDesc,
         wgpu::CallbackMode::AllowProcessEvents,

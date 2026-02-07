@@ -109,6 +109,13 @@ GpuContext::GpuContext(void* nativeLayer, int width, int height, WireTransport* 
                         std::string_view(message.data, message.length));
         });
 
+    wgpu::FeatureName astcFeature = wgpu::FeatureName::TextureCompressionASTC;
+    if (m->adapter.HasFeature(astcFeature)) {
+        deviceDesc.requiredFeatureCount = 1;
+        deviceDesc.requiredFeatures = &astcFeature;
+        SPDLOG_INFO("Requesting ASTC texture compression");
+    }
+
     // Create device (synchronous for both native and wire mode with native adapter)
     m->device = m->adapter.CreateDevice(&deviceDesc);
 

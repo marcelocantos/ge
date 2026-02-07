@@ -10,3 +10,6 @@
 [submodule "vendor/github.com/nayuki/QR-Code-generator"]
 	path = vendor/github.com/nayuki/QR-Code-generator
 	url = https://github.com/nayuki/QR-Code-generator
+[submodule "vendor/github.com/ARM-software/astc-encoder"]
+	path = vendor/github.com/ARM-software/astc-encoder
+	url = https://github.com/ARM-software/astc-encoder.git
