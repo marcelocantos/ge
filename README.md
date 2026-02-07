@@ -1,10 +1,10 @@
 # sq
 
-Rendering and asset engine for bgfx + SDL3 applications. Provides RAII resource management, manifest-driven asset loading, and animation utilities.
+Rendering and asset engine for Dawn (WebGPU) + SDL3 applications. Provides RAII resource management, manifest-driven asset loading, and animation utilities.
 
 ## Dependencies
 
-- [bgfx](https://github.com/bkaradzic/bgfx) — Cross-platform rendering
+- [Dawn](https://dawn.googlesource.com/dawn) — WebGPU implementation
 - [SDL3](https://libsdl.org/) + SDL3_image — Windowing, input, image loading
 - [spdlog](https://github.com/gabime/spdlog) — Logging (header-only)
 - [linalg.h](https://github.com/sgorsten/linalg) — Linear algebra (header-only)
@@ -39,14 +39,14 @@ Module.mk       Build rules and exported variables
 
 | Header | Description |
 |--------|-------------|
-| `BgfxContext.h` | RAII bgfx initialization from a native window handle |
+| `GpuContext.h` | WebGPU device/queue/surface lifecycle |
 | `SdlContext.h` | RAII SDL3 window and event loop setup |
 
 ### Resources
 
 | Header | Description |
 |--------|-------------|
-| `GpuResource.h` | Move-only RAII wrapper for bgfx handles (`VertexBufferHandle`, `ProgramHandle`, `TextureHandle`, etc.) |
+| `WgpuResource.h` | Move-only RAII wrapper for WebGPU handles (`BufferHandle`, `TextureHandle`, `SamplerHandle`, etc.) |
 | `CaptureTarget.h` | Offscreen framebuffer with RGBA8 color texture for readback |
 | `ShaderUtil.h` | `sq::loadProgram()` — load compiled vertex + fragment shaders |
 

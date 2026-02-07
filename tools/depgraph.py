@@ -51,7 +51,7 @@ def normalize_header(inc: str) -> str | None:
     if inc in STL_HEADERS:
         return None
     # Skip system/vendor headers by prefix
-    if inc.startswith(('std', 'bgfx/', 'bx/', 'bimg/', 'SDL', 'spdlog/')):
+    if inc.startswith(('std', 'SDL', 'spdlog/')):
         return None
     # Skip other vendor headers
     if '/' in inc and inc.split('/')[0] in ('nlohmann', 'doctest'):

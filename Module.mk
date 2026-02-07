@@ -139,7 +139,7 @@ clean-depgraph:
 	rm -f deps.dot deps.svg deps.png
 
 # Generate compile_commands.json for IDE support (clangd, VS Code).
-# compiledb captures all sub-make commands (including vendor bgfx build),
+# compiledb captures all sub-make commands,
 # so we filter to only project entries afterward.
 compile_commands.json: $(COMPILE_DB_DEPS)
 	@compiledb -n make
