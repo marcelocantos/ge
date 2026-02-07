@@ -16,6 +16,9 @@ set(SOURCES
 
 add_executable(Receiver MACOSX_BUNDLE ${SOURCES})
 
+# receiver_platform_apple.cpp uses ObjC (CAMetalLayer) — compile as ObjC++
+set_source_files_properties(${SQ_ROOT}/tools/receiver_platform_apple.cpp PROPERTIES LANGUAGE OBJCXX)
+
 target_compile_definitions(Receiver PRIVATE ASIO_STANDALONE SQ_IOS)
 
 # Headers (engine + header-only vendors + iOS-specific)
@@ -30,18 +33,8 @@ target_include_directories(Receiver PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
-# Dawn (iOS arm64 — prebuilt, committed via LFS)
-set(DAWN_LIB_DIR ${SQ_ROOT}/vendor/dawn/lib/ios-arm64)
-target_link_libraries(Receiver PRIVATE
-    ${DAWN_LIB_DIR}/libdawn_proc.a
-    ${DAWN_LIB_DIR}/libwebgpu_dawn.a
-    ${DAWN_LIB_DIR}/libdawn_wire.a
-)
-
-# SDL3 (iOS arm64 — built by build-deps.sh)
-target_link_libraries(Receiver PRIVATE
-    ${DEPS_BUILD}/sdl3/libSDL3.a
-)
+# Dawn + SDL3 — link by name, resolve paths per SDK at build time
+target_link_libraries(Receiver PRIVATE -ldawn_proc -lwebgpu_dawn -ldawn_wire -lSDL3)
 
 # iOS frameworks
 target_link_libraries(Receiver PRIVATE
@@ -66,6 +59,11 @@ target_link_libraries(Receiver PRIVATE
     "-lobjc"
 )
 
+set(DAWN_DEVICE_DIR ${SQ_ROOT}/vendor/dawn/lib/ios-arm64)
+set(DAWN_SIM_DIR    ${SQ_ROOT}/vendor/dawn/lib/ios-arm64-simulator)
+set(SDL_DEVICE_DIR  ${DEPS_BUILD}/sdl3)
+set(SDL_SIM_DIR     ${DEPS_BUILD}/sdl3-simulator)
+
 set_target_properties(Receiver PROPERTIES
     MACOSX_BUNDLE_GUI_IDENTIFIER com.squz.receiver
     MACOSX_BUNDLE_BUNDLE_VERSION 1
@@ -74,4 +72,8 @@ set_target_properties(Receiver PROPERTIES
     XCODE_ATTRIBUTE_TARGETED_DEVICE_FAMILY "1,2"
     XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "com.squz.receiver"
     XCODE_ATTRIBUTE_DEVELOPMENT_TEAM "SWA3H3N7TW"
+    "XCODE_ATTRIBUTE_LIBRARY_SEARCH_PATHS[sdk=iphoneos*]" "${DAWN_DEVICE_DIR} ${SDL_DEVICE_DIR}"
+    "XCODE_ATTRIBUTE_LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]" "${DAWN_SIM_DIR} ${SDL_SIM_DIR}"
+    XCODE_GENERATE_SCHEME TRUE
+    XCODE_SCHEME_ENABLE_GPU_API_VALIDATION OFF
 )

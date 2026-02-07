@@ -78,6 +78,8 @@ struct Receiver::M {
     uint16_t port;
     int width;
     int height;
+    int pixelWidth = 0;
+    int pixelHeight = 0;
     int backoffMs = 10;
 
     SDL_Window* window = nullptr;
@@ -146,7 +148,8 @@ void Receiver::M::initWindow() {
         throw std::runtime_error(std::string("SDL_CreateWindow failed: ") + SDL_GetError());
     }
 
-    SPDLOG_INFO("Window created: {}x{}", width, height);
+    SDL_GetWindowSizeInPixels(window, &pixelWidth, &pixelHeight);
+    SPDLOG_INFO("Window created: {}x{} ({}x{} pixels)", width, height, pixelWidth, pixelHeight);
 }
 
 void Receiver::M::initGpu() {
@@ -221,10 +224,16 @@ ConnectionResult Receiver::M::connectAndRun() {
     }
     SPDLOG_INFO("Connected to game server");
 
+    // Sync the GPU layer's drawable size with the window — on iOS the
+    // CAMetalLayer may not auto-resize after rotation.
+    platform::syncDrawableSize(window, &pixelWidth, &pixelHeight);
+    SDL_GetWindowSize(window, &width, &height);
+    SPDLOG_INFO("DeviceInfo: {}x{} pixels ({}x{} points)", pixelWidth, pixelHeight, width, height);
+
     wire::DeviceInfo deviceInfo{};
-    deviceInfo.width = static_cast<uint16_t>(width);
-    deviceInfo.height = static_cast<uint16_t>(height);
-    deviceInfo.pixelRatio = 2;
+    deviceInfo.width = static_cast<uint16_t>(pixelWidth);
+    deviceInfo.height = static_cast<uint16_t>(pixelHeight);
+    deviceInfo.pixelRatio = static_cast<uint16_t>(width > 0 ? pixelWidth / width : 2);
     deviceInfo.preferredFormat = static_cast<uint32_t>(swapChainFormat);
 
     try {
@@ -295,6 +304,7 @@ ConnectionResult Receiver::M::connectAndRun() {
                     if (event.key.key == SDLK_Q)
                         return ConnectionResult::Quit;
                     break;
+                case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
                 case SDL_EVENT_FINGER_DOWN:
                 case SDL_EVENT_FINGER_MOTION:
                 case SDL_EVENT_FINGER_UP:
