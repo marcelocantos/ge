@@ -34,4 +34,8 @@ WGPUSurface createSurface(WGPUInstance instance, SDL_Window* window) {
     return wgpuInstanceCreateSurface(instance, &surfaceDesc);
 }
 
+void syncDrawableSize(SDL_Window* window, int* w, int* h) {
+    SDL_GetWindowSizeInPixels(window, w, h);
+}
+
 } // namespace platform
