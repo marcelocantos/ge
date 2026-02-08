@@ -103,6 +103,7 @@ build_sdl() {
     local SYSROOT="$1"   # iphoneos or iphonesimulator
     local SUFFIX="$2"    # "" or "-simulator"
     local SDL_B="$BUILD/sdl3${SUFFIX}"
+    local DEST="$VENDOR/sdl3/lib/ios-arm64${SUFFIX}"
 
     if [ ! -e "$SDL_SRC/.git" ]; then
         echo "ERROR: SDL submodule not initialised. Run:"
@@ -122,7 +123,10 @@ build_sdl() {
 
     echo "==> Building SDL3 ($SYSROOT)..."
     cmake --build "$SDL_B" -j"$JOBS"
-    echo "==> SDL3 ($SYSROOT) built at $SDL_B"
+
+    mkdir -p "$DEST"
+    cp "$SDL_B/libSDL3.a" "$DEST/"
+    echo "==> SDL3 ($SYSROOT) installed to $DEST"
 }
 
 # ── Build ────────────────────────────────────────────
@@ -138,4 +142,4 @@ if $BUILD_SIM; then
 fi
 
 echo ""
-echo "Done. Libraries are in $BUILD/"
+echo "Done. Libraries are in $VENDOR/dawn/lib/ and $VENDOR/sdl3/lib/"

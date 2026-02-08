@@ -61,8 +61,8 @@ target_link_libraries(Receiver PRIVATE
 
 set(DAWN_DEVICE_DIR ${SQ_ROOT}/vendor/dawn/lib/ios-arm64)
 set(DAWN_SIM_DIR    ${SQ_ROOT}/vendor/dawn/lib/ios-arm64-simulator)
-set(SDL_DEVICE_DIR  ${DEPS_BUILD}/sdl3)
-set(SDL_SIM_DIR     ${DEPS_BUILD}/sdl3-simulator)
+set(SDL_DEVICE_DIR  ${SQ_ROOT}/vendor/sdl3/lib/ios-arm64)
+set(SDL_SIM_DIR     ${SQ_ROOT}/vendor/sdl3/lib/ios-arm64-simulator)
 
 set_target_properties(Receiver PROPERTIES
     MACOSX_BUNDLE_GUI_IDENTIFIER com.squz.receiver
