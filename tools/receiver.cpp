@@ -1,7 +1,8 @@
 // Desktop wire receiver entry point.
-// Usage: bin/receiver [host:port] [width] [height]
+// Usage: bin/receiver [--maximized] [host:port] [width] [height]
 
 #include "Receiver.h"
+#include <cstring>
 #include <spdlog/spdlog.h>
 #include <string>
 
@@ -25,14 +26,24 @@ int main(int argc, char* argv[]) {
     uint16_t port = kDefaultPort;
     int width = kDefaultWidth;
     int height = kDefaultHeight;
+    bool maximized = false;
 
-    if (argc >= 2) parseHostPort(argv[1], host, port);
-    if (argc >= 3) width = std::stoi(argv[2]);
-    if (argc >= 4) height = std::stoi(argv[3]);
+    // Consume flags, then positional args
+    int pos = 1;
+    while (pos < argc && argv[pos][0] == '-') {
+        if (std::strcmp(argv[pos], "--maximized") == 0) {
+            maximized = true;
+        }
+        pos++;
+    }
+    if (pos < argc) parseHostPort(argv[pos++], host, port);
+    if (pos < argc) width = std::stoi(argv[pos++]);
+    if (pos < argc) height = std::stoi(argv[pos++]);
 
     SPDLOG_INFO("Wire Receiver starting...");
-    SPDLOG_INFO("Target: {}:{}, dimensions: {}x{}", host, port, width, height);
+    SPDLOG_INFO("Target: {}:{}, dimensions: {}x{}{}", host, port, width, height,
+                maximized ? " (maximized)" : "");
 
-    Receiver receiver(host, port, width, height);
+    Receiver receiver(host, port, width, height, maximized);
     return receiver.run();
 }

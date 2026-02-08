@@ -10,7 +10,8 @@ constexpr uint16_t kDefaultPort = 42069;
 
 class Receiver {
 public:
-    Receiver(std::string host, uint16_t port, int width, int height);
+    Receiver(std::string host, uint16_t port, int width, int height,
+             bool maximized = false);
     ~Receiver();
     int run();
 

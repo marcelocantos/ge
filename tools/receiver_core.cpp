@@ -410,6 +410,7 @@ struct Receiver::M {
     int pixelWidth = 0;
     int pixelHeight = 0;
     int backoffMs = 10;
+    bool maximized = false;
 
     SDL_Window* window = nullptr;
 
@@ -425,12 +426,14 @@ struct Receiver::M {
     ConnectionResult connectAndRun();
 };
 
-Receiver::Receiver(std::string host, uint16_t port, int width, int height)
+Receiver::Receiver(std::string host, uint16_t port, int width, int height,
+                   bool maximized)
     : m(std::make_unique<M>()) {
     m->host = std::move(host);
     m->port = port;
     m->width = width;
     m->height = height;
+    m->maximized = maximized;
 }
 
 Receiver::~Receiver() = default;
@@ -471,7 +474,9 @@ void Receiver::M::initWindow() {
 
     SPDLOG_INFO("SDL3 initialized");
 
-    window = SDL_CreateWindow("Wire Receiver", width, height, platform::windowFlags());
+    SDL_WindowFlags flags = platform::windowFlags();
+    if (maximized) flags |= SDL_WINDOW_MAXIMIZED | SDL_WINDOW_RESIZABLE;
+    window = SDL_CreateWindow("Wire Receiver", width, height, flags);
     if (!window) {
         SDL_Quit();
         throw std::runtime_error(std::string("SDL_CreateWindow failed: ") + SDL_GetError());
