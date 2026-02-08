@@ -12,6 +12,7 @@
 
 #include <qrcodegen.hpp>
 
+#include <chrono>
 #include <cstdlib>
 #include <queue>
 #include <stdexcept>
@@ -57,7 +58,7 @@ constexpr uint32_t kQueueWriteTexture = 86;
 constexpr uint32_t kQueueWriteTextureXl = 87;
 constexpr uint32_t kTextureCreateView = 143;
 
-constexpr size_t kThreshold = 512 * 1024; // 512 KB — drop WriteTexture cmds above this
+constexpr size_t kThreshold = 4 * 1024; // 4 KB — defer WriteTexture cmds above this
 } // namespace wire_filter
 
 // CommandSerializer that sends wire commands over TCP
@@ -631,13 +632,24 @@ void WireSession::run(std::function<void(float dt)> onFrame,
             m->serializer->processResponses(*m->wireClient, m->onEvent);
             m->instance.ProcessEvents();
 
-            while (m->serializer->hasDeferredMips() &&
-                   m->serializer->sendBufferAvailable() >= 64 * 1024) {
-                try {
-                    m->serializer->streamNextDeferredMip();
-                } catch (const asio::system_error& e) {
-                    SPDLOG_WARN("Disconnect during mip streaming: {}", e.what());
-                    return;
+            if (m->serializer->hasDeferredMips() &&
+                m->serializer->sendBufferAvailable() >= 64 * 1024) {
+                static const int mipDelayMs = [] {
+                    const char* e = std::getenv("SQ_MIP_DELAY_MS");
+                    return (e && e[0]) ? std::atoi(e) : 0;
+                }();
+                static auto lastMipTime = std::chrono::steady_clock::now();
+                auto now = std::chrono::steady_clock::now();
+                auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - lastMipTime).count();
+
+                if (mipDelayMs <= 0 || elapsed >= mipDelayMs) {
+                    try {
+                        m->serializer->streamNextDeferredMip();
+                        lastMipTime = now;
+                    } catch (const asio::system_error& e) {
+                        SPDLOG_WARN("Disconnect during mip streaming: {}", e.what());
+                        return;
+                    }
                 }
             }
 
