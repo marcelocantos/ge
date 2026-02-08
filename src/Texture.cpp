@@ -1,7 +1,9 @@
 #include <sq/Texture.h>
+#include <sq/SqTexFormat.h>
 #include <sq/WgpuResource.h>
 #include <SDL3_image/SDL_image.h>
 #include <spdlog/spdlog.h>
+#include <algorithm>
 #include <cstring>
 #include <fstream>
 #include <stdexcept>
@@ -38,9 +40,14 @@ wgpu::Sampler Texture::sampler() const {
 
 namespace {
 
-bool endsWithAstc(const char* path) {
-    size_t len = std::strlen(path);
-    return len > 5 && std::strcmp(path + len - 5, ".astc") == 0;
+constexpr uint8_t kAstcMagic[4] = {0x13, 0xAB, 0xA1, 0x5C};
+
+wgpu::TextureFormat gpuFormat(SqTexEncoding e) {
+    switch (e) {
+        case SqTexEncoding::Astc4x4: return wgpu::TextureFormat::ASTC4x4Unorm;
+        case SqTexEncoding::Png:     return wgpu::TextureFormat::RGBA8Unorm;
+    }
+    throw std::runtime_error("Unknown SqTexEncoding");
 }
 
 // ASTC file header: 4-byte magic, 3 bytes block_x/y/z, 3x3 bytes dim_x/y/z (24-bit LE)
@@ -55,118 +62,253 @@ uint32_t read24(const uint8_t b[3]) {
     return uint32_t(b[0]) | (uint32_t(b[1]) << 8) | (uint32_t(b[2]) << 16);
 }
 
-} // namespace
+// Returned by load helpers — fromFile wraps into Texture::M
+struct TextureResult {
+    wgpu::Texture tex;
+    wgpu::TextureView view;
+    wgpu::Sampler sampler;
+    int width;
+    int height;
+};
 
-Texture Texture::fromFile(wgpu::Device device, wgpu::Queue queue, const char* path) {
-    if (endsWithAstc(path)) {
-        std::ifstream file(path, std::ios::binary | std::ios::ate);
+wgpu::Sampler createSampler(wgpu::Device device, uint32_t mipCount) {
+    wgpu::SamplerDescriptor desc{
+        .addressModeU = wgpu::AddressMode::ClampToEdge,
+        .addressModeV = wgpu::AddressMode::ClampToEdge,
+        .addressModeW = wgpu::AddressMode::ClampToEdge,
+        .magFilter = wgpu::FilterMode::Linear,
+        .minFilter = wgpu::FilterMode::Linear,
+        .mipmapFilter = mipCount > 1 ? wgpu::MipmapFilterMode::Linear
+                                     : wgpu::MipmapFilterMode::Nearest,
+        .lodMinClamp = 0.0f,
+        .lodMaxClamp = static_cast<float>(mipCount),
+        .maxAnisotropy = 1,
+    };
+    return device.CreateSampler(&desc);
+}
+
+TextureResult loadSqtex(wgpu::Device device, wgpu::Queue queue,
+                         std::ifstream& file, const char* path) {
+    // Magic already consumed; read rest of header
+    SqTexHeader hdr{};
+    std::memcpy(hdr.magic, kSqTexMagic, 4);
+    file.read(reinterpret_cast<char*>(&hdr) + 4, sizeof(hdr) - 4);
+    if (!file) {
+        throw std::runtime_error(std::string("Truncated sqtex header in ") + path);
+    }
+
+    auto encoding = static_cast<SqTexEncoding>(hdr.encoding);
+    auto format = gpuFormat(encoding);
+    uint32_t w = hdr.width;
+    uint32_t h = hdr.height;
+    uint32_t mipCount = hdr.mipCount;
+
+    SPDLOG_INFO("sqtex: {}x{}, {} mip levels, {} from {}",
+                w, h, mipCount,
+                encoding == SqTexEncoding::Astc4x4 ? "ASTC 4x4" : "PNG", path);
+
+    // Read level size table
+    std::vector<uint32_t> levelSizes(mipCount);
+    file.read(reinterpret_cast<char*>(levelSizes.data()),
+              static_cast<std::streamsize>(mipCount * sizeof(uint32_t)));
+    if (!file) {
+        throw std::runtime_error(std::string("Truncated level sizes in ") + path);
+    }
+
+    // Create texture with all mip levels
+    wgpu::TextureDescriptor texDesc{
+        .usage = wgpu::TextureUsage::TextureBinding | wgpu::TextureUsage::CopyDst,
+        .dimension = wgpu::TextureDimension::e2D,
+        .size = {w, h, 1},
+        .format = format,
+        .mipLevelCount = mipCount,
+        .sampleCount = 1,
+    };
+    wgpu::Texture tex = device.CreateTexture(&texDesc);
+    if (!tex) {
+        throw std::runtime_error(std::string("Failed to create texture for ") + path);
+    }
+
+    // Upload each mip level
+    for (uint32_t level = 0; level < mipCount; ++level) {
+        uint32_t mw = std::max(1u, w >> level);
+        uint32_t mh = std::max(1u, h >> level);
+
+        std::vector<uint8_t> data(levelSizes[level]);
+        file.read(reinterpret_cast<char*>(data.data()),
+                  static_cast<std::streamsize>(levelSizes[level]));
         if (!file) {
-            throw std::runtime_error(std::string("Failed to open ASTC file ") + path);
-        }
-        auto fileSize = file.tellg();
-        file.seekg(0);
-
-        AstcHeader header{};
-        file.read(reinterpret_cast<char*>(&header), sizeof(header));
-        if (!file || header.magic[0] != 0x13 || header.magic[1] != 0xAB ||
-            header.magic[2] != 0xA1 || header.magic[3] != 0x5C) {
-            throw std::runtime_error(std::string("Invalid ASTC header in ") + path);
+            throw std::runtime_error(std::string("Truncated level data in ") + path);
         }
 
-        uint32_t width = read24(header.dim_x);
-        uint32_t height = read24(header.dim_y);
-        SPDLOG_INFO("ASTC texture: {}x{} block={}x{} from {}", width, height,
-                     header.block_x, header.block_y, path);
-
-        // Only ASTC 4x4 supported for now
-        if (header.block_x != 4 || header.block_y != 4) {
-            throw std::runtime_error(std::string("Unsupported ASTC block size in ") + path);
-        }
-
-        size_t dataSize = static_cast<size_t>(fileSize) - sizeof(AstcHeader);
-        std::vector<uint8_t> data(dataSize);
-        file.read(reinterpret_cast<char*>(data.data()), static_cast<std::streamsize>(dataSize));
-
-        wgpu::TextureDescriptor texDesc{
-            .usage = wgpu::TextureUsage::TextureBinding | wgpu::TextureUsage::CopyDst,
-            .dimension = wgpu::TextureDimension::e2D,
-            .size = {width, height, 1},
-            .format = wgpu::TextureFormat::ASTC4x4Unorm,
-            .mipLevelCount = 1,
-            .sampleCount = 1,
-        };
-        wgpu::Texture tex = device.CreateTexture(&texDesc);
-        if (!tex) {
-            throw std::runtime_error(std::string("Failed to create ASTC texture for ") + path);
-        }
-
-        uint32_t blocksX = (width + 3) / 4;
         wgpu::TexelCopyTextureInfo dst{
             .texture = tex,
-            .mipLevel = 0,
+            .mipLevel = level,
             .origin = {0, 0, 0},
             .aspect = wgpu::TextureAspect::All,
         };
-        wgpu::TexelCopyBufferLayout layout{
-            .offset = 0,
-            .bytesPerRow = blocksX * 16,
-            .rowsPerImage = height,
-        };
-        wgpu::Extent3D extent{width, height, 1};
-        queue.WriteTexture(&dst, data.data(), dataSize, &layout, &extent);
 
-        wgpu::TextureViewDescriptor viewDesc{
-            .format = wgpu::TextureFormat::ASTC4x4Unorm,
-            .dimension = wgpu::TextureViewDimension::e2D,
-            .baseMipLevel = 0,
-            .mipLevelCount = 1,
-            .baseArrayLayer = 0,
-            .arrayLayerCount = 1,
-            .aspect = wgpu::TextureAspect::All,
-        };
-        wgpu::TextureView texView = tex.CreateView(&viewDesc);
-
-        wgpu::SamplerDescriptor samplerDesc{
-            .addressModeU = wgpu::AddressMode::ClampToEdge,
-            .addressModeV = wgpu::AddressMode::ClampToEdge,
-            .addressModeW = wgpu::AddressMode::ClampToEdge,
-            .magFilter = wgpu::FilterMode::Linear,
-            .minFilter = wgpu::FilterMode::Linear,
-            .mipmapFilter = wgpu::MipmapFilterMode::Nearest,
-            .lodMinClamp = 0.0f,
-            .lodMaxClamp = 1.0f,
-            .maxAnisotropy = 1,
-        };
-        wgpu::Sampler sampler = device.CreateSampler(&samplerDesc);
-
-        auto impl = std::make_unique<M>();
-        impl->texture = WgpuTexture(std::move(tex));
-        impl->view = WgpuTextureView(std::move(texView));
-        impl->sampler = WgpuSampler(std::move(sampler));
-        impl->width = static_cast<int>(width);
-        impl->height = static_cast<int>(height);
-        return Texture(std::move(impl));
+        if (encoding == SqTexEncoding::Astc4x4) {
+            // For compressed textures, extent must be block-aligned (physical mip size)
+            uint32_t blocksX = (mw + 3) / 4;
+            uint32_t blocksY = (mh + 3) / 4;
+            wgpu::Extent3D extent{blocksX * 4, blocksY * 4, 1};
+            wgpu::TexelCopyBufferLayout layout{
+                .offset = 0,
+                .bytesPerRow = blocksX * 16,
+                .rowsPerImage = blocksY * 4,
+            };
+            queue.WriteTexture(&dst, data.data(), data.size(), &layout, &extent);
+        } else {
+            // Decode PNG blob to RGBA8
+            SDL_IOStream* io = SDL_IOFromMem(data.data(), data.size());
+            if (!io) {
+                throw std::runtime_error(
+                    std::string("Failed to create IO stream for mip level in ") + path);
+            }
+            SDL_Surface* surface = IMG_Load_IO(io, true);
+            if (!surface) {
+                throw std::runtime_error(
+                    std::string("Failed to decode PNG mip level in ") + path +
+                    ": " + SDL_GetError());
+            }
+            if (surface->format != SDL_PIXELFORMAT_RGBA32) {
+                SDL_Surface* converted = SDL_ConvertSurface(surface, SDL_PIXELFORMAT_RGBA32);
+                SDL_DestroySurface(surface);
+                if (!converted) {
+                    throw std::runtime_error(
+                        std::string("Failed to convert PNG mip level in ") + path);
+                }
+                surface = converted;
+            }
+            wgpu::Extent3D extent{mw, mh, 1};
+            wgpu::TexelCopyBufferLayout layout{
+                .offset = 0,
+                .bytesPerRow = mw * 4,
+                .rowsPerImage = mh,
+            };
+            queue.WriteTexture(&dst, surface->pixels,
+                               static_cast<size_t>(mw) * mh * 4,
+                               &layout, &extent);
+            SDL_DestroySurface(surface);
+        }
     }
 
+    // Create view spanning all mip levels
+    wgpu::TextureViewDescriptor viewDesc{
+        .format = format,
+        .dimension = wgpu::TextureViewDimension::e2D,
+        .baseMipLevel = 0,
+        .mipLevelCount = mipCount,
+        .baseArrayLayer = 0,
+        .arrayLayerCount = 1,
+        .aspect = wgpu::TextureAspect::All,
+    };
+    wgpu::TextureView texView = tex.CreateView(&viewDesc);
+
+    return {
+        std::move(tex),
+        std::move(texView),
+        createSampler(device, mipCount),
+        static_cast<int>(w),
+        static_cast<int>(h),
+    };
+}
+
+TextureResult loadAstc(wgpu::Device device, wgpu::Queue queue,
+                        std::ifstream& file, const char* path) {
+    // Magic already consumed; seek back to read full header
+    file.seekg(0);
+    AstcHeader header{};
+    file.read(reinterpret_cast<char*>(&header), sizeof(header));
+    if (!file) {
+        throw std::runtime_error(std::string("Truncated ASTC header in ") + path);
+    }
+
+    uint32_t width = read24(header.dim_x);
+    uint32_t height = read24(header.dim_y);
+    SPDLOG_INFO("ASTC texture: {}x{} block={}x{} from {}", width, height,
+                 header.block_x, header.block_y, path);
+
+    if (header.block_x != 4 || header.block_y != 4) {
+        throw std::runtime_error(std::string("Unsupported ASTC block size in ") + path);
+    }
+
+    file.seekg(0, std::ios::end);
+    size_t fileSize = static_cast<size_t>(file.tellg());
+    size_t dataSize = fileSize - sizeof(AstcHeader);
+    file.seekg(sizeof(AstcHeader));
+    std::vector<uint8_t> data(dataSize);
+    file.read(reinterpret_cast<char*>(data.data()), static_cast<std::streamsize>(dataSize));
+
+    wgpu::TextureDescriptor texDesc{
+        .usage = wgpu::TextureUsage::TextureBinding | wgpu::TextureUsage::CopyDst,
+        .dimension = wgpu::TextureDimension::e2D,
+        .size = {width, height, 1},
+        .format = wgpu::TextureFormat::ASTC4x4Unorm,
+        .mipLevelCount = 1,
+        .sampleCount = 1,
+    };
+    wgpu::Texture tex = device.CreateTexture(&texDesc);
+    if (!tex) {
+        throw std::runtime_error(std::string("Failed to create ASTC texture for ") + path);
+    }
+
+    uint32_t blocksX = (width + 3) / 4;
+    wgpu::TexelCopyTextureInfo dst{
+        .texture = tex,
+        .mipLevel = 0,
+        .origin = {0, 0, 0},
+        .aspect = wgpu::TextureAspect::All,
+    };
+    wgpu::TexelCopyBufferLayout layout{
+        .offset = 0,
+        .bytesPerRow = blocksX * 16,
+        .rowsPerImage = height,
+    };
+    wgpu::Extent3D extent{width, height, 1};
+    queue.WriteTexture(&dst, data.data(), dataSize, &layout, &extent);
+
+    wgpu::TextureViewDescriptor viewDesc{
+        .format = wgpu::TextureFormat::ASTC4x4Unorm,
+        .dimension = wgpu::TextureViewDimension::e2D,
+        .baseMipLevel = 0,
+        .mipLevelCount = 1,
+        .baseArrayLayer = 0,
+        .arrayLayerCount = 1,
+        .aspect = wgpu::TextureAspect::All,
+    };
+    wgpu::TextureView texView = tex.CreateView(&viewDesc);
+
+    return {
+        std::move(tex),
+        std::move(texView),
+        createSampler(device, 1),
+        static_cast<int>(width),
+        static_cast<int>(height),
+    };
+}
+
+TextureResult loadSdlImage(wgpu::Device device, wgpu::Queue queue, const char* path) {
     SDL_Surface* surface = IMG_Load(path);
     if (!surface) {
-        throw std::runtime_error(std::string("Failed to load texture ") + path + ": " + SDL_GetError());
+        throw std::runtime_error(
+            std::string("Failed to load texture ") + path + ": " + SDL_GetError());
     }
 
     int width = surface->w;
     int height = surface->h;
 
-    // Convert to RGBA if needed
     if (surface->format != SDL_PIXELFORMAT_RGBA32) {
         SDL_Surface* converted = SDL_ConvertSurface(surface, SDL_PIXELFORMAT_RGBA32);
         SDL_DestroySurface(surface);
         if (!converted) {
-            throw std::runtime_error(std::string("Failed to convert texture ") + path + ": " + SDL_GetError());
+            throw std::runtime_error(
+                std::string("Failed to convert texture ") + path + ": " + SDL_GetError());
         }
         surface = converted;
     }
 
-    // Create WebGPU texture
     wgpu::TextureDescriptor texDesc{
         .usage = wgpu::TextureUsage::TextureBinding | wgpu::TextureUsage::CopyDst,
         .dimension = wgpu::TextureDimension::e2D,
@@ -181,7 +323,6 @@ Texture Texture::fromFile(wgpu::Device device, wgpu::Queue queue, const char* pa
         throw std::runtime_error(std::string("Failed to create texture for ") + path);
     }
 
-    // Upload pixel data
     wgpu::TexelCopyTextureInfo dst{
         .texture = tex,
         .mipLevel = 0,
@@ -198,7 +339,6 @@ Texture Texture::fromFile(wgpu::Device device, wgpu::Queue queue, const char* pa
 
     SDL_DestroySurface(surface);
 
-    // Create texture view
     wgpu::TextureViewDescriptor viewDesc{
         .format = wgpu::TextureFormat::RGBA8Unorm,
         .dimension = wgpu::TextureViewDimension::e2D,
@@ -210,27 +350,46 @@ Texture Texture::fromFile(wgpu::Device device, wgpu::Queue queue, const char* pa
     };
     wgpu::TextureView texView = tex.CreateView(&viewDesc);
 
-    // Create sampler (clamp mode, linear filtering)
-    wgpu::SamplerDescriptor samplerDesc{
-        .addressModeU = wgpu::AddressMode::ClampToEdge,
-        .addressModeV = wgpu::AddressMode::ClampToEdge,
-        .addressModeW = wgpu::AddressMode::ClampToEdge,
-        .magFilter = wgpu::FilterMode::Linear,
-        .minFilter = wgpu::FilterMode::Linear,
-        .mipmapFilter = wgpu::MipmapFilterMode::Nearest,
-        .lodMinClamp = 0.0f,
-        .lodMaxClamp = 1.0f,
-        .maxAnisotropy = 1,
+    return {
+        std::move(tex),
+        std::move(texView),
+        createSampler(device, 1),
+        width,
+        height,
     };
-    wgpu::Sampler sampler = device.CreateSampler(&samplerDesc);
+}
+
+} // namespace
+
+Texture Texture::fromFile(wgpu::Device device, wgpu::Queue queue, const char* path) {
+    // Detect format by magic header (first 4 bytes)
+    std::ifstream file(path, std::ios::binary);
+    if (!file) {
+        throw std::runtime_error(std::string("Failed to open texture ") + path);
+    }
+
+    uint8_t magic[4]{};
+    file.read(reinterpret_cast<char*>(magic), 4);
+    if (!file) {
+        throw std::runtime_error(std::string("Failed to read texture header from ") + path);
+    }
+
+    TextureResult r;
+    if (std::memcmp(magic, kSqTexMagic, 4) == 0) {
+        r = loadSqtex(device, queue, file, path);
+    } else if (std::memcmp(magic, kAstcMagic, 4) == 0) {
+        r = loadAstc(device, queue, file, path);
+    } else {
+        file.close();
+        r = loadSdlImage(device, queue, path);
+    }
 
     auto impl = std::make_unique<M>();
-    impl->texture = WgpuTexture(std::move(tex));
-    impl->view = WgpuTextureView(std::move(texView));
-    impl->sampler = WgpuSampler(std::move(sampler));
-    impl->width = width;
-    impl->height = height;
-
+    impl->texture = WgpuTexture(std::move(r.tex));
+    impl->view = WgpuTextureView(std::move(r.view));
+    impl->sampler = WgpuSampler(std::move(r.sampler));
+    impl->width = r.width;
+    impl->height = r.height;
     return Texture(std::move(impl));
 }
 

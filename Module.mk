@@ -37,6 +37,10 @@ sq/SRC = \
 sq/OBJ = $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(sq/SRC))
 sq/LIB = $(BUILD_DIR)/libsq.a
 
+# Texture encoder (used by precompute tools, NOT part of libsq.a)
+sq/TEXTURE_ENCODER_SRC = sq/src/TextureEncoder.cpp
+sq/TEXTURE_ENCODER_OBJ = $(BUILD_DIR)/sq/src/TextureEncoder.o
+
 # Triangle library (C code, used by precompute tool)
 sq/TRIANGLE_SRC = sq/vendor/src/triangle.c
 sq/TRIANGLE_OBJ = $(BUILD_DIR)/sq/vendor/triangle.o
