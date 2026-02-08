@@ -12,9 +12,8 @@ namespace sq {
 // the Dawn wire protocol.  The resulting GpuContext is owned by the session.
 //
 // Listen address is resolved in this order:
-//   1. Explicit listenAddr argument (if non-empty)
-//   2. SQ_WIRE_ADDR environment variable
-//   3. Default: "42069"
+//   1. SQ_WIRE_ADDR environment variable
+//   2. Default: "42069"
 // Format: "port" or "address:port"
 class WireSession {
 public:
@@ -33,14 +32,12 @@ public:
     // Flush wire commands to receiver and process responses.
     void flush();
 
-    enum class StopReason { Signal, Disconnected };
-
-    // Run the render loop.  Installs SIGINT/SIGTERM handlers, calls onFrame
-    // each iteration with the frame delta, and manages flush cadence.
-    // onEvent (optional) is called for each SDL event received from the receiver.
-    // Returns Signal on SIGINT/SIGTERM, Disconnected if the receiver drops.
-    StopReason run(std::function<void(float dt)> onFrame,
-                   std::function<void(const SDL_Event&)> onEvent = {});
+    // Run the render loop. Calls onFrame each iteration with the frame delta,
+    // and manages flush cadence. onEvent (optional) is called for each SDL event
+    // received from the receiver. Returns when the receiver disconnects.
+    // Ctrl+C terminates the process via the default SIGINT handler.
+    void run(std::function<void(float dt)> onFrame,
+             std::function<void(const SDL_Event&)> onEvent = {});
 
 private:
     struct M;

@@ -22,7 +22,7 @@ int main() {
         sq::WireSession session;            // Blocks until a receiver connects
         MyApp app(session.gpu());           // Create GPU resources
 
-        auto reason = session.run(
+        session.run(
             [&](float dt) { app.render(dt, state); },
             [&](const SDL_Event& e) {
                 if (e.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED)
@@ -31,9 +31,8 @@ int main() {
                     app.handleInput(e, state);
             }
         );
-
-        if (reason == sq::WireSession::StopReason::Signal) break;
         // Disconnected → loop back, wait for next receiver
+        // Ctrl+C terminates the process via default SIGINT handler
     }
 }
 ```
@@ -42,7 +41,7 @@ Key points:
 - **State lives outside the session loop** so it persists across receiver reconnects
 - **App/GPU resources are recreated** each connection (new wire handles)
 - `session.run()` drives the render loop at ~60fps with frame delta timing
-- Returns `Signal` on Ctrl+C or `Disconnected` when the receiver drops
+- Returns when the receiver disconnects; Ctrl+C terminates the process
 
 **Makefile** — minimal integration:
 

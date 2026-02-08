@@ -12,7 +12,6 @@
 
 #include <qrcodegen.hpp>
 
-#include <csignal>
 #include <cstdlib>
 #include <stdexcept>
 #include <string>
@@ -52,13 +51,6 @@ constexpr uint32_t kTextureCreateView = 143;
 
 constexpr size_t kThreshold = 512 * 1024; // 512 KB — drop WriteTexture cmds above this
 } // namespace wire_filter
-
-// Signal flag shared between WireSession::run() and the OS signal handler.
-volatile std::sig_atomic_t g_running = 1;
-
-void signalHandler(int) {
-    g_running = 0;
-}
 
 // CommandSerializer that sends wire commands over TCP
 class SocketSerializer : public dawn::wire::CommandSerializer {
@@ -362,7 +354,12 @@ WireSession::WireSession()
     auto lanIp = getLanAddress(m->io);
     auto url = "squz-remote://" + lanIp + ":" + std::to_string(port);
     SPDLOG_INFO("Waiting for receiver connection...");
-    printQrCode(url);
+    static bool qrPrinted = false;
+    if (!qrPrinted) {
+        printQrCode(url);
+        qrPrinted = true;
+    }
+
     acceptor.accept(m->socket);
     SPDLOG_INFO("Receiver connected from {}",
                 m->socket.remote_endpoint().address().to_string());
@@ -435,7 +432,7 @@ WireSession::WireSession()
         });
 
     m->serializer->Flush();
-    while (!adapterReceived && g_running) {
+    while (!adapterReceived) {
         m->io.poll();
         m->serializer->processResponses(*m->wireClient, m->onEvent);
         m->instance.ProcessEvents();
@@ -484,7 +481,7 @@ WireSession::WireSession()
         });
 
     m->serializer->Flush();
-    while (!deviceReceived && g_running) {
+    while (!deviceReceived) {
         m->io.poll();
         m->serializer->processResponses(*m->wireClient, m->onEvent);
         m->instance.ProcessEvents();
@@ -524,12 +521,9 @@ void WireSession::flush() {
     m->serializer->Flush();
 }
 
-WireSession::StopReason WireSession::run(std::function<void(float dt)> onFrame,
-                                         std::function<void(const SDL_Event&)> onEvent) {
+void WireSession::run(std::function<void(float dt)> onFrame,
+                      std::function<void(const SDL_Event&)> onEvent) {
     m->onEvent = std::move(onEvent);
-
-    std::signal(SIGINT, signalHandler);
-    std::signal(SIGTERM, signalHandler);
 
     // Flush any resource creation commands issued between construction and run()
     flush();
@@ -538,7 +532,7 @@ WireSession::StopReason WireSession::run(std::function<void(float dt)> onFrame,
 
     SPDLOG_INFO("Entering render loop (Ctrl+C to stop)...");
 
-    while (g_running) {
+    for (;;) {
         float dt = frameTimer.tick();
 
         try {
@@ -547,14 +541,11 @@ WireSession::StopReason WireSession::run(std::function<void(float dt)> onFrame,
             flush();
         } catch (const asio::system_error& e) {
             SPDLOG_WARN("Receiver disconnected: {}", e.what());
-            return StopReason::Disconnected;
+            return;
         }
 
         SDL_Delay(16);
     }
-
-    SPDLOG_INFO("Shutting down...");
-    return StopReason::Signal;
 }
 
 } // namespace sq
