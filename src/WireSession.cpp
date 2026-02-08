@@ -13,6 +13,7 @@
 #include <qrcodegen.hpp>
 
 #include <cstdlib>
+#include <queue>
 #include <stdexcept>
 #include <string>
 #include <sys/socket.h>
@@ -205,7 +206,7 @@ public:
                 std::memcpy(&texId, buffer_.data() + pos + texIdOff, sizeof(texId));
                 uint32_t mipLevel;
                 std::memcpy(&mipLevel, buffer_.data() + pos + mipOff, sizeof(mipLevel));
-                deferredMips_.push_back({texId, mipLevel,
+                deferredMips_.push({texId, mipLevel,
                     {buffer_.data() + pos, buffer_.data() + pos + cmdSize}});
 
                 // Close current segment (everything before this command)
@@ -256,7 +257,7 @@ public:
     bool streamNextDeferredMip() {
         if (deferredMips_.empty()) return false;
 
-        auto& mip = deferredMips_.back();
+        const auto& mip = deferredMips_.top();
 
         wire::DeferredMipHeader dh{};
         dh.textureId = mip.textureId;
@@ -274,7 +275,7 @@ public:
                     mip.textureId, mip.mipLevel,
                     mip.commandData.size() / 1024.0);
 
-        deferredMips_.pop_back();
+        deferredMips_.pop();
         return deferredMips_.empty();
     }
 
@@ -338,12 +339,18 @@ private:
         uint32_t textureId;
         uint32_t mipLevel;
         std::vector<char> commandData;
+
+        // Smallest-first: priority_queue (max-heap) pops the "largest" element,
+        // so invert the comparison to make the smallest commandData the top.
+        bool operator<(const DeferredMip& o) const {
+            return commandData.size() > o.commandData.size();
+        }
     };
 
     asio::ip::tcp::socket& socket_;
     std::vector<char> buffer_;
     std::vector<char> responseBuffer_;
-    std::vector<DeferredMip> deferredMips_;
+    std::priority_queue<DeferredMip> deferredMips_;
 };
 
 void parseListenAddr(const std::string& listenAddr, std::string& address, uint16_t& port) {
