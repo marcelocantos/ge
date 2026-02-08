@@ -16,9 +16,42 @@
 #include <cstdlib>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace {
+
+// Dawn wire command constants for filtering large texture uploads.
+// Values from WireCmd_autogen.h — must match the Dawn version in sq/vendor/dawn.
+namespace wire_filter {
+constexpr size_t kCmdHeaderSize = 8;   // CmdHeader: uint64_t commandSize
+constexpr size_t kWireCmdSize = 4;     // WireCmd: uint32_t
+constexpr size_t kMinCmdBytes = kCmdHeaderSize + kWireCmdSize;
+constexpr size_t kDataSizeOffset = 16; // QueueWriteTextureTransfer::dataSize offset
+
+// QueueWriteTextureTransfer: after CmdHeader(8)+cmdId(4)+queueId(4)+dataSize(8),
+// then WGPUTexelCopyTextureInfoTransfer starts at offset 24:
+//   textureObjectId(4) + mipLevel(4) + origin(12) + aspect(4)
+constexpr size_t kWriteTexTextureIdOffset = 24; // ObjectId of the texture
+constexpr size_t kWriteTexMipLevelOffset = 28;  // mipLevel being written
+
+// TextureCreateViewTransfer layout:
+//   CmdHeader(8) + cmdId(4) + self(4) + has_descriptor(4) + result(8) = 28 → aligned 32
+// WGPUTextureViewDescriptorTransfer starts at offset 32:
+//   hasNextInChain(4) + pad(4) + label(16) + format(4) + dimension(4)
+//   + baseMipLevel(4) + mipLevelCount(4) + ...
+constexpr size_t kCreateViewSelfOffset = 12;         // ObjectId of the texture
+constexpr size_t kCreateViewHasDescOffset = 16;       // WGPUBool has_descriptor
+constexpr size_t kCreateViewBaseMipOffset = 64;       // baseMipLevel in descriptor
+constexpr size_t kCreateViewMipCountOffset = 68;      // mipLevelCount in descriptor
+
+// WireCmd enum values (from WireCmd_autogen.h)
+constexpr uint32_t kQueueWriteTexture = 86;
+constexpr uint32_t kQueueWriteTextureXl = 87;
+constexpr uint32_t kTextureCreateView = 143;
+
+constexpr size_t kThreshold = 512 * 1024; // 512 KB — drop WriteTexture cmds above this
+} // namespace wire_filter
 
 // Signal flag shared between WireSession::run() and the OS signal handler.
 volatile std::sig_atomic_t g_running = 1;
@@ -47,9 +80,151 @@ public:
     bool Flush() override {
         if (buffer_.empty()) return true;
 
-        wire::MessageHeader header{wire::kWireCommandMagic, static_cast<uint32_t>(buffer_.size())};
+        // Pass 1: scan for large WriteTexture commands, track which textures
+        // had mip levels dropped and what the lowest surviving mip level is.
+        std::unordered_map<uint32_t, uint32_t> firstSurvivingMip; // textureId → min surviving level
+        size_t pos = 0;
+
+        while (pos + wire_filter::kMinCmdBytes <= buffer_.size()) {
+            uint64_t cmdSize;
+            std::memcpy(&cmdSize, buffer_.data() + pos, sizeof(cmdSize));
+            if (cmdSize < wire_filter::kMinCmdBytes || pos + cmdSize > buffer_.size())
+                break;
+
+            uint32_t cmdId;
+            std::memcpy(&cmdId, buffer_.data() + pos + wire_filter::kCmdHeaderSize,
+                        sizeof(cmdId));
+
+            if ((cmdId == wire_filter::kQueueWriteTexture ||
+                 cmdId == wire_filter::kQueueWriteTextureXl) &&
+                cmdSize >= wire_filter::kWriteTexMipLevelOffset + sizeof(uint32_t)) {
+                uint64_t dataSize;
+                std::memcpy(&dataSize,
+                            buffer_.data() + pos + wire_filter::kDataSizeOffset,
+                            sizeof(dataSize));
+
+                uint32_t texId;
+                std::memcpy(&texId,
+                            buffer_.data() + pos + wire_filter::kWriteTexTextureIdOffset,
+                            sizeof(texId));
+                uint32_t mipLevel;
+                std::memcpy(&mipLevel,
+                            buffer_.data() + pos + wire_filter::kWriteTexMipLevelOffset,
+                            sizeof(mipLevel));
+
+                if (dataSize > wire_filter::kThreshold) {
+                    // Track that this texture had a mip level dropped
+                    auto it = firstSurvivingMip.find(texId);
+                    if (it == firstSurvivingMip.end()) {
+                        firstSurvivingMip[texId] = mipLevel + 1;
+                    } else {
+                        it->second = std::max(it->second, mipLevel + 1);
+                    }
+                }
+            }
+
+            pos += cmdSize;
+        }
+
+        // Pass 2: build scatter-gather spans, skipping large WriteTexture cmds
+        // and rewriting TextureCreateView for textures with dropped mips.
+        std::vector<asio::const_buffer> segments;
+        pos = 0;
+        size_t segStart = 0;
+        size_t totalSize = 0;
+        size_t droppedBytes = 0;
+
+        while (pos + wire_filter::kMinCmdBytes <= buffer_.size()) {
+            uint64_t cmdSize;
+            std::memcpy(&cmdSize, buffer_.data() + pos, sizeof(cmdSize));
+            if (cmdSize < wire_filter::kMinCmdBytes || pos + cmdSize > buffer_.size())
+                break;
+
+            uint32_t cmdId;
+            std::memcpy(&cmdId, buffer_.data() + pos + wire_filter::kCmdHeaderSize,
+                        sizeof(cmdId));
+
+            bool skip = false;
+
+            if ((cmdId == wire_filter::kQueueWriteTexture ||
+                 cmdId == wire_filter::kQueueWriteTextureXl) &&
+                cmdSize >= wire_filter::kDataSizeOffset + sizeof(uint64_t)) {
+                uint64_t dataSize;
+                std::memcpy(&dataSize,
+                            buffer_.data() + pos + wire_filter::kDataSizeOffset,
+                            sizeof(dataSize));
+                if (dataSize > wire_filter::kThreshold) {
+                    skip = true;
+                    droppedBytes += cmdSize;
+                }
+            }
+
+            // Rewrite TextureCreateView: adjust baseMipLevel and mipLevelCount
+            // for textures that had large mip levels dropped.
+            if (cmdId == wire_filter::kTextureCreateView &&
+                cmdSize >= wire_filter::kCreateViewMipCountOffset + sizeof(uint32_t)) {
+                uint32_t hasDesc;
+                std::memcpy(&hasDesc,
+                            buffer_.data() + pos + wire_filter::kCreateViewHasDescOffset,
+                            sizeof(hasDesc));
+                if (hasDesc) {
+                    uint32_t texId;
+                    std::memcpy(&texId,
+                                buffer_.data() + pos + wire_filter::kCreateViewSelfOffset,
+                                sizeof(texId));
+                    auto it = firstSurvivingMip.find(texId);
+                    if (it != firstSurvivingMip.end()) {
+                        uint32_t newBase = it->second;
+                        uint32_t oldCount;
+                        std::memcpy(&oldCount,
+                                    buffer_.data() + pos + wire_filter::kCreateViewMipCountOffset,
+                                    sizeof(oldCount));
+                        uint32_t newCount = (oldCount > newBase) ? oldCount - newBase : 1;
+
+                        // Modify in-place (buffer_ is ours, not yet sent)
+                        std::memcpy(buffer_.data() + pos + wire_filter::kCreateViewBaseMipOffset,
+                                    &newBase, sizeof(newBase));
+                        std::memcpy(buffer_.data() + pos + wire_filter::kCreateViewMipCountOffset,
+                                    &newCount, sizeof(newCount));
+
+                        SPDLOG_INFO("Wire filter: TextureCreateView tex={} baseMip {} → {}, count {} → {}",
+                                    texId, 0, newBase, oldCount, newCount);
+                    }
+                }
+            }
+
+            if (skip) {
+                // Close current segment (everything before this command)
+                if (pos > segStart) {
+                    segments.emplace_back(buffer_.data() + segStart, pos - segStart);
+                    totalSize += pos - segStart;
+                }
+                segStart = pos + cmdSize;
+            }
+
+            pos += cmdSize;
+        }
+
+        // Final segment (from last skip point to end of buffer)
+        if (buffer_.size() > segStart) {
+            segments.emplace_back(buffer_.data() + segStart,
+                                  buffer_.size() - segStart);
+            totalSize += buffer_.size() - segStart;
+        }
+
+        if (droppedBytes > 0) {
+            SPDLOG_INFO("Wire filter: dropped {:.1f} MB of texture data",
+                        droppedBytes / (1024.0 * 1024.0));
+        }
+
+        // Send header + scatter-gather segments
+        wire::MessageHeader header{wire::kWireCommandMagic,
+                                   static_cast<uint32_t>(totalSize)};
         asio::write(socket_, asio::buffer(&header, sizeof(header)));
-        asio::write(socket_, asio::buffer(buffer_));
+        if (!segments.empty()) {
+            asio::write(socket_, segments);
+        }
+
         buffer_.clear();
         return true;
     }
