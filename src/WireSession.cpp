@@ -15,6 +15,7 @@
 #include <cstdlib>
 #include <stdexcept>
 #include <string>
+#include <sys/socket.h>
 #include <unordered_map>
 #include <vector>
 
@@ -225,6 +226,28 @@ public:
         return wire::kMaxMessageSize;
     }
 
+    void sendFrameEnd() {
+        wire::MessageHeader header{wire::kFrameEndMagic, 0};
+        asio::write(socket_, asio::buffer(&header, sizeof(header)));
+    }
+
+    // Returns bytes available in the kernel send buffer.
+    size_t sendBufferAvailable() const {
+        int pending = 0;
+        socklen_t len = sizeof(pending);
+        if (getsockopt(socket_.native_handle(), SOL_SOCKET, SO_NWRITE,
+                        &pending, &len) == 0) {
+            int sndbuf = 0;
+            len = sizeof(sndbuf);
+            getsockopt(socket_.native_handle(), SOL_SOCKET, SO_SNDBUF,
+                        &sndbuf, &len);
+            return static_cast<size_t>(std::max(0, sndbuf - pending));
+        }
+        return 0;
+    }
+
+    int frameReadyCount = 2; // initial credits = pipeline depth (double-buffer)
+
     void processResponses(dawn::wire::WireClient& client,
                            const std::function<void(const SDL_Event&)>& onEvent) {
         while (socket_.available() > 0) {
@@ -246,6 +269,8 @@ public:
                 if (onEvent) {
                     onEvent(event);
                 }
+            } else if (header.magic == wire::kFrameReadyMagic) {
+                ++frameReadyCount;
             } else {
                 SPDLOG_ERROR("Unknown message magic: 0x{:08X}", header.magic);
                 if (header.length > 0 && header.length <= wire::kMaxMessageSize) {
@@ -530,21 +555,34 @@ void WireSession::run(std::function<void(float dt)> onFrame,
 
     DeltaTimer frameTimer;
 
-    SPDLOG_INFO("Entering render loop (Ctrl+C to stop)...");
+    SPDLOG_INFO("Entering render loop...");
 
+    // Credit-based double buffering: frameReadyCount starts at 2, so the first
+    // two frames send immediately (priming the pipeline). After that, each frame
+    // waits for a FrameReady signal from the receiver before proceeding.
     for (;;) {
+        while (m->serializer->frameReadyCount <= 0) {
+            m->serializer->processResponses(*m->wireClient, m->onEvent);
+            m->instance.ProcessEvents();
+
+            // TODO: stream deferred mip levels here when sendBufferAvailable() > chunk size
+            size_t avail = m->serializer->sendBufferAvailable();
+            (void)avail;
+
+            SDL_Delay(1);
+        }
+        m->serializer->frameReadyCount--;
+
         float dt = frameTimer.tick();
 
         try {
-            flush();
             onFrame(dt);
             flush();
+            m->serializer->sendFrameEnd();
         } catch (const asio::system_error& e) {
             SPDLOG_WARN("Receiver disconnected: {}", e.what());
             return;
         }
-
-        SDL_Delay(16);
     }
 }
 

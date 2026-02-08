@@ -350,31 +350,34 @@ ConnectionResult Receiver::M::connectAndRun() {
                 return ConnectionResult::Disconnected;
             }
 
-            if (header.magic != wire::kWireCommandMagic) {
-                SPDLOG_WARN("Invalid message magic: 0x{:08X}", header.magic);
+            if (header.magic == wire::kWireCommandMagic) {
+                if (header.length > wire::kMaxMessageSize) {
+                    SPDLOG_WARN("Message too large: {} bytes", header.length);
+                    return ConnectionResult::Disconnected;
+                }
+
+                commandBuffer.resize(header.length);
+                asio::read(socket, asio::buffer(commandBuffer.data(), header.length), ec);
+
+                if (ec) {
+                    SPDLOG_WARN("Connection lost (payload read): {}", ec.message());
+                    return ConnectionResult::Disconnected;
+                }
+
+                const volatile char* result = wireServer->HandleCommands(
+                    commandBuffer.data(), commandBuffer.size());
+                if (result == nullptr) {
+                    SPDLOG_ERROR("WireServer failed to handle commands");
+                }
+
+                serializer->Flush();
+            } else if (header.magic == wire::kFrameEndMagic) {
+                wire::MessageHeader ready{wire::kFrameReadyMagic, 0};
+                asio::write(socket, asio::buffer(&ready, sizeof(ready)));
+            } else {
+                SPDLOG_WARN("Unknown message magic: 0x{:08X}", header.magic);
                 return ConnectionResult::Disconnected;
             }
-
-            if (header.length > wire::kMaxMessageSize) {
-                SPDLOG_WARN("Message too large: {} bytes", header.length);
-                return ConnectionResult::Disconnected;
-            }
-
-            commandBuffer.resize(header.length);
-            asio::read(socket, asio::buffer(commandBuffer.data(), header.length), ec);
-
-            if (ec) {
-                SPDLOG_WARN("Connection lost (payload read): {}", ec.message());
-                return ConnectionResult::Disconnected;
-            }
-
-            const volatile char* result = wireServer->HandleCommands(
-                commandBuffer.data(), commandBuffer.size());
-            if (result == nullptr) {
-                SPDLOG_ERROR("WireServer failed to handle commands");
-            }
-
-            serializer->Flush();
         }
 
         SDL_Delay(1);

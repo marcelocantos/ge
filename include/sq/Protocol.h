@@ -1,7 +1,10 @@
 #pragma once
 
+#include <bit>
 #include <cstdint>
 #include <cstddef>
+
+static_assert(std::endian::native == std::endian::little, "Little-endian required");
 
 namespace wire {
 
@@ -11,8 +14,10 @@ constexpr uint32_t kSessionInitMagic = 0x59573253;  // "YW2S"
 constexpr uint32_t kWireCommandMagic = 0x59573243;  // "YW2C"
 constexpr uint32_t kWireResponseMagic = 0x59573252; // "YW2R"
 constexpr uint32_t kSdlEventMagic = 0x59573249;    // "YW2I"
+constexpr uint32_t kFrameEndMagic = 0x59573246;    // "YW2F" — server → receiver: frame boundary
+constexpr uint32_t kFrameReadyMagic = 0x59573247;  // "YW2G" — receiver → server: ready for next
 
-constexpr uint16_t kProtocolVersion = 1;
+constexpr uint16_t kProtocolVersion = 2;
 constexpr size_t kMaxMessageSize = 512 * 1024 * 1024;  // 512MB (initial resource uploads can be large)
 
 // Sent by receiver after connecting to game server
