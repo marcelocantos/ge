@@ -35,6 +35,12 @@ constexpr size_t kDataSizeOffset = 16; // QueueWriteTextureTransfer::dataSize of
 constexpr size_t kWriteTexTextureIdOffset = 24; // ObjectId of the texture
 constexpr size_t kWriteTexMipLevelOffset = 28;  // mipLevel being written
 
+// QueueWriteTextureXlTransfer has 2 extra uint64_t fields
+// (writeHandleCreateInfoLength, writeDataUpdateInfoLength) pushing
+// WGPUTexelCopyTextureInfo from offset 24 to offset 40.
+constexpr size_t kWriteTexXlTextureIdOffset = 40;
+constexpr size_t kWriteTexXlMipLevelOffset = 44;
+
 // TextureCreateViewTransfer layout:
 //   CmdHeader(8) + cmdId(4) + self(4) + has_descriptor(4) + result(8) = 28 → aligned 32
 // WGPUTextureViewDescriptorTransfer starts at offset 32:
@@ -88,22 +94,24 @@ public:
             std::memcpy(&cmdId, buffer_.data() + pos + wire_filter::kCmdHeaderSize,
                         sizeof(cmdId));
 
-            if ((cmdId == wire_filter::kQueueWriteTexture ||
-                 cmdId == wire_filter::kQueueWriteTextureXl) &&
-                cmdSize >= wire_filter::kWriteTexMipLevelOffset + sizeof(uint32_t)) {
+            if (cmdId == wire_filter::kQueueWriteTexture ||
+                cmdId == wire_filter::kQueueWriteTextureXl) {
+                bool isXl = (cmdId == wire_filter::kQueueWriteTextureXl);
+                size_t texIdOff = isXl ? wire_filter::kWriteTexXlTextureIdOffset
+                                       : wire_filter::kWriteTexTextureIdOffset;
+                size_t mipOff = isXl ? wire_filter::kWriteTexXlMipLevelOffset
+                                     : wire_filter::kWriteTexMipLevelOffset;
+                if (cmdSize < mipOff + sizeof(uint32_t)) { pos += cmdSize; continue; }
+
                 uint64_t dataSize;
                 std::memcpy(&dataSize,
                             buffer_.data() + pos + wire_filter::kDataSizeOffset,
                             sizeof(dataSize));
 
                 uint32_t texId;
-                std::memcpy(&texId,
-                            buffer_.data() + pos + wire_filter::kWriteTexTextureIdOffset,
-                            sizeof(texId));
+                std::memcpy(&texId, buffer_.data() + pos + texIdOff, sizeof(texId));
                 uint32_t mipLevel;
-                std::memcpy(&mipLevel,
-                            buffer_.data() + pos + wire_filter::kWriteTexMipLevelOffset,
-                            sizeof(mipLevel));
+                std::memcpy(&mipLevel, buffer_.data() + pos + mipOff, sizeof(mipLevel));
 
                 if (dataSize > wire_filter::kThreshold) {
                     // Track that this texture had a mip level dropped
@@ -187,6 +195,19 @@ public:
             }
 
             if (skip) {
+                // Save the dropped command for deferred streaming
+                bool isXl = (cmdId == wire_filter::kQueueWriteTextureXl);
+                size_t texIdOff = isXl ? wire_filter::kWriteTexXlTextureIdOffset
+                                       : wire_filter::kWriteTexTextureIdOffset;
+                size_t mipOff = isXl ? wire_filter::kWriteTexXlMipLevelOffset
+                                     : wire_filter::kWriteTexMipLevelOffset;
+                uint32_t texId;
+                std::memcpy(&texId, buffer_.data() + pos + texIdOff, sizeof(texId));
+                uint32_t mipLevel;
+                std::memcpy(&mipLevel, buffer_.data() + pos + mipOff, sizeof(mipLevel));
+                deferredMips_.push_back({texId, mipLevel,
+                    {buffer_.data() + pos, buffer_.data() + pos + cmdSize}});
+
                 // Close current segment (everything before this command)
                 if (pos > segStart) {
                     segments.emplace_back(buffer_.data() + segStart, pos - segStart);
@@ -206,8 +227,8 @@ public:
         }
 
         if (droppedBytes > 0) {
-            SPDLOG_INFO("Wire filter: dropped {:.1f} MB of texture data",
-                        droppedBytes / (1024.0 * 1024.0));
+            SPDLOG_INFO("Wire filter: deferred {:.1f} MB of texture data ({} mip commands)",
+                        droppedBytes / (1024.0 * 1024.0), deferredMips_.size());
         }
 
         // Send header + scatter-gather segments
@@ -224,6 +245,37 @@ public:
 
     size_t GetMaximumAllocationSize() const override {
         return wire::kMaxMessageSize;
+    }
+
+    bool hasDeferredMips() const {
+        return !deferredMips_.empty();
+    }
+
+    // Sends the next deferred mip to the receiver. Returns true when the queue
+    // just became empty (i.e. this was the last one).
+    bool streamNextDeferredMip() {
+        if (deferredMips_.empty()) return false;
+
+        auto& mip = deferredMips_.back();
+
+        wire::DeferredMipHeader dh{};
+        dh.textureId = mip.textureId;
+        dh.mipLevel = mip.mipLevel;
+        dh.commandSize = static_cast<uint32_t>(mip.commandData.size());
+
+        uint32_t payloadSize = static_cast<uint32_t>(sizeof(dh) + mip.commandData.size());
+        wire::MessageHeader header{wire::kDeferredMipMagic, payloadSize};
+
+        asio::write(socket_, asio::buffer(&header, sizeof(header)));
+        asio::write(socket_, asio::buffer(&dh, sizeof(dh)));
+        asio::write(socket_, asio::buffer(mip.commandData));
+
+        SPDLOG_INFO("Streamed deferred mip: tex={} level={} ({:.1f} KB)",
+                    mip.textureId, mip.mipLevel,
+                    mip.commandData.size() / 1024.0);
+
+        deferredMips_.pop_back();
+        return deferredMips_.empty();
     }
 
     void sendFrameEnd() {
@@ -282,9 +334,16 @@ public:
     }
 
 private:
+    struct DeferredMip {
+        uint32_t textureId;
+        uint32_t mipLevel;
+        std::vector<char> commandData;
+    };
+
     asio::ip::tcp::socket& socket_;
     std::vector<char> buffer_;
     std::vector<char> responseBuffer_;
+    std::vector<DeferredMip> deferredMips_;
 };
 
 void parseListenAddr(const std::string& listenAddr, std::string& address, uint16_t& port) {
@@ -565,9 +624,15 @@ void WireSession::run(std::function<void(float dt)> onFrame,
             m->serializer->processResponses(*m->wireClient, m->onEvent);
             m->instance.ProcessEvents();
 
-            // TODO: stream deferred mip levels here when sendBufferAvailable() > chunk size
-            size_t avail = m->serializer->sendBufferAvailable();
-            (void)avail;
+            while (m->serializer->hasDeferredMips() &&
+                   m->serializer->sendBufferAvailable() >= 64 * 1024) {
+                try {
+                    m->serializer->streamNextDeferredMip();
+                } catch (const asio::system_error& e) {
+                    SPDLOG_WARN("Disconnect during mip streaming: {}", e.what());
+                    return;
+                }
+            }
 
             SDL_Delay(1);
         }

@@ -16,6 +16,7 @@ constexpr uint32_t kWireResponseMagic = 0x59573252; // "YW2R"
 constexpr uint32_t kSdlEventMagic = 0x59573249;    // "YW2I"
 constexpr uint32_t kFrameEndMagic = 0x59573246;    // "YW2F" — server → receiver: frame boundary
 constexpr uint32_t kFrameReadyMagic = 0x59573247;  // "YW2G" — receiver → server: ready for next
+constexpr uint32_t kDeferredMipMagic = 0x59573248; // "YW2H" — server → receiver: deferred mip data
 
 constexpr uint16_t kProtocolVersion = 2;
 constexpr size_t kMaxMessageSize = 512 * 1024 * 1024;  // 512MB (initial resource uploads can be large)
@@ -63,6 +64,13 @@ struct SessionReady {
 struct MessageHeader {
     uint32_t magic;   // kWireCommandMagic, kWireResponseMagic, or kSdlEventMagic
     uint32_t length;  // Payload length in bytes
+};
+
+// Payload header for kDeferredMipMagic messages (follows MessageHeader)
+struct DeferredMipHeader {
+    uint32_t textureId;    // wire ObjectId of the texture
+    uint32_t mipLevel;     // which mip level this delivers
+    uint32_t commandSize;  // size of the WriteTexture wire command bytes that follow
 };
 
 } // namespace wire
