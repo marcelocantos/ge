@@ -161,6 +161,7 @@ struct WireSession::M {
     wgpu::Instance instance;
     std::unique_ptr<GpuContext> gfx;
     std::function<void(const SDL_Event&)> onEvent;
+    int pixelRatio = 1;
 };
 
 WireSession::WireSession()
@@ -202,6 +203,7 @@ WireSession::WireSession()
     SPDLOG_INFO("Receiver: {}x{} @ {}x, format={}",
                 deviceInfo.width, deviceInfo.height,
                 deviceInfo.pixelRatio, deviceInfo.preferredFormat);
+    m->pixelRatio = std::max(1, (int)deviceInfo.pixelRatio);
 
     // Create wire client
     m->serializer = std::make_unique<SocketSerializer>(m->socket);
@@ -335,6 +337,10 @@ WireSession::~WireSession() = default;
 
 GpuContext& WireSession::gpu() {
     return *m->gfx;
+}
+
+int WireSession::pixelRatio() const {
+    return m->pixelRatio;
 }
 
 void WireSession::flush() {

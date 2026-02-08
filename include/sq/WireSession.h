@@ -27,6 +27,9 @@ public:
     // Access the GpuContext created from wire resources.
     GpuContext& gpu();
 
+    // Device pixel ratio (e.g. 3 for 3x retina). Available after construction.
+    int pixelRatio() const;
+
     // Flush wire commands to receiver and process responses.
     void flush();
 
