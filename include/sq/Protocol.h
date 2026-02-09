@@ -17,6 +17,8 @@ constexpr uint32_t kSdlEventMagic = 0x59573249;    // "YW2I"
 constexpr uint32_t kFrameEndMagic = 0x59573246;    // "YW2F" — server → receiver: frame boundary
 constexpr uint32_t kFrameReadyMagic = 0x59573247;  // "YW2G" — receiver → server: ready for next
 constexpr uint32_t kDeferredMipMagic = 0x59573248; // "YW2H" — server → receiver: deferred mip data
+constexpr uint32_t kMipCacheHitMagic = 0x5957324A; // "YW2J" — receiver → server: cached mip found
+constexpr uint32_t kMipCacheMissMagic = 0x5957324B; // "YW2K" — receiver → server: cached mip not found
 
 constexpr uint16_t kProtocolVersion = 2;
 constexpr size_t kMaxMessageSize = 512 * 1024 * 1024;  // 512MB (initial resource uploads can be large)
@@ -66,11 +68,33 @@ struct MessageHeader {
     uint32_t length;  // Payload length in bytes
 };
 
+// Split boundary: first kMipHeadSize bytes of a WriteTexture wire command contain
+// non-deterministic wire ObjectIds; the remainder is deterministic pixel data.
+constexpr size_t kMipHeadSize = 128;
+
 // Payload header for kDeferredMipMagic messages (follows MessageHeader)
 struct DeferredMipHeader {
     uint32_t textureId;    // wire ObjectId of the texture
     uint32_t mipLevel;     // which mip level this delivers
-    uint32_t commandSize;  // size of the WriteTexture wire command bytes that follow
+    uint32_t commandSize;  // bytes following this header (head + tail or head + hash)
+    uint8_t  hashOnly;     // 1 = probe (head[128] + hash[8]), 0 = full (head[128] + tail[])
+    uint8_t  reserved[3] = {};
 };
+
+// Receiver → server response to a hash probe
+struct MipCacheResponse {
+    uint32_t textureId;
+    uint32_t mipLevel;
+};
+
+// FNV-1a 64-bit hash (deterministic, used for mip cache probes)
+inline uint64_t fnv1a64(const char* data, size_t size) {
+    uint64_t hash = 0xcbf29ce484222325ULL;
+    for (size_t i = 0; i < size; ++i) {
+        hash ^= static_cast<uint8_t>(data[i]);
+        hash *= 0x100000001b3ULL;
+    }
+    return hash;
+}
 
 } // namespace wire

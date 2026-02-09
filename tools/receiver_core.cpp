@@ -16,6 +16,8 @@
 
 #include <sq/Protocol.h>
 
+#include <filesystem>
+#include <fstream>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -152,8 +154,66 @@ void sendEvent(asio::ip::tcp::socket& socket, const SDL_Event& event) {
     asio::write(socket, asio::buffer(&event, sizeof(event)));
 }
 
+void sendMipCacheHit(asio::ip::tcp::socket& socket, uint32_t texId, uint32_t mipLevel) {
+    wire::MipCacheResponse resp{texId, mipLevel};
+    wire::MessageHeader header{wire::kMipCacheHitMagic, sizeof(resp)};
+    asio::write(socket, asio::buffer(&header, sizeof(header)));
+    asio::write(socket, asio::buffer(&resp, sizeof(resp)));
+}
+
+void sendMipCacheMiss(asio::ip::tcp::socket& socket, uint32_t texId, uint32_t mipLevel) {
+    wire::MipCacheResponse resp{texId, mipLevel};
+    wire::MessageHeader header{wire::kMipCacheMissMagic, sizeof(resp)};
+    asio::write(socket, asio::buffer(&header, sizeof(header)));
+    asio::write(socket, asio::buffer(&resp, sizeof(resp)));
+}
+
 // Round up to next multiple of 8 (wire buffer alignment)
 inline size_t wireAlign(size_t n) { return (n + 7) & ~size_t(7); }
+
+// Filesystem cache for deferred mip command bytes.
+// Persists WriteTexture wire commands to disk so subsequent connections
+// can replay them immediately without waiting for server streaming.
+namespace fs = std::filesystem;
+
+fs::path mipCacheDir(const std::string& host, uint16_t port) {
+    const char* home = std::getenv("HOME");
+    if (!home) home = "/tmp";
+    return fs::path(home) / ".cache" / "sq" / "mips"
+        / (host + "_" + std::to_string(port));
+}
+
+// Content-addressable cache: filename is the hex hash of the tail bytes.
+// Lookup is O(1) — just check if the file exists. No hash recomputation.
+
+fs::path mipCachePath(const fs::path& dir, uint64_t hash) {
+    char hex[17];
+    std::snprintf(hex, sizeof(hex), "%016llx", static_cast<unsigned long long>(hash));
+    return dir / (std::string(hex) + ".bin");
+}
+
+void saveMipToCache(const fs::path& dir, const char* tail, size_t tailSize) {
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    if (ec) return;
+    uint64_t hash = wire::fnv1a64(tail, tailSize);
+    auto path = mipCachePath(dir, hash);
+    if (fs::exists(path)) return; // already cached
+    std::ofstream f(path, std::ios::binary);
+    if (f) f.write(tail, tailSize);
+}
+
+std::vector<char> loadMipFromCache(const fs::path& dir, uint64_t hash) {
+    auto path = mipCachePath(dir, hash);
+    std::ifstream f(path, std::ios::binary | std::ios::ate);
+    if (!f) return {};
+    auto size = static_cast<std::streamoff>(f.tellg());
+    if (size <= 0) return {};
+    f.seekg(0);
+    std::vector<char> tail(static_cast<size_t>(size));
+    if (!f.read(tail.data(), size)) return {};
+    return tail;
+}
 
 void MipTracker::scanCommands(const char* data, size_t size) {
     using namespace wire_obs;
@@ -628,6 +688,7 @@ ConnectionResult Receiver::M::connectAndRun() {
     std::vector<char> commandBuffer;
     commandBuffer.reserve(64 * 1024);
     MipTracker mipTracker;
+    auto cacheDir = mipCacheDir(host, port);
 
     while (true) {
         SDL_Event event;
@@ -675,7 +736,7 @@ ConnectionResult Receiver::M::connectAndRun() {
             }
         }
 
-        if (socket.is_open() && socket.available() > 0) {
+        while (socket.is_open() && socket.available() > 0) {
             wire::MessageHeader header{};
             asio::error_code ec;
             asio::read(socket, asio::buffer(&header, sizeof(header)), ec);
@@ -732,23 +793,72 @@ ConnectionResult Receiver::M::connectAndRun() {
                     return ConnectionResult::Disconnected;
                 }
 
-                const volatile char* result = wireServer->HandleCommands(
-                    commandBuffer.data(), commandBuffer.size());
-                if (result == nullptr) {
-                    SPDLOG_ERROR("Deferred mip HandleCommands failed: tex={} level={}",
-                                dh.textureId, dh.mipLevel);
+                if (dh.hashOnly) {
+                    // Hash probe: commandBuffer = head[128] + hash[8]
+                    if (dh.commandSize < wire::kMipHeadSize + sizeof(uint64_t)) {
+                        SPDLOG_WARN("Mip probe too small");
+                        try { sendMipCacheMiss(socket, dh.textureId, dh.mipLevel); } catch (...) {}
+                    } else {
+                        uint64_t serverHash;
+                        std::memcpy(&serverHash, commandBuffer.data() + wire::kMipHeadSize,
+                                    sizeof(serverHash));
+
+                        auto cachedTail = loadMipFromCache(cacheDir, serverHash);
+
+                        if (!cachedTail.empty()) {
+                            // Reconstruct full command: head + cached tail
+                            std::vector<char> fullCmd(wire::kMipHeadSize + cachedTail.size());
+                            std::memcpy(fullCmd.data(), commandBuffer.data(), wire::kMipHeadSize);
+                            std::memcpy(fullCmd.data() + wire::kMipHeadSize,
+                                        cachedTail.data(), cachedTail.size());
+
+                            const volatile char* result = wireServer->HandleCommands(
+                                fullCmd.data(), fullCmd.size());
+                            if (result == nullptr) {
+                                SPDLOG_WARN("Cached mip rejected: tex={} level={}, sending MISS",
+                                            dh.textureId, dh.mipLevel);
+                                std::error_code fsec;
+                                fs::remove(mipCachePath(cacheDir, serverHash), fsec);
+                                try { sendMipCacheMiss(socket, dh.textureId, dh.mipLevel); } catch (...) {}
+                            } else {
+                                SPDLOG_INFO("Mip cache HIT: tex={} level={} ({:.1f} KB)",
+                                            dh.textureId, dh.mipLevel,
+                                            (wire::kMipHeadSize + cachedTail.size()) / 1024.0);
+                                mipTracker.processDeferredMip(dh.textureId, dh.mipLevel,
+                                                               *wireServer, *serializer);
+                                try { sendMipCacheHit(socket, dh.textureId, dh.mipLevel); } catch (...) {}
+                            }
+                        } else {
+                            SPDLOG_INFO("Mip cache MISS: tex={} level={}", dh.textureId, dh.mipLevel);
+                            try { sendMipCacheMiss(socket, dh.textureId, dh.mipLevel); } catch (...) {}
+                        }
+                    }
                 } else {
-                    SPDLOG_INFO("Deferred mip uploaded: tex={} level={} ({:.1f} KB)",
-                                dh.textureId, dh.mipLevel, dh.commandSize / 1024.0);
-                    // Fabricate new views and bind groups for the updated mip level
-                    mipTracker.processDeferredMip(dh.textureId, dh.mipLevel,
-                                                   *wireServer, *serializer);
+                    // Full data: commandBuffer = head[128] + tail[]
+                    const volatile char* result = wireServer->HandleCommands(
+                        commandBuffer.data(), commandBuffer.size());
+                    if (result == nullptr) {
+                        SPDLOG_ERROR("Deferred mip HandleCommands failed: tex={} level={}",
+                                    dh.textureId, dh.mipLevel);
+                    } else {
+                        SPDLOG_INFO("Deferred mip uploaded: tex={} level={} ({:.1f} KB)",
+                                    dh.textureId, dh.mipLevel, dh.commandSize / 1024.0);
+                        mipTracker.processDeferredMip(dh.textureId, dh.mipLevel,
+                                                       *wireServer, *serializer);
+                        // Cache only the tail (deterministic pixel data)
+                        if (dh.commandSize > wire::kMipHeadSize) {
+                            saveMipToCache(cacheDir,
+                                           commandBuffer.data() + wire::kMipHeadSize,
+                                           dh.commandSize - wire::kMipHeadSize);
+                        }
+                    }
                 }
 
                 serializer->Flush();
             } else if (header.magic == wire::kFrameEndMagic) {
                 wire::MessageHeader ready{wire::kFrameReadyMagic, 0};
                 asio::write(socket, asio::buffer(&ready, sizeof(ready)));
+                break; // yield to SDL event polling
             } else {
                 SPDLOG_WARN("Unknown message magic: 0x{:08X}", header.magic);
                 return ConnectionResult::Disconnected;

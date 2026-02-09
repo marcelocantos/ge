@@ -207,8 +207,23 @@ public:
                 std::memcpy(&texId, buffer_.data() + pos + texIdOff, sizeof(texId));
                 uint32_t mipLevel;
                 std::memcpy(&mipLevel, buffer_.data() + pos + mipOff, sizeof(mipLevel));
-                deferredMips_.push({texId, mipLevel,
-                    {buffer_.data() + pos, buffer_.data() + pos + cmdSize}});
+                {
+                    DeferredMip dm;
+                    dm.textureId = texId;
+                    dm.mipLevel = mipLevel;
+                    std::memset(dm.head, 0, sizeof(dm.head));
+                    size_t headBytes = std::min(static_cast<size_t>(cmdSize),
+                                                wire::kMipHeadSize);
+                    std::memcpy(dm.head, buffer_.data() + pos, headBytes);
+                    if (cmdSize > wire::kMipHeadSize) {
+                        dm.tail.assign(
+                            buffer_.data() + pos + wire::kMipHeadSize,
+                            buffer_.data() + pos + static_cast<size_t>(cmdSize));
+                        dm.tailHash = wire::fnv1a64(dm.tail.data(), dm.tail.size());
+                    }
+                    dm.hashOnly = true;
+                    deferredMips_.push(std::move(dm));
+                }
 
                 // Close current segment (everything before this command)
                 if (pos > segStart) {
@@ -253,31 +268,63 @@ public:
         return !deferredMips_.empty();
     }
 
-    // Sends the next deferred mip to the receiver. Returns true when the queue
-    // just became empty (i.e. this was the last one).
-    bool streamNextDeferredMip() {
-        if (deferredMips_.empty()) return false;
+    bool hasPendingMips() const {
+        return !deferredMips_.empty() || !pendingMips_.empty();
+    }
 
-        const auto& mip = deferredMips_.top();
+    // Sends the next deferred mip (hash probe or full data) to the receiver.
+    // Returns true when all mips are fully resolved (queue and pending both empty).
+    bool streamNextDeferredMip() {
+        if (deferredMips_.empty()) return pendingMips_.empty();
+
+        // Move top element out of priority queue
+        DeferredMip mip = std::move(const_cast<DeferredMip&>(deferredMips_.top()));
+        deferredMips_.pop();
 
         wire::DeferredMipHeader dh{};
         dh.textureId = mip.textureId;
         dh.mipLevel = mip.mipLevel;
-        dh.commandSize = static_cast<uint32_t>(mip.commandData.size());
 
-        uint32_t payloadSize = static_cast<uint32_t>(sizeof(dh) + mip.commandData.size());
-        wire::MessageHeader header{wire::kDeferredMipMagic, payloadSize};
+        if (mip.hashOnly) {
+            // Hash probe: send head[128] + hash[8]
+            uint64_t hash = mip.tailHash;
+            dh.commandSize = static_cast<uint32_t>(wire::kMipHeadSize + sizeof(hash));
+            dh.hashOnly = 1;
 
-        asio::write(socket_, asio::buffer(&header, sizeof(header)));
-        asio::write(socket_, asio::buffer(&dh, sizeof(dh)));
-        asio::write(socket_, asio::buffer(mip.commandData));
+            uint32_t payloadSize = static_cast<uint32_t>(sizeof(dh) + dh.commandSize);
+            wire::MessageHeader header{wire::kDeferredMipMagic, payloadSize};
 
-        SPDLOG_INFO("Streamed deferred mip: tex={} level={} ({:.1f} KB)",
-                    mip.textureId, mip.mipLevel,
-                    mip.commandData.size() / 1024.0);
+            asio::write(socket_, asio::buffer(&header, sizeof(header)));
+            asio::write(socket_, asio::buffer(&dh, sizeof(dh)));
+            asio::write(socket_, asio::buffer(mip.head, wire::kMipHeadSize));
+            asio::write(socket_, asio::buffer(&hash, sizeof(hash)));
 
-        deferredMips_.pop();
-        return deferredMips_.empty();
+            SPDLOG_INFO("Mip probe: tex={} level={} hash={:016x} ({:.1f} KB held)",
+                        mip.textureId, mip.mipLevel, hash, mip.tail.size() / 1024.0);
+
+            uint64_t key = (static_cast<uint64_t>(mip.textureId) << 32) | mip.mipLevel;
+            pendingMips_[key] = std::move(mip);
+        } else {
+            // Full data: send head[128] + tail[]
+            dh.commandSize = static_cast<uint32_t>(wire::kMipHeadSize + mip.tail.size());
+            dh.hashOnly = 0;
+
+            uint32_t payloadSize = static_cast<uint32_t>(sizeof(dh) + dh.commandSize);
+            wire::MessageHeader header{wire::kDeferredMipMagic, payloadSize};
+
+            asio::write(socket_, asio::buffer(&header, sizeof(header)));
+            asio::write(socket_, asio::buffer(&dh, sizeof(dh)));
+            asio::write(socket_, asio::buffer(mip.head, wire::kMipHeadSize));
+            if (!mip.tail.empty()) {
+                asio::write(socket_, asio::buffer(mip.tail));
+            }
+
+            SPDLOG_INFO("Streamed deferred mip: tex={} level={} ({:.1f} KB)",
+                        mip.textureId, mip.mipLevel,
+                        (wire::kMipHeadSize + mip.tail.size()) / 1024.0);
+        }
+
+        return deferredMips_.empty() && pendingMips_.empty();
     }
 
     void sendFrameEnd() {
@@ -325,6 +372,30 @@ public:
                 }
             } else if (header.magic == wire::kFrameReadyMagic) {
                 ++frameReadyCount;
+            } else if (header.magic == wire::kMipCacheHitMagic) {
+                wire::MipCacheResponse resp{};
+                asio::read(socket_, asio::buffer(&resp, sizeof(resp)));
+                uint64_t key = (static_cast<uint64_t>(resp.textureId) << 32) | resp.mipLevel;
+                auto it = pendingMips_.find(key);
+                if (it != pendingMips_.end()) {
+                    SPDLOG_INFO("Mip cache HIT: tex={} level={} ({:.1f} KB saved)",
+                                resp.textureId, resp.mipLevel,
+                                it->second.tail.size() / 1024.0);
+                    pendingMips_.erase(it);
+                }
+            } else if (header.magic == wire::kMipCacheMissMagic) {
+                wire::MipCacheResponse resp{};
+                asio::read(socket_, asio::buffer(&resp, sizeof(resp)));
+                uint64_t key = (static_cast<uint64_t>(resp.textureId) << 32) | resp.mipLevel;
+                auto it = pendingMips_.find(key);
+                if (it != pendingMips_.end()) {
+                    SPDLOG_INFO("Mip cache MISS: tex={} level={}, requeueing ({:.1f} KB)",
+                                resp.textureId, resp.mipLevel,
+                                it->second.tail.size() / 1024.0);
+                    it->second.hashOnly = false;
+                    deferredMips_.push(std::move(it->second));
+                    pendingMips_.erase(it);
+                }
             } else {
                 SPDLOG_ERROR("Unknown message magic: 0x{:08X}", header.magic);
                 if (header.length > 0 && header.length <= wire::kMaxMessageSize) {
@@ -339,12 +410,15 @@ private:
     struct DeferredMip {
         uint32_t textureId;
         uint32_t mipLevel;
-        std::vector<char> commandData;
+        char head[wire::kMipHeadSize];   // non-deterministic wire framing
+        std::vector<char> tail;          // deterministic pixel data
+        uint64_t tailHash = 0;           // precomputed fnv1a64 of tail
+        bool hashOnly = true;            // true = send hash probe, false = send full
 
         // Smallest-first: priority_queue (max-heap) pops the "largest" element,
-        // so invert the comparison to make the smallest commandData the top.
+        // so invert the comparison to make the smallest tail the top.
         bool operator<(const DeferredMip& o) const {
-            return commandData.size() > o.commandData.size();
+            return tail.size() > o.tail.size();
         }
     };
 
@@ -352,6 +426,7 @@ private:
     std::vector<char> buffer_;
     std::vector<char> responseBuffer_;
     std::priority_queue<DeferredMip> deferredMips_;
+    std::unordered_map<uint64_t, DeferredMip> pendingMips_; // awaiting HIT/MISS
 };
 
 void parseListenAddr(const std::string& listenAddr, std::string& address, uint16_t& port) {
@@ -632,24 +707,14 @@ void WireSession::run(std::function<void(float dt)> onFrame,
             m->serializer->processResponses(*m->wireClient, m->onEvent);
             m->instance.ProcessEvents();
 
-            if (m->serializer->hasDeferredMips() &&
-                m->serializer->sendBufferAvailable() >= 64 * 1024) {
-                static const int mipDelayMs = [] {
-                    const char* e = std::getenv("SQ_MIP_DELAY_MS");
-                    return (e && e[0]) ? std::atoi(e) : 0;
-                }();
-                static auto lastMipTime = std::chrono::steady_clock::now();
-                auto now = std::chrono::steady_clock::now();
-                auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - lastMipTime).count();
-
-                if (mipDelayMs <= 0 || elapsed >= mipDelayMs) {
-                    try {
-                        m->serializer->streamNextDeferredMip();
-                        lastMipTime = now;
-                    } catch (const asio::system_error& e) {
-                        SPDLOG_WARN("Disconnect during mip streaming: {}", e.what());
-                        return;
-                    }
+            // Burst all pending mips in one go to avoid frame interleaving
+            while (m->serializer->hasDeferredMips() &&
+                   m->serializer->sendBufferAvailable() >= 64 * 1024) {
+                try {
+                    m->serializer->streamNextDeferredMip();
+                } catch (const asio::system_error& e) {
+                    SPDLOG_WARN("Disconnect during mip streaming: {}", e.what());
+                    return;
                 }
             }
 
