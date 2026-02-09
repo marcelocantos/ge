@@ -57,16 +57,9 @@ std::unique_ptr<Manifest<Meta>> loadManifest(wgpu::Device device, wgpu::Queue qu
         auto baseDir = std::filesystem::path(resolved).parent_path();
         auto manifest = std::make_unique<Manifest<Meta>>();
 
-        // Load textures (fall back to ETC2 if ASTC not supported)
-        bool hasAstc = device.HasFeature(wgpu::FeatureName::TextureCompressionASTC);
+        // Load textures
         for (const auto& [key, relPath] : schema.textures) {
             std::string texPath = (baseDir / relPath).string();
-            if (!hasAstc) {
-                auto pos = texPath.rfind(".astc.sqtex");
-                if (pos != std::string::npos) {
-                    texPath.replace(pos, 11, ".etc2.sqtex");
-                }
-            }
             manifest->textures.emplace(
                 key, std::make_unique<Texture>(Texture::fromFile(device, queue, texPath.c_str())));
         }

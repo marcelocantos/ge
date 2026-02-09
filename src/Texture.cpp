@@ -6,10 +6,17 @@
 #include <spdlog/spdlog.h>
 #include <algorithm>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
+
+#ifdef SQ_HAS_TRANSCODER
+#include <SDL3/SDL_filesystem.h>
+#include <astcenc.h>
+#include <ProcessRGB.hpp>
+#endif
 
 namespace sq {
 
@@ -88,6 +95,158 @@ wgpu::Sampler createSampler(wgpu::Device device, uint32_t mipCount) {
     };
     return device.CreateSampler(&desc);
 }
+
+#ifdef SQ_HAS_TRANSCODER
+
+// Transcode an ASTC sqtex file to ETC2, writing the result to cachePath.
+// Returns true on success.
+bool transcodeAstcToEtc2(const char* srcPath, const char* cachePath) {
+    std::ifstream src(srcPath, std::ios::binary);
+    if (!src) return false;
+
+    SqTexHeader hdr{};
+    src.read(reinterpret_cast<char*>(&hdr), sizeof(hdr));
+    if (!src || std::memcmp(hdr.magic, kSqTexMagic, 4) != 0) return false;
+
+    auto encoding = static_cast<SqTexEncoding>(hdr.encoding);
+    if (encoding != SqTexEncoding::Astc4x4) return false;
+
+    uint32_t w = hdr.width, h = hdr.height, mipCount = hdr.mipCount;
+
+    // Read level sizes
+    std::vector<uint32_t> levelSizes(mipCount);
+    src.read(reinterpret_cast<char*>(levelSizes.data()),
+             static_cast<std::streamsize>(mipCount * sizeof(uint32_t)));
+    if (!src) return false;
+
+    // Set up astcenc decompress-only context
+    astcenc_config config{};
+    astcenc_error status = astcenc_config_init(
+        ASTCENC_PRF_LDR, 4, 4, 1, 0.0f, ASTCENC_FLG_DECOMPRESS_ONLY, &config);
+    if (status != ASTCENC_SUCCESS) {
+        SPDLOG_ERROR("astcenc config_init failed: {}", astcenc_get_error_string(status));
+        return false;
+    }
+
+    astcenc_context* ctx = nullptr;
+    status = astcenc_context_alloc(&config, 1, &ctx);
+    if (status != ASTCENC_SUCCESS) {
+        SPDLOG_ERROR("astcenc context_alloc failed: {}", astcenc_get_error_string(status));
+        return false;
+    }
+
+    astcenc_swizzle swizzle{ASTCENC_SWZ_R, ASTCENC_SWZ_G, ASTCENC_SWZ_B, ASTCENC_SWZ_A};
+
+    // Transcode each mip level
+    std::vector<std::vector<uint8_t>> etc2Levels(mipCount);
+
+    for (uint32_t level = 0; level < mipCount; ++level) {
+        uint32_t mw = std::max(1u, w >> level);
+        uint32_t mh = std::max(1u, h >> level);
+
+        // Read ASTC compressed data
+        std::vector<uint8_t> astcData(levelSizes[level]);
+        src.read(reinterpret_cast<char*>(astcData.data()),
+                 static_cast<std::streamsize>(levelSizes[level]));
+        if (!src) {
+            astcenc_context_free(ctx);
+            return false;
+        }
+
+        // Decompress ASTC → RGBA8
+        // Pad to block-aligned dimensions for the decompressor
+        uint32_t pw = (mw + 3) & ~3u;
+        uint32_t ph = (mh + 3) & ~3u;
+        std::vector<uint8_t> rgba(static_cast<size_t>(pw) * ph * 4);
+
+        astcenc_image image{};
+        image.dim_x = pw;
+        image.dim_y = ph;
+        image.dim_z = 1;
+        image.data_type = ASTCENC_TYPE_U8;
+        void* slices[1] = {rgba.data()};
+        image.data = slices;
+
+        status = astcenc_decompress_image(ctx, astcData.data(), astcData.size(),
+                                          &image, &swizzle, 0);
+        if (status != ASTCENC_SUCCESS) {
+            SPDLOG_ERROR("ASTC decompress failed (level {}): {}",
+                         level, astcenc_get_error_string(status));
+            astcenc_context_free(ctx);
+            return false;
+        }
+        astcenc_decompress_reset(ctx);
+
+        // Compress RGBA → ETC2 (etcpak expects BGRA)
+        size_t blocksX = pw / 4;
+        size_t blocksY = ph / 4;
+        size_t totalBlocks = blocksX * blocksY;
+
+        std::vector<uint32_t> bgra(static_cast<size_t>(pw) * ph);
+        for (uint32_t i = 0; i < static_cast<uint32_t>(pw) * ph; ++i) {
+            const uint8_t* p = rgba.data() + i * 4;
+            bgra[i] = uint32_t(p[2])
+                     | (uint32_t(p[1]) << 8)
+                     | (uint32_t(p[0]) << 16)
+                     | (uint32_t(p[3]) << 24);
+        }
+
+        etc2Levels[level].resize(totalBlocks * 16);
+        CompressEtc2Rgba(bgra.data(),
+                         reinterpret_cast<uint64_t*>(etc2Levels[level].data()),
+                         static_cast<uint32_t>(totalBlocks),
+                         static_cast<size_t>(pw), true);
+    }
+
+    astcenc_context_free(ctx);
+
+    // Write cached ETC2 sqtex file
+    std::filesystem::create_directories(std::filesystem::path(cachePath).parent_path());
+    std::ofstream out(cachePath, std::ios::binary);
+    if (!out) return false;
+
+    SqTexHeader outHdr{};
+    std::memcpy(outHdr.magic, kSqTexMagic, 4);
+    outHdr.encoding = static_cast<uint16_t>(SqTexEncoding::Etc2Rgba8);
+    outHdr.mipCount = static_cast<uint16_t>(mipCount);
+    outHdr.width = w;
+    outHdr.height = h;
+    out.write(reinterpret_cast<const char*>(&outHdr), sizeof(outHdr));
+
+    // Level sizes
+    std::vector<uint32_t> outSizes(mipCount);
+    for (uint32_t i = 0; i < mipCount; ++i) {
+        outSizes[i] = static_cast<uint32_t>(etc2Levels[i].size());
+    }
+    out.write(reinterpret_cast<const char*>(outSizes.data()),
+              static_cast<std::streamsize>(mipCount * sizeof(uint32_t)));
+
+    // Level data
+    for (uint32_t i = 0; i < mipCount; ++i) {
+        out.write(reinterpret_cast<const char*>(etc2Levels[i].data()),
+                  static_cast<std::streamsize>(etc2Levels[i].size()));
+    }
+
+    SPDLOG_INFO("Transcoded ASTC→ETC2: {}x{}, {} mip levels → {}", w, h, mipCount, cachePath);
+    return true;
+}
+
+// Get the cache path for a transcoded texture.
+std::string transcodeCachePath(const char* srcPath) {
+    char* prefPath = SDL_GetPrefPath("squz", "yourworld");
+    std::string cacheDir = prefPath ? std::string(prefPath) + "texcache/" : "/tmp/squz-texcache/";
+    SDL_free(prefPath);
+
+    auto filename = std::filesystem::path(srcPath).filename().string();
+    // Replace .astc.sqtex with .etc2.sqtex
+    auto pos = filename.rfind(".astc.sqtex");
+    if (pos != std::string::npos) {
+        filename.replace(pos, 11, ".etc2.sqtex");
+    }
+    return cacheDir + filename;
+}
+
+#endif // SQ_HAS_TRANSCODER
 
 TextureResult loadSqtex(wgpu::Device device, wgpu::Queue queue,
                          std::ifstream& file, const char* path) {
@@ -386,6 +545,50 @@ Texture Texture::fromFile(wgpu::Device device, wgpu::Queue queue, const char* pa
 
     TextureResult r;
     if (std::memcmp(magic, kSqTexMagic, 4) == 0) {
+#ifdef SQ_HAS_TRANSCODER
+        // Check if this is an ASTC sqtex on a device without ASTC support
+        if (!device.HasFeature(wgpu::FeatureName::TextureCompressionASTC)) {
+            // Peek at the encoding field (bytes 4-5 of the header)
+            uint16_t enc = 0;
+            file.read(reinterpret_cast<char*>(&enc), sizeof(enc));
+            file.seekg(4); // rewind to after magic
+
+            if (static_cast<SqTexEncoding>(enc) == SqTexEncoding::Astc4x4) {
+                file.close();
+                auto resolvedPath = sq::resource(path);
+                auto cachePath = transcodeCachePath(resolvedPath.c_str());
+
+                // Try loading cached ETC2 version
+                std::ifstream cached(cachePath, std::ios::binary);
+                if (cached) {
+                    uint8_t cachedMagic[4]{};
+                    cached.read(reinterpret_cast<char*>(cachedMagic), 4);
+                    if (cached && std::memcmp(cachedMagic, kSqTexMagic, 4) == 0) {
+                        SPDLOG_INFO("Loading cached ETC2 texture: {}", cachePath);
+                        r = loadSqtex(device, queue, cached, cachePath.c_str());
+                        goto done;
+                    }
+                }
+
+                // Cache miss — transcode ASTC→ETC2
+                if (!transcodeAstcToEtc2(resolvedPath.c_str(), cachePath.c_str())) {
+                    throw std::runtime_error(
+                        std::string("Failed to transcode ASTC→ETC2 for ") + path);
+                }
+
+                // Load the freshly-written cache file
+                std::ifstream fresh(cachePath, std::ios::binary);
+                if (!fresh) {
+                    throw std::runtime_error(
+                        std::string("Failed to open transcoded texture ") + cachePath);
+                }
+                uint8_t freshMagic[4]{};
+                fresh.read(reinterpret_cast<char*>(freshMagic), 4);
+                r = loadSqtex(device, queue, fresh, cachePath.c_str());
+                goto done;
+            }
+        }
+#endif
         r = loadSqtex(device, queue, file, path);
     } else if (std::memcmp(magic, kAstcMagic, 4) == 0) {
         r = loadAstc(device, queue, file, path);
@@ -394,6 +597,9 @@ Texture Texture::fromFile(wgpu::Device device, wgpu::Queue queue, const char* pa
         r = loadSdlImage(device, queue, path);
     }
 
+#ifdef SQ_HAS_TRANSCODER
+done:
+#endif
     auto impl = std::make_unique<M>();
     impl->texture = WgpuTexture(std::move(r.tex));
     impl->view = WgpuTextureView(std::move(r.view));

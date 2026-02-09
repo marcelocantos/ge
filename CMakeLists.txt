@@ -61,7 +61,25 @@ target_include_directories(sq PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/vendor/sdl3/include
 )
 
-if(NOT SQ_DIRECT)
+if(SQ_DIRECT)
+    # astcenc (decompress-only) for ASTC→RGBA decoding at runtime
+    set(ASTCENC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/vendor/github.com/ARM-software/astc-encoder/Source)
+    file(GLOB ASTCENC_SOURCES ${ASTCENC_DIR}/astcenc_*.cpp)
+    add_library(astcenc STATIC ${ASTCENC_SOURCES})
+    target_include_directories(astcenc PUBLIC ${ASTCENC_DIR})
+    target_compile_definitions(astcenc PUBLIC ASTCENC_DECOMPRESS_ONLY)
+    target_compile_definitions(astcenc PRIVATE ASTCENC_SSE=0 ASTCENC_AVX=0 ASTCENC_POPCNT=0 ASTCENC_NEON=1)
+    set_target_properties(astcenc PROPERTIES CXX_STANDARD 17)
+
+    # etcpak for RGBA→ETC2 compression at runtime
+    set(ETCPAK_DIR ${CMAKE_CURRENT_SOURCE_DIR}/vendor/github.com/wolfpld/etcpak)
+    file(GLOB ETCPAK_SOURCES ${ETCPAK_DIR}/*.cpp)
+    add_library(etcpak STATIC ${ETCPAK_SOURCES})
+    target_include_directories(etcpak PUBLIC ${ETCPAK_DIR})
+
+    target_link_libraries(sq PRIVATE astcenc etcpak)
+    target_compile_definitions(sq PRIVATE SQ_HAS_TRANSCODER)
+else()
     target_include_directories(sq PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/vendor/github.com/chriskohlhoff/asio/include
         ${CMAKE_CURRENT_SOURCE_DIR}/vendor/github.com/nayuki/QR-Code-generator/cpp
