@@ -289,6 +289,165 @@ The receiver retries on disconnect with exponential backoff: 10ms initial, doubl
 
 **Android:** Gradle project in `sq/tools/android/`. Entry point: `main.cpp`.
 
+## Standalone iOS App (Direct Mode)
+
+Apps can also run directly on iOS without the wire receiver, rendering natively on-device. This uses `Session` compiled with `SessionDirect.cpp` instead of `SessionWire.cpp` — same API, no networking.
+
+### Prerequisites
+
+Cross-compile Dawn, SDL3, and SDL3_image for iOS:
+
+```bash
+cd sq/tools/ios && bash build-deps.sh --simulator   # iOS Simulator
+cd sq/tools/ios && bash build-deps.sh --device       # Real device (default)
+cd sq/tools/ios && bash build-deps.sh --all          # Both
+```
+
+This produces static libraries under `sq/vendor/dawn/lib/ios-arm64{,-simulator}/` and `sq/vendor/sdl3/lib/ios-arm64{,-simulator}/`. Only needs to run once (or after upgrading Dawn/SDL).
+
+### Project Structure
+
+Create an `ios/` directory at the project root with:
+
+- **`CMakeLists.txt`** — CMake project that generates an Xcode project
+- **`Info.plist`** — iOS app metadata (orientation, fullscreen, etc.)
+
+The CMake project compiles game sources + a subset of sq engine sources (direct mode — no wire, no asio, no QR). It links against the prebuilt Dawn and SDL3 static libraries.
+
+### CMakeLists.txt Essentials
+
+```cmake
+cmake_minimum_required(VERSION 3.22)
+project(MyApp LANGUAGES CXX OBJCXX)
+set(CMAKE_CXX_STANDARD 20)
+
+set(PROJECT_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/..)
+set(SQ_ROOT ${PROJECT_ROOT}/sq)
+
+# Game sources
+set(GAME_SOURCES ${PROJECT_ROOT}/src/main.cpp ${PROJECT_ROOT}/src/MyApp.cpp)
+
+# sq engine sources (direct mode subset)
+set(SQ_SOURCES
+    ${SQ_ROOT}/src/SessionDirect.cpp
+    ${SQ_ROOT}/src/GpuContext.cpp
+    ${SQ_ROOT}/src/SdlContext.cpp
+    ${SQ_ROOT}/src/WireTransport.cpp   # GpuContext references it (no networking deps)
+    ${SQ_ROOT}/src/Texture.cpp
+    ${SQ_ROOT}/src/Mesh.cpp
+    ${SQ_ROOT}/src/Model.cpp
+    ${SQ_ROOT}/src/ManifestLoader.cpp
+    ${SQ_ROOT}/src/Pipeline.cpp
+    ${SQ_ROOT}/src/BindGroup.cpp
+    ${SQ_ROOT}/src/Resource.cpp
+)
+
+add_executable(MyApp MACOSX_BUNDLE ${GAME_SOURCES} ${SQ_SOURCES})
+
+# ObjC++ for files that use ObjC types (CAMetalLayer, UIApplication)
+set_source_files_properties(${PROJECT_ROOT}/src/main.cpp PROPERTIES LANGUAGE OBJCXX)
+set_source_files_properties(${SQ_ROOT}/src/SdlContext.cpp PROPERTIES LANGUAGE OBJCXX)
+set_source_files_properties(${SQ_ROOT}/src/GpuContext.cpp PROPERTIES LANGUAGE OBJCXX)
+
+# Headers
+target_include_directories(MyApp PRIVATE
+    ${PROJECT_ROOT}/src
+    ${SQ_ROOT}/include
+    ${SQ_ROOT}/vendor/include
+    ${SQ_ROOT}/vendor/github.com/gabime/spdlog/include
+    ${SQ_ROOT}/vendor/dawn/include
+    ${SQ_ROOT}/vendor/github.com/libsdl-org/SDL/include
+    ${SQ_ROOT}/vendor/sdl3/include
+)
+
+# Libraries
+target_link_libraries(MyApp PRIVATE -ldawn_proc -lwebgpu_dawn -ldawn_wire -lSDL3 -lSDL3_image)
+
+# iOS frameworks (SDL3 requires all of these)
+target_link_libraries(MyApp PRIVATE
+    "-framework Foundation" "-framework UIKit" "-framework Metal"
+    "-framework QuartzCore" "-framework IOKit" "-framework IOSurface"
+    "-framework CoreGraphics" "-framework CoreServices" "-framework CoreFoundation"
+    "-framework CoreBluetooth" "-framework AudioToolbox" "-framework AVFoundation"
+    "-framework CoreMedia" "-framework CoreVideo" "-framework GameController"
+    "-framework CoreHaptics" "-framework CoreMotion" "-framework ImageIO"
+    "-framework OpenGLES" "-lobjc"
+)
+
+# SDK-conditional library search paths (one project works for device + simulator)
+set(DAWN_DEVICE_DIR ${SQ_ROOT}/vendor/dawn/lib/ios-arm64)
+set(DAWN_SIM_DIR    ${SQ_ROOT}/vendor/dawn/lib/ios-arm64-simulator)
+set(SDL_DEVICE_DIR  ${SQ_ROOT}/vendor/sdl3/lib/ios-arm64)
+set(SDL_SIM_DIR     ${SQ_ROOT}/vendor/sdl3/lib/ios-arm64-simulator)
+
+set_target_properties(MyApp PROPERTIES
+    MACOSX_BUNDLE_INFO_PLIST ${CMAKE_CURRENT_SOURCE_DIR}/Info.plist
+    "XCODE_ATTRIBUTE_LIBRARY_SEARCH_PATHS[sdk=iphoneos*]" "${DAWN_DEVICE_DIR} ${SDL_DEVICE_DIR}"
+    "XCODE_ATTRIBUTE_LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]" "${DAWN_SIM_DIR} ${SDL_SIM_DIR}"
+    XCODE_GENERATE_SCHEME TRUE
+    XCODE_SCHEME_ENABLE_GPU_API_VALIDATION OFF   # Simulator GPU doesn't support depth clip mode
+)
+```
+
+### Bundle Resources
+
+Data files (manifest, meshes, textures, shaders) must be bundled into the app. Add them as sources and set `MACOSX_PACKAGE_LOCATION` to preserve directory structure:
+
+```cmake
+set(RESOURCE_FILES
+    ${PROJECT_ROOT}/data/manifest.json
+    ${PROJECT_ROOT}/data/meshes.bin
+    ${PROJECT_ROOT}/shaders/atlas.wgsl
+)
+file(GLOB TEXTURE_FILES ${PROJECT_ROOT}/data/textures/*)
+list(APPEND RESOURCE_FILES ${TEXTURE_FILES})
+target_sources(MyApp PRIVATE ${RESOURCE_FILES})
+
+foreach(FILE ${RESOURCE_FILES})
+    file(RELATIVE_PATH REL_PATH ${PROJECT_ROOT} ${FILE})
+    get_filename_component(REL_DIR ${REL_PATH} DIRECTORY)
+    set_source_files_properties(${FILE} PROPERTIES
+        MACOSX_PACKAGE_LOCATION "Resources/${REL_DIR}")
+endforeach()
+```
+
+At runtime, `sq::resource("data/manifest.json")` resolves to the correct bundle path.
+
+### Generating and Building
+
+```bash
+# Generate Xcode project (simulator)
+cd ios && cmake -G Xcode -B build/xcode \
+    -DCMAKE_SYSTEM_NAME=iOS \
+    -DCMAKE_OSX_SYSROOT=iphonesimulator \
+    -DCMAKE_OSX_ARCHITECTURES=arm64 \
+    -DCMAKE_OSX_DEPLOYMENT_TARGET=16.0
+
+# Open in Xcode and build/run
+open build/xcode/MyApp.xcodeproj
+```
+
+For real devices, omit `-DCMAKE_OSX_SYSROOT=iphonesimulator` (defaults to `iphoneos`).
+
+### Key Differences from Wire Mode
+
+| Concern | Wire mode | Direct mode |
+|---------|-----------|-------------|
+| Session | `SessionWire.cpp` (TCP server) | `SessionDirect.cpp` (SDL window) |
+| Rendering | Receiver renders on-device | App renders directly via Metal |
+| Dependencies | asio, QR code generator | None (no networking) |
+| Entry point | `main()` (plain C++) | `main(int, char*[])` with `SDL_main.h` |
+| Asset paths | Relative to working directory | `sq::resource()` resolves to bundle |
+| Texture format | ASTC (if device supports it) | Runtime fallback: ASTC or ETC2 |
+
+### Texture Compression
+
+The iOS Simulator GPU supports ETC2 but not ASTC. Generate both formats during precompute (`.astc.sqtex` and `.etc2.sqtex`), and the manifest loader automatically selects the right one at runtime based on `device.HasFeature(wgpu::FeatureName::TextureCompressionASTC)`.
+
+### Input Handling
+
+Use `SDL_EVENT_FINGER_*` events exclusively for touch/drag input. SDL3 synthesizes finger events from mouse input on desktop (`SDL_HINT_MOUSE_TOUCH_EVENTS` defaults on), so the same code path works everywhere. Finger event coordinates are normalized 0-1; convert to point space by multiplying by `width / pixelRatio`.
+
 ## Public API
 
 ### Wire Transport
@@ -300,7 +459,9 @@ The receiver retries on disconnect with exponential backoff: 10ms initial, doubl
 ### Platform
 
 - **`GpuContext`** — WebGPU device/queue/surface lifecycle. Supports native init (from `SdlContext`) or wire-mode init (device, queue, surface, format, dimensions). `currentFrameView()` + `present()` for frame rendering. pImpl.
+- **`Session`** — Unified session interface. Compiles as wire mode (`SessionWire.cpp`) or direct native mode (`SessionDirect.cpp`). Same API: `gpu()`, `pixelRatio()`, `run(onFrame, onEvent)`. pImpl.
 - **`SdlContext`** — RAII SDL3 window creation with Metal layer for WebGPU surface. pImpl.
+- **`Resource`** — `sq::resource(path)` resolves asset paths. Returns the path unchanged on desktop; prepends the iOS app bundle `Resources/` directory on iOS. Header-only.
 
 ### GPU Resources
 
