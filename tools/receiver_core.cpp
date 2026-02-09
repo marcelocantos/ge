@@ -855,6 +855,7 @@ ConnectionResult Receiver::M::connectAndRun() {
                 }
 
                 serializer->Flush();
+                break; // yield so a frame can render with updated quality
             } else if (header.magic == wire::kFrameEndMagic) {
                 wire::MessageHeader ready{wire::kFrameReadyMagic, 0};
                 asio::write(socket, asio::buffer(&ready, sizeof(ready)));
