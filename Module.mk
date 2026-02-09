@@ -149,7 +149,7 @@ sq/android-init:
 sq/ios-init:
 	@if [ -z "$(APP_ID)" ] || [ -z "$(APP_NAME)" ]; then \
 		echo "Error: set APP_ID and APP_NAME"; exit 1; fi
-	sq/tools/init-ios.sh "$(APP_ID)" "$(APP_NAME)"
+	sq/tools/init-ios.sh "$(APP_ID)" "$(APP_NAME)" "$(DEVELOPMENT_TEAM)"
 
 # ────────────────────────────────────────────────
 # Generic targets (use CLEAN, CLEAN_SHADERS, COMPILE_DB_DEPS)
