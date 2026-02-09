@@ -1,0 +1,26 @@
+cmake_minimum_required(VERSION 3.22)
+project(__CMAKE_PROJECT__ LANGUAGES CXX)
+set(CMAKE_CXX_STANDARD 20)
+
+set(PROJECT_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../../../../..)
+set(SQ_ROOT ${PROJECT_ROOT}/sq)
+
+# ── sq engine (direct mode — no wire/networking) ─────
+
+set(SQ_DIRECT ON CACHE BOOL "" FORCE)
+add_subdirectory(${SQ_ROOT} ${CMAKE_BINARY_DIR}/sq)
+
+# ── Game sources ─────────────────────────────────────
+
+add_library(main SHARED
+    ${PROJECT_ROOT}/src/main.cpp
+    ${PROJECT_ROOT}/src/Application.cpp
+)
+
+target_include_directories(main PRIVATE
+    ${PROJECT_ROOT}/src
+    ${PROJECT_ROOT}/include
+)
+
+# Everything propagates from sq via INTERFACE/PUBLIC linking
+target_link_libraries(main PRIVATE sq)

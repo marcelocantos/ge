@@ -1,0 +1,10 @@
+package __PACKAGE__;
+
+import org.libsdl.app.SDLActivity;
+
+public class __ACTIVITY__ extends SDLActivity {
+    @Override
+    protected String[] getLibraries() {
+        return new String[]{"SDL3", "main"};
+    }
+}
