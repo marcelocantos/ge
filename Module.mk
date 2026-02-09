@@ -11,6 +11,8 @@ sq/INCLUDES = \
 	-Isq/vendor/include \
 	-Isq/vendor/github.com/gabime/spdlog/include \
 	-Isq/vendor/dawn/include \
+	-Isq/vendor/github.com/libsdl-org/SDL/include \
+	-Isq/vendor/sdl3/include \
 	-Isq/vendor/github.com/nayuki/QR-Code-generator/cpp
 
 # Dawn (WebGPU) libraries
@@ -19,6 +21,16 @@ sq/DAWN_PROC_LIB = sq/vendor/dawn/lib/macos-arm64/libdawn_proc.a
 sq/DAWN_LIB = sq/vendor/dawn/lib/macos-arm64/libwebgpu_dawn.a
 sq/DAWN_WIRE_LIB = sq/vendor/dawn/lib/macos-arm64/libdawn_wire.a
 sq/DAWN_LIBS = $(sq/DAWN_PROC_LIB) $(sq/DAWN_LIB) $(sq/DAWN_WIRE_LIB)
+
+# SDL3 libraries (static, vendored)
+sq/SDL3_LIB = sq/vendor/sdl3/lib/macos-arm64/libSDL3.a
+sq/SDL3_IMAGE_LIB = sq/vendor/sdl3/lib/macos-arm64/libSDL3_image.a
+sq/SDL3_TTF_LIB = sq/vendor/sdl3/lib/macos-arm64/libSDL3_ttf.a
+sq/FREETYPE_LIB = sq/vendor/sdl3/lib/macos-arm64/libfreetype.a
+sq/HARFBUZZ_LIB = sq/vendor/sdl3/lib/macos-arm64/libharfbuzz.a
+sq/PLUTOSVG_LIB = sq/vendor/sdl3/lib/macos-arm64/libplutosvg.a
+sq/PLUTOVG_LIB = sq/vendor/sdl3/lib/macos-arm64/libplutovg.a
+sq/SDL_LIBS = $(sq/SDL3_LIB) $(sq/SDL3_IMAGE_LIB) $(sq/SDL3_TTF_LIB) $(sq/FREETYPE_LIB) $(sq/HARFBUZZ_LIB) $(sq/PLUTOSVG_LIB) $(sq/PLUTOVG_LIB)
 
 sq/SRC = \
 	sq/src/GpuContext.cpp \
@@ -165,7 +177,7 @@ sq/init:
 	@echo "  Homebrew installed"
 	@command -v xcode-select >/dev/null 2>&1 && xcode-select -p >/dev/null 2>&1 || { echo "ERROR: Xcode Command Line Tools not found. Run: xcode-select --install"; exit 1; }
 	@echo "  Xcode Command Line Tools installed"
-	@brew install git-lfs sdl3 sdl3_image sdl3_ttf
+	@brew install git-lfs
 	@git lfs install
 	@git lfs pull
 	@echo "  Dependencies installed"

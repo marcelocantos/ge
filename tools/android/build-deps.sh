@@ -57,8 +57,8 @@ if [ ! -d "$DAWN_SRC/.git" ]; then
 fi
 
 echo "==> Checking out Dawn $DAWN_COMMIT..."
-git -C "$DAWN_SRC" fetch origin
-git -C "$DAWN_SRC" checkout "$DAWN_COMMIT"
+git -C "$DAWN_SRC" fetch --no-recurse-submodules origin
+git -C "$DAWN_SRC" checkout --no-recurse-submodules "$DAWN_COMMIT"
 
 echo "==> Fetching Dawn dependencies..."
 python3 "$DAWN_SRC/tools/fetch_dawn_dependencies.py"

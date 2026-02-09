@@ -1,6 +1,7 @@
-cmake_minimum_required(VERSION 3.22)
+cmake_minimum_required(VERSION 3.28)
 project(Receiver LANGUAGES CXX OBJCXX)
 set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_XCODE_LINK_BUILD_PHASE_MODE KNOWN_LOCATION)
 
 set(SQ_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../..)
 set(DEPS_BUILD ${CMAKE_CURRENT_SOURCE_DIR}/build)
@@ -33,8 +34,13 @@ target_include_directories(Receiver PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
-# Dawn + SDL3 — link by name, resolve paths per SDK at build time
-target_link_libraries(Receiver PRIVATE -ldawn_proc -lwebgpu_dawn -ldawn_wire -lSDL3)
+# Libraries (xcframeworks — universal device + simulator)
+target_link_libraries(Receiver PRIVATE
+    ${SQ_ROOT}/vendor/dawn/xcframeworks/dawn_proc.xcframework
+    ${SQ_ROOT}/vendor/dawn/xcframeworks/webgpu_dawn.xcframework
+    ${SQ_ROOT}/vendor/dawn/xcframeworks/dawn_wire.xcframework
+    ${SQ_ROOT}/vendor/sdl3/xcframeworks/SDL3.xcframework
+)
 
 # iOS frameworks
 target_link_libraries(Receiver PRIVATE
@@ -59,11 +65,6 @@ target_link_libraries(Receiver PRIVATE
     "-lobjc"
 )
 
-set(DAWN_DEVICE_DIR ${SQ_ROOT}/vendor/dawn/lib/ios-arm64)
-set(DAWN_SIM_DIR    ${SQ_ROOT}/vendor/dawn/lib/ios-arm64-simulator)
-set(SDL_DEVICE_DIR  ${SQ_ROOT}/vendor/sdl3/lib/ios-arm64)
-set(SDL_SIM_DIR     ${SQ_ROOT}/vendor/sdl3/lib/ios-arm64-simulator)
-
 set_target_properties(Receiver PROPERTIES
     MACOSX_BUNDLE_GUI_IDENTIFIER com.squz.receiver
     MACOSX_BUNDLE_BUNDLE_VERSION 1
@@ -72,8 +73,6 @@ set_target_properties(Receiver PROPERTIES
     XCODE_ATTRIBUTE_TARGETED_DEVICE_FAMILY "1,2"
     XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "com.squz.receiver"
     XCODE_ATTRIBUTE_DEVELOPMENT_TEAM "SWA3H3N7TW"
-    "XCODE_ATTRIBUTE_LIBRARY_SEARCH_PATHS[sdk=iphoneos*]" "${DAWN_DEVICE_DIR} ${SDL_DEVICE_DIR}"
-    "XCODE_ATTRIBUTE_LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]" "${DAWN_SIM_DIR} ${SDL_SIM_DIR}"
     XCODE_GENERATE_SCHEME TRUE
     XCODE_SCHEME_ENABLE_GPU_API_VALIDATION OFF
 )
