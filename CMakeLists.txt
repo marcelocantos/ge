@@ -86,3 +86,32 @@ else()
     )
     target_compile_definitions(sq PUBLIC ASIO_STANDALONE)
 endif()
+
+# ── iOS: propagate xcframeworks + system frameworks to consumers ──
+
+if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    set(SQ_VENDOR ${CMAKE_CURRENT_SOURCE_DIR}/vendor)
+    target_link_libraries(sq INTERFACE
+        ${SQ_VENDOR}/dawn/xcframeworks/dawn_proc.xcframework
+        ${SQ_VENDOR}/dawn/xcframeworks/webgpu_dawn.xcframework
+        ${SQ_VENDOR}/dawn/xcframeworks/dawn_wire.xcframework
+        ${SQ_VENDOR}/sdl3/xcframeworks/SDL3.xcframework
+        ${SQ_VENDOR}/sdl3/xcframeworks/SDL3_image.xcframework
+        ${SQ_VENDOR}/sdl3/xcframeworks/SDL3_ttf.xcframework
+        ${SQ_VENDOR}/sdl3/xcframeworks/freetype.xcframework
+        ${SQ_VENDOR}/sdl3/xcframeworks/harfbuzz.xcframework
+        ${SQ_VENDOR}/sdl3/xcframeworks/plutosvg.xcframework
+        ${SQ_VENDOR}/sdl3/xcframeworks/plutovg.xcframework
+    )
+    target_link_libraries(sq INTERFACE
+        "-framework Foundation" "-framework UIKit" "-framework Metal"
+        "-framework QuartzCore" "-framework IOKit" "-framework IOSurface"
+        "-framework CoreGraphics" "-framework CoreServices"
+        "-framework CoreFoundation" "-framework CoreBluetooth"
+        "-framework AudioToolbox" "-framework AVFoundation"
+        "-framework CoreMedia" "-framework CoreVideo"
+        "-framework GameController" "-framework CoreHaptics"
+        "-framework CoreMotion" "-framework ImageIO"
+        "-framework OpenGLES" "-lobjc"
+    )
+endif()
