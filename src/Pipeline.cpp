@@ -1,5 +1,6 @@
 #include <sq/Pipeline.h>
 #include <sq/ModelFormat.h>
+#include <sq/Resource.h>
 #include <spdlog/spdlog.h>
 #include <fstream>
 #include <sstream>
@@ -181,7 +182,7 @@ Pipeline Pipeline::create(wgpu::Device device, const PipelineDesc& desc) {
 }
 
 Pipeline Pipeline::load(wgpu::Device device, const char* wgslPath, const PipelineDesc& baseDesc) {
-    std::ifstream file(wgslPath);
+    std::ifstream file(sq::resource(wgslPath));
     if (!file) {
         throw std::runtime_error(std::string("Failed to open shader file: ") + wgslPath);
     }

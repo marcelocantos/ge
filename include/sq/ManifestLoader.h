@@ -3,6 +3,7 @@
 #include <webgpu/webgpu_cpp.h>
 #include <sq/ManifestSchema.h>
 #include <sq/Mesh.h>
+#include <sq/Resource.h>
 #include <sq/Texture.h>
 #include <filesystem>
 #include <fstream>
@@ -46,18 +47,26 @@ std::unique_ptr<Manifest<Meta>> loadManifest(wgpu::Device device, wgpu::Queue qu
     try {
         SPDLOG_INFO("Loading manifest: {}", path);
 
-        std::ifstream f(path);
+        auto resolved = sq::resource(path);
+        std::ifstream f(resolved);
         if (!f) {
             throw std::runtime_error("file not found");
         }
 
         auto schema = nlohmann::json::parse(f).template get<ManifestDoc<Meta>>();
-        auto baseDir = std::filesystem::path(path).parent_path();
+        auto baseDir = std::filesystem::path(resolved).parent_path();
         auto manifest = std::make_unique<Manifest<Meta>>();
 
-        // Load textures
+        // Load textures (fall back to ETC2 if ASTC not supported)
+        bool hasAstc = device.HasFeature(wgpu::FeatureName::TextureCompressionASTC);
         for (const auto& [key, relPath] : schema.textures) {
             std::string texPath = (baseDir / relPath).string();
+            if (!hasAstc) {
+                auto pos = texPath.rfind(".astc.sqtex");
+                if (pos != std::string::npos) {
+                    texPath.replace(pos, 11, ".etc2.sqtex");
+                }
+            }
             manifest->textures.emplace(
                 key, std::make_unique<Texture>(Texture::fromFile(device, queue, texPath.c_str())));
         }

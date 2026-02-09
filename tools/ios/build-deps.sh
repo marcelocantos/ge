@@ -1,5 +1,5 @@
 #!/bin/bash
-# Cross-compile Dawn and SDL3 for iOS (device and/or simulator).
+# Cross-compile Dawn, SDL3, and SDL3_image for iOS (device and/or simulator).
 # Run once (or after updating the Dawn version).
 #
 # Usage: cd sq/tools/ios && bash build-deps.sh [--device|--simulator|--all]
@@ -103,6 +103,7 @@ build_sdl() {
     local SYSROOT="$1"   # iphoneos or iphonesimulator
     local SUFFIX="$2"    # "" or "-simulator"
     local SDL_B="$BUILD/sdl3${SUFFIX}"
+    local SDL_PREFIX="$BUILD/sdl3-prefix${SUFFIX}"
     local DEST="$VENDOR/sdl3/lib/ios-arm64${SUFFIX}"
 
     if [ ! -e "$SDL_SRC/.git" ]; then
@@ -118,27 +119,74 @@ build_sdl() {
         -DCMAKE_OSX_ARCHITECTURES=arm64 \
         -DCMAKE_OSX_DEPLOYMENT_TARGET=16.0 \
         -DCMAKE_OSX_SYSROOT="$SYSROOT" \
+        -DCMAKE_INSTALL_PREFIX="$SDL_PREFIX" \
         -DSDL_SHARED=OFF \
         -DSDL_STATIC=ON
 
     echo "==> Building SDL3 ($SYSROOT)..."
     cmake --build "$SDL_B" -j"$JOBS"
 
+    echo "==> Installing SDL3 to staging prefix..."
+    cmake --install "$SDL_B"
+
     mkdir -p "$DEST"
     cp "$SDL_B/libSDL3.a" "$DEST/"
     echo "==> SDL3 ($SYSROOT) installed to $DEST"
 }
 
+# ── Helper: build SDL3_image for a given sysroot ─────
+
+SDL_IMAGE_TAG="release-3.4.0"
+SDL_IMAGE_REPO="https://github.com/libsdl-org/SDL_image.git"
+SDL_IMAGE_SRC="$BUILD/sdl3_image-src"
+
+build_sdl_image() {
+    local SYSROOT="$1"   # iphoneos or iphonesimulator
+    local SUFFIX="$2"    # "" or "-simulator"
+    local IMG_B="$BUILD/sdl3_image${SUFFIX}"
+    local DEST="$VENDOR/sdl3/lib/ios-arm64${SUFFIX}"
+    local SDL_PREFIX="$BUILD/sdl3-prefix${SUFFIX}"
+
+    if [ ! -d "$SDL_IMAGE_SRC/.git" ]; then
+        echo "==> Cloning SDL3_image..."
+        git clone --branch "$SDL_IMAGE_TAG" --depth 1 "$SDL_IMAGE_REPO" "$SDL_IMAGE_SRC"
+    fi
+
+    echo "==> Configuring SDL3_image for iOS arm64 ($SYSROOT)..."
+    cmake -S "$SDL_IMAGE_SRC" -B "$IMG_B" \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_SYSTEM_NAME=iOS \
+        -DCMAKE_OSX_ARCHITECTURES=arm64 \
+        -DCMAKE_OSX_DEPLOYMENT_TARGET=16.0 \
+        -DCMAKE_OSX_SYSROOT="$SYSROOT" \
+        -DBUILD_SHARED_LIBS=OFF \
+        -DSDL3_DIR="$SDL_PREFIX/lib/cmake/SDL3"
+
+    echo "==> Building SDL3_image ($SYSROOT)..."
+    cmake --build "$IMG_B" -j"$JOBS"
+
+    mkdir -p "$DEST"
+    cp "$IMG_B/libSDL3_image.a" "$DEST/"
+
+    # Install header alongside SDL3 headers
+    local INC_DEST="$VENDOR/sdl3/include/SDL3_image"
+    mkdir -p "$INC_DEST"
+    cp "$SDL_IMAGE_SRC/include/SDL3_image/SDL_image.h" "$INC_DEST/"
+    echo "==> SDL3_image ($SYSROOT) installed to $DEST"
+}
+
 # ── Build ────────────────────────────────────────────
 
 if $BUILD_DEVICE; then
-    build_dawn "iphoneos" ""
-    build_sdl  "iphoneos" ""
+    build_dawn     "iphoneos" ""
+    build_sdl      "iphoneos" ""
+    build_sdl_image "iphoneos" ""
 fi
 
 if $BUILD_SIM; then
-    build_dawn "iphonesimulator" "-simulator"
-    build_sdl  "iphonesimulator" "-simulator"
+    build_dawn     "iphonesimulator" "-simulator"
+    build_sdl      "iphonesimulator" "-simulator"
+    build_sdl_image "iphonesimulator" "-simulator"
 fi
 
 echo ""

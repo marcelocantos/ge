@@ -5,6 +5,7 @@
 #include <spdlog/spdlog.h>
 #include <memory>
 #include <stdexcept>
+#include <vector>
 
 namespace sq {
 
@@ -114,11 +115,18 @@ GpuContext::GpuContext(void* nativeLayer, int width, int height, WireTransport* 
                         std::string_view(message.data, message.length));
         });
 
-    wgpu::FeatureName astcFeature = wgpu::FeatureName::TextureCompressionASTC;
-    if (m->adapter.HasFeature(astcFeature)) {
-        deviceDesc.requiredFeatureCount = 1;
-        deviceDesc.requiredFeatures = &astcFeature;
+    std::vector<wgpu::FeatureName> features;
+    if (m->adapter.HasFeature(wgpu::FeatureName::TextureCompressionASTC)) {
+        features.push_back(wgpu::FeatureName::TextureCompressionASTC);
         SPDLOG_INFO("Requesting ASTC texture compression");
+    }
+    if (m->adapter.HasFeature(wgpu::FeatureName::TextureCompressionETC2)) {
+        features.push_back(wgpu::FeatureName::TextureCompressionETC2);
+        SPDLOG_INFO("Requesting ETC2 texture compression");
+    }
+    if (!features.empty()) {
+        deviceDesc.requiredFeatureCount = features.size();
+        deviceDesc.requiredFeatures = features.data();
     }
 
     // Create device (synchronous for both native and wire mode with native adapter)

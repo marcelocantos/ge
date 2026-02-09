@@ -9,8 +9,9 @@ constexpr uint8_t kSqTexMagic[4] = {0x53, 0x51, 0x54, 0x58}; // "SQTX"
 // How mip level data is stored in a .sqtex file.
 // The loader derives the GPU texture format from the encoding.
 enum class SqTexEncoding : uint16_t {
-    Astc4x4 = 0, // Raw ASTC 4x4 blocks → GPU format ASTC4x4Unorm
-    Png     = 1, // PNG blob per level, decoded to RGBA8 → GPU format RGBA8Unorm
+    Astc4x4   = 0, // Raw ASTC 4x4 blocks → GPU format ASTC4x4Unorm
+    Png       = 1, // PNG blob per level, decoded to RGBA8 → GPU format RGBA8Unorm
+    Etc2Rgba8 = 2, // Raw ETC2 EAC RGBA8 blocks → GPU format ETC2RGBA8Unorm
 };
 
 // .sqtex file header — immediately followed by uint32_t levelSizes[mipCount],

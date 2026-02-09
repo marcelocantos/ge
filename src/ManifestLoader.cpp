@@ -1,5 +1,6 @@
 #include <sq/ManifestLoader.h>
 #include <sq/ModelFormat.h>
+#include <sq/Resource.h>
 #include <cstring>
 #include <stdexcept>
 
@@ -13,7 +14,7 @@ std::unordered_map<std::string, Mesh> loadMeshPack(wgpu::Device device, const st
     try {
         std::unordered_map<std::string, Mesh> meshes;
 
-        std::ifstream f(path, std::ios::binary);
+        std::ifstream f(sq::resource(path), std::ios::binary);
         if (!f) {
             throw std::runtime_error("file not found");
         }

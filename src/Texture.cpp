@@ -1,4 +1,5 @@
 #include <sq/Texture.h>
+#include <sq/Resource.h>
 #include <sq/SqTexFormat.h>
 #include <sq/WgpuResource.h>
 #include <SDL3_image/SDL_image.h>
@@ -44,8 +45,9 @@ constexpr uint8_t kAstcMagic[4] = {0x13, 0xAB, 0xA1, 0x5C};
 
 wgpu::TextureFormat gpuFormat(SqTexEncoding e) {
     switch (e) {
-        case SqTexEncoding::Astc4x4: return wgpu::TextureFormat::ASTC4x4Unorm;
-        case SqTexEncoding::Png:     return wgpu::TextureFormat::RGBA8Unorm;
+        case SqTexEncoding::Astc4x4:   return wgpu::TextureFormat::ASTC4x4Unorm;
+        case SqTexEncoding::Etc2Rgba8: return wgpu::TextureFormat::ETC2RGBA8Unorm;
+        case SqTexEncoding::Png:       return wgpu::TextureFormat::RGBA8Unorm;
     }
     throw std::runtime_error("Unknown SqTexEncoding");
 }
@@ -103,9 +105,16 @@ TextureResult loadSqtex(wgpu::Device device, wgpu::Queue queue,
     uint32_t h = hdr.height;
     uint32_t mipCount = hdr.mipCount;
 
+    auto encodingName = [&] {
+        switch (encoding) {
+            case SqTexEncoding::Astc4x4:   return "ASTC 4x4";
+            case SqTexEncoding::Etc2Rgba8: return "ETC2 RGBA8";
+            case SqTexEncoding::Png:       return "PNG";
+        }
+        return "unknown";
+    }();
     SPDLOG_INFO("sqtex: {}x{}, {} mip levels, {} from {}",
-                w, h, mipCount,
-                encoding == SqTexEncoding::Astc4x4 ? "ASTC 4x4" : "PNG", path);
+                w, h, mipCount, encodingName, path);
 
     // Read level size table
     std::vector<uint32_t> levelSizes(mipCount);
@@ -148,8 +157,9 @@ TextureResult loadSqtex(wgpu::Device device, wgpu::Queue queue,
             .aspect = wgpu::TextureAspect::All,
         };
 
-        if (encoding == SqTexEncoding::Astc4x4) {
+        if (encoding == SqTexEncoding::Astc4x4 || encoding == SqTexEncoding::Etc2Rgba8) {
             // For compressed textures, extent must be block-aligned (physical mip size)
+            // Both ASTC 4x4 and ETC2 EAC RGBA8 use 16 bytes per 4x4 block
             uint32_t blocksX = (mw + 3) / 4;
             uint32_t blocksY = (mh + 3) / 4;
             wgpu::Extent3D extent{blocksX * 4, blocksY * 4, 1};
@@ -363,7 +373,7 @@ TextureResult loadSdlImage(wgpu::Device device, wgpu::Queue queue, const char* p
 
 Texture Texture::fromFile(wgpu::Device device, wgpu::Queue queue, const char* path) {
     // Detect format by magic header (first 4 bytes)
-    std::ifstream file(path, std::ios::binary);
+    std::ifstream file(sq::resource(path), std::ios::binary);
     if (!file) {
         throw std::runtime_error(std::string("Failed to open texture ") + path);
     }

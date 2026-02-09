@@ -29,6 +29,7 @@ sq/SRC = \
 	sq/src/ManifestLoader.cpp \
 	sq/src/Pipeline.cpp \
 	sq/src/BindGroup.cpp \
+	sq/src/Resource.cpp \
 	sq/src/CaptureTarget.cpp \
 	sq/src/WireTransport.cpp \
 	sq/src/WireSession.cpp \

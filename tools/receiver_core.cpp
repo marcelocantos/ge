@@ -704,6 +704,9 @@ ConnectionResult Receiver::M::connectAndRun() {
                 case SDL_EVENT_MOUSE_BUTTON_DOWN:
                 case SDL_EVENT_MOUSE_BUTTON_UP:
                 case SDL_EVENT_MOUSE_MOTION:
+                case SDL_EVENT_FINGER_DOWN:
+                case SDL_EVENT_FINGER_MOTION:
+                case SDL_EVENT_FINGER_UP:
                     try {
                         sendEvent(socket, event);
                     } catch (const std::exception&) {

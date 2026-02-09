@@ -1,6 +1,7 @@
 #include <sq/TextureEncoder.h>
 #include <sq/SqTexFormat.h>
 #include <astcenc.h>
+#include <ProcessRGB.hpp>
 #include <stb_image_write.h>
 #include <spdlog/spdlog.h>
 #include <algorithm>
@@ -92,6 +93,36 @@ void pngWriteCallback(void* context, void* data, int size) {
     vec->insert(vec->end(), bytes, bytes + size);
 }
 
+// ETC2 EAC RGBA8 encode. Returns compressed block data (16 bytes per 4x4 block).
+// etcpak expects BGRA pixel order (uint32_t = 0xAARRGGBB on little-endian),
+// so we swizzle from our RGBA source and pad to block-aligned dimensions.
+std::vector<uint8_t> etc2Encode(const uint8_t* pixels, int w, int h) {
+    int pw = (w + 3) & ~3; // padded width (multiple of 4)
+    int ph = (h + 3) & ~3; // padded height (multiple of 4)
+    size_t blocksX = static_cast<size_t>(pw) / 4;
+    size_t blocksY = static_cast<size_t>(ph) / 4;
+    size_t totalBlocks = blocksX * blocksY;
+
+    // Convert RGBA → BGRA and pad to block-aligned dimensions
+    std::vector<uint32_t> bgra(static_cast<size_t>(pw) * ph, 0);
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            const uint8_t* p = pixels + (y * w + x) * 4;
+            bgra[y * pw + x] = uint32_t(p[2])
+                              | (uint32_t(p[1]) << 8)
+                              | (uint32_t(p[0]) << 16)
+                              | (uint32_t(p[3]) << 24);
+        }
+    }
+
+    // ETC2 EAC RGBA8: 16 bytes per block = 2 uint64_t per block
+    std::vector<uint8_t> comp(totalBlocks * 16);
+    CompressEtc2Rgba(bgra.data(), reinterpret_cast<uint64_t*>(comp.data()),
+                     static_cast<uint32_t>(totalBlocks),
+                     static_cast<size_t>(pw), true);
+    return comp;
+}
+
 // PNG-encode RGBA8 pixels to memory. Returns PNG blob.
 std::vector<uint8_t> pngEncode(const uint8_t* pixels, int w, int h) {
     std::vector<uint8_t> result;
@@ -109,8 +140,15 @@ bool endsWith(const std::string& s, const std::string& suffix) {
 void writeSqtex(const char* path, SqTexEncoding encoding,
                 const uint8_t* pixels, int w, int h) {
     int levels = mipCount(w, h);
-    SPDLOG_INFO("Encoding {} ({}x{}, {} mip levels, {})", path, w, h, levels,
-                encoding == SqTexEncoding::Astc4x4 ? "ASTC 4x4" : "PNG");
+    auto encodingName = [&] {
+        switch (encoding) {
+            case SqTexEncoding::Astc4x4:   return "ASTC 4x4";
+            case SqTexEncoding::Etc2Rgba8: return "ETC2 RGBA8";
+            case SqTexEncoding::Png:       return "PNG";
+        }
+        return "unknown";
+    }();
+    SPDLOG_INFO("Encoding {} ({}x{}, {} mip levels, {})", path, w, h, levels, encodingName);
 
     // Generate all mip levels
     std::vector<std::vector<uint8_t>> levelData;
@@ -122,6 +160,8 @@ void writeSqtex(const char* path, SqTexEncoding encoding,
     for (int level = 0; level < levels; ++level) {
         if (encoding == SqTexEncoding::Astc4x4) {
             levelData.push_back(astcEncode(current.data(), mw, mh));
+        } else if (encoding == SqTexEncoding::Etc2Rgba8) {
+            levelData.push_back(etc2Encode(current.data(), mw, mh));
         } else {
             levelData.push_back(pngEncode(current.data(), mw, mh));
         }
@@ -221,6 +261,8 @@ void textureToFile(const char* path, const uint8_t* pixels, int width, int heigh
 
     if (endsWith(p, ".astc.sqtex")) {
         writeSqtex(path, SqTexEncoding::Astc4x4, pixels, width, height);
+    } else if (endsWith(p, ".etc2.sqtex")) {
+        writeSqtex(path, SqTexEncoding::Etc2Rgba8, pixels, width, height);
     } else if (endsWith(p, ".png.sqtex")) {
         writeSqtex(path, SqTexEncoding::Png, pixels, width, height);
     } else if (endsWith(p, ".astc")) {
