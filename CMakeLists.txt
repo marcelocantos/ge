@@ -5,7 +5,11 @@
 #   SQ_DIRECT  — Build for direct rendering (no wire/networking). Default: OFF.
 
 cmake_minimum_required(VERSION 3.22)
-project(sq LANGUAGES CXX OBJCXX)
+if(CMAKE_SYSTEM_NAME STREQUAL "Android")
+    project(sq LANGUAGES CXX)
+else()
+    project(sq LANGUAGES CXX OBJCXX)
+endif()
 set(CMAKE_CXX_STANDARD 20)
 
 option(SQ_DIRECT "Direct rendering mode (no wire/networking)" OFF)
@@ -14,7 +18,6 @@ option(SQ_DIRECT "Direct rendering mode (no wire/networking)" OFF)
 
 set(SQ_CORE_SOURCES
     src/GpuContext.cpp
-    src/SdlContext.cpp
     src/Texture.cpp
     src/Mesh.cpp
     src/Model.cpp
@@ -22,8 +25,16 @@ set(SQ_CORE_SOURCES
     src/Pipeline.cpp
     src/BindGroup.cpp
     src/Resource.cpp
+    src/FileIO.cpp
     src/WireTransport.cpp
 )
+
+# Platform-specific sources
+if(CMAKE_SYSTEM_NAME STREQUAL "Android")
+    list(APPEND SQ_CORE_SOURCES src/SdlContext_android.cpp src/NativeSurface_android.cpp)
+else()
+    list(APPEND SQ_CORE_SOURCES src/SdlContext.cpp src/NativeSurface_apple.cpp)
+endif()
 
 if(SQ_DIRECT)
     set(SQ_SOURCES ${SQ_CORE_SOURCES} src/SessionDirect.cpp)
@@ -42,13 +53,15 @@ list(TRANSFORM SQ_SOURCES PREPEND "${CMAKE_CURRENT_SOURCE_DIR}/"
 
 add_library(sq STATIC ${SQ_SOURCES})
 
-# ── ObjC++ for files that use ObjC types ─────────────
+# ── ObjC++ for files that use ObjC types (Apple only) ─────────────
 
-set_source_files_properties(
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/SdlContext.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/GpuContext.cpp
-    PROPERTIES LANGUAGE OBJCXX
-)
+if(NOT CMAKE_SYSTEM_NAME STREQUAL "Android")
+    set_source_files_properties(
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/SdlContext.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/NativeSurface_apple.cpp
+        PROPERTIES LANGUAGE OBJCXX
+    )
+endif()
 
 # ── Public include directories (inherited by consumers) ──
 
@@ -87,9 +100,36 @@ else()
     target_compile_definitions(sq PUBLIC ASIO_STANDALONE)
 endif()
 
-# ── iOS: propagate xcframeworks + system frameworks to consumers ──
+# ── Platform-specific dependencies ────────────────────
 
-if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+if(CMAKE_SYSTEM_NAME STREQUAL "Android")
+    # SDL3 — built from source (provides SDL3::SDL3 target)
+    add_subdirectory(
+        ${CMAKE_CURRENT_SOURCE_DIR}/vendor/github.com/libsdl-org/SDL
+        ${CMAKE_BINARY_DIR}/SDL3
+    )
+    target_link_libraries(sq PUBLIC SDL3::SDL3)
+
+    # SDL3_image — built from source
+    set(SDL3IMAGE_VENDORED OFF)
+    add_subdirectory(
+        ${CMAKE_CURRENT_SOURCE_DIR}/vendor/github.com/libsdl-org/SDL_image
+        ${CMAKE_BINARY_DIR}/SDL3_image
+    )
+    target_link_libraries(sq PUBLIC SDL3_image::SDL3_image)
+
+    # Dawn — pre-built static libs (from build-deps.sh)
+    set(DAWN_LIB_DIR ${CMAKE_CURRENT_SOURCE_DIR}/vendor/dawn/lib/android-arm64)
+    target_link_libraries(sq INTERFACE
+        ${DAWN_LIB_DIR}/libdawn_proc.a
+        ${DAWN_LIB_DIR}/libwebgpu_dawn.a
+        ${DAWN_LIB_DIR}/libdawn_wire.a
+    )
+
+    # Android system libs
+    target_link_libraries(sq INTERFACE android log)
+
+elseif(CMAKE_SYSTEM_NAME STREQUAL "iOS")
     set(SQ_VENDOR ${CMAKE_CURRENT_SOURCE_DIR}/vendor)
     target_link_libraries(sq INTERFACE
         ${SQ_VENDOR}/dawn/xcframeworks/dawn_proc.xcframework

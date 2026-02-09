@@ -92,7 +92,7 @@ SdlContext::~SdlContext() {
 
 SDL_Window* SdlContext::window() const { return m->window; }
 
-void* SdlContext::metalLayer() const {
+void* SdlContext::nativeSurface() const {
     return m->metalView ? SDL_Metal_GetLayer(m->metalView) : nullptr;
 }
 

@@ -35,8 +35,9 @@ public:
 
     SDL_Window* window() const;
 
-    // For WebGPU/Dawn: returns CAMetalLayer* on macOS
-    void* metalLayer() const;
+    // For WebGPU/Dawn: returns platform-native surface handle.
+    // Apple: CAMetalLayer*  Android: ANativeWindow*
+    void* nativeSurface() const;
 
     // Add event watch called during modal event loops (e.g., resize on macOS).
     // Use this to render during live window resize.

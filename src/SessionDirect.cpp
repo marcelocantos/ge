@@ -12,7 +12,7 @@ struct Session::M {
     int pixelRatio = 1;
 
     M() : sdl("sq", 1280, 720),
-          gpu(sdl.metalLayer(),
+          gpu(sdl.nativeSurface(),
               getPixelSize(sdl.window()).first,
               getPixelSize(sdl.window()).second) {
         int pw, ph, ww, wh;

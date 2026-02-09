@@ -2,11 +2,11 @@
 
 #include <webgpu/webgpu_cpp.h>
 #include <sq/ManifestSchema.h>
+#include <sq/FileIO.h>
 #include <sq/Mesh.h>
 #include <sq/Resource.h>
 #include <sq/Texture.h>
 #include <filesystem>
-#include <fstream>
 #include <memory>
 #include <spdlog/spdlog.h>
 #include <stdexcept>
@@ -47,14 +47,15 @@ std::unique_ptr<Manifest<Meta>> loadManifest(wgpu::Device device, wgpu::Queue qu
     try {
         SPDLOG_INFO("Loading manifest: {}", path);
 
-        auto resolved = sq::resource(path);
-        std::ifstream f(resolved);
-        if (!f) {
+        auto f = sq::openFile(path);
+        if (!f || !*f) {
             throw std::runtime_error("file not found");
         }
 
-        auto schema = nlohmann::json::parse(f).template get<ManifestDoc<Meta>>();
-        auto baseDir = std::filesystem::path(resolved).parent_path();
+        auto schema = nlohmann::json::parse(*f).template get<ManifestDoc<Meta>>();
+        // Derive base directory from the logical path (works on all platforms,
+        // including Android where assets have no real filesystem path)
+        auto baseDir = std::filesystem::path(path).parent_path();
         auto manifest = std::make_unique<Manifest<Meta>>();
 
         // Load textures

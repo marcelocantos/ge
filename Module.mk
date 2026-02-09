@@ -35,6 +35,7 @@ sq/SDL_LIBS = $(sq/SDL3_LIB) $(sq/SDL3_IMAGE_LIB) $(sq/SDL3_TTF_LIB) $(sq/FREETY
 sq/SRC = \
 	sq/src/GpuContext.cpp \
 	sq/src/SdlContext.cpp \
+	sq/src/NativeSurface_apple.cpp \
 	sq/src/Texture.cpp \
 	sq/src/Mesh.cpp \
 	sq/src/Model.cpp \
@@ -42,6 +43,7 @@ sq/SRC = \
 	sq/src/Pipeline.cpp \
 	sq/src/BindGroup.cpp \
 	sq/src/Resource.cpp \
+	sq/src/FileIO.cpp \
 	sq/src/CaptureTarget.cpp \
 	sq/src/WireTransport.cpp \
 	sq/src/WireSession.cpp \

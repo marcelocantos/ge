@@ -1,8 +1,7 @@
 #include <sq/Pipeline.h>
+#include <sq/FileIO.h>
 #include <sq/ModelFormat.h>
-#include <sq/Resource.h>
 #include <spdlog/spdlog.h>
-#include <fstream>
 #include <sstream>
 #include <stdexcept>
 
@@ -182,13 +181,13 @@ Pipeline Pipeline::create(wgpu::Device device, const PipelineDesc& desc) {
 }
 
 Pipeline Pipeline::load(wgpu::Device device, const char* wgslPath, const PipelineDesc& baseDesc) {
-    std::ifstream file(sq::resource(wgslPath));
-    if (!file) {
+    auto file = sq::openFile(wgslPath);
+    if (!file || !*file) {
         throw std::runtime_error(std::string("Failed to open shader file: ") + wgslPath);
     }
 
     std::stringstream buffer;
-    buffer << file.rdbuf();
+    buffer << file->rdbuf();
     std::string source = buffer.str();
 
     PipelineDesc desc = baseDesc;

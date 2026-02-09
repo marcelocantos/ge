@@ -1,4 +1,5 @@
 #include <sq/Texture.h>
+#include <sq/FileIO.h>
 #include <sq/Resource.h>
 #include <sq/SqTexFormat.h>
 #include <sq/WgpuResource.h>
@@ -99,14 +100,15 @@ wgpu::Sampler createSampler(wgpu::Device device, uint32_t mipCount) {
 #ifdef SQ_HAS_TRANSCODER
 
 // Transcode an ASTC sqtex file to ETC2, writing the result to cachePath.
+// srcPath is the logical asset path (resolved via sq::openFile).
 // Returns true on success.
 bool transcodeAstcToEtc2(const char* srcPath, const char* cachePath) {
-    std::ifstream src(srcPath, std::ios::binary);
-    if (!src) return false;
+    auto src = sq::openFile(srcPath, true);
+    if (!src || !*src) return false;
 
     SqTexHeader hdr{};
-    src.read(reinterpret_cast<char*>(&hdr), sizeof(hdr));
-    if (!src || std::memcmp(hdr.magic, kSqTexMagic, 4) != 0) return false;
+    src->read(reinterpret_cast<char*>(&hdr), sizeof(hdr));
+    if (!*src || std::memcmp(hdr.magic, kSqTexMagic, 4) != 0) return false;
 
     auto encoding = static_cast<SqTexEncoding>(hdr.encoding);
     if (encoding != SqTexEncoding::Astc4x4) return false;
@@ -115,9 +117,9 @@ bool transcodeAstcToEtc2(const char* srcPath, const char* cachePath) {
 
     // Read level sizes
     std::vector<uint32_t> levelSizes(mipCount);
-    src.read(reinterpret_cast<char*>(levelSizes.data()),
-             static_cast<std::streamsize>(mipCount * sizeof(uint32_t)));
-    if (!src) return false;
+    src->read(reinterpret_cast<char*>(levelSizes.data()),
+              static_cast<std::streamsize>(mipCount * sizeof(uint32_t)));
+    if (!*src) return false;
 
     // Set up astcenc decompress-only context
     astcenc_config config{};
@@ -146,9 +148,9 @@ bool transcodeAstcToEtc2(const char* srcPath, const char* cachePath) {
 
         // Read ASTC compressed data
         std::vector<uint8_t> astcData(levelSizes[level]);
-        src.read(reinterpret_cast<char*>(astcData.data()),
-                 static_cast<std::streamsize>(levelSizes[level]));
-        if (!src) {
+        src->read(reinterpret_cast<char*>(astcData.data()),
+                  static_cast<std::streamsize>(levelSizes[level]));
+        if (!*src) {
             astcenc_context_free(ctx);
             return false;
         }
@@ -249,7 +251,7 @@ std::string transcodeCachePath(const char* srcPath) {
 #endif // SQ_HAS_TRANSCODER
 
 TextureResult loadSqtex(wgpu::Device device, wgpu::Queue queue,
-                         std::ifstream& file, const char* path) {
+                         std::istream& file, const char* path) {
     // Magic already consumed; read rest of header
     SqTexHeader hdr{};
     std::memcpy(hdr.magic, kSqTexMagic, 4);
@@ -385,7 +387,7 @@ TextureResult loadSqtex(wgpu::Device device, wgpu::Queue queue,
 }
 
 TextureResult loadAstc(wgpu::Device device, wgpu::Queue queue,
-                        std::ifstream& file, const char* path) {
+                        std::istream& file, const char* path) {
     // Magic already consumed; seek back to read full header
     file.seekg(0);
     AstcHeader header{};
@@ -532,14 +534,14 @@ TextureResult loadSdlImage(wgpu::Device device, wgpu::Queue queue, const char* p
 
 Texture Texture::fromFile(wgpu::Device device, wgpu::Queue queue, const char* path) {
     // Detect format by magic header (first 4 bytes)
-    std::ifstream file(sq::resource(path), std::ios::binary);
-    if (!file) {
+    auto file = sq::openFile(path, true);
+    if (!file || !*file) {
         throw std::runtime_error(std::string("Failed to open texture ") + path);
     }
 
     uint8_t magic[4]{};
-    file.read(reinterpret_cast<char*>(magic), 4);
-    if (!file) {
+    file->read(reinterpret_cast<char*>(magic), 4);
+    if (!*file) {
         throw std::runtime_error(std::string("Failed to read texture header from ") + path);
     }
 
@@ -550,13 +552,12 @@ Texture Texture::fromFile(wgpu::Device device, wgpu::Queue queue, const char* pa
         if (!device.HasFeature(wgpu::FeatureName::TextureCompressionASTC)) {
             // Peek at the encoding field (bytes 4-5 of the header)
             uint16_t enc = 0;
-            file.read(reinterpret_cast<char*>(&enc), sizeof(enc));
-            file.seekg(4); // rewind to after magic
+            file->read(reinterpret_cast<char*>(&enc), sizeof(enc));
+            file->seekg(4); // rewind to after magic
 
             if (static_cast<SqTexEncoding>(enc) == SqTexEncoding::Astc4x4) {
-                file.close();
-                auto resolvedPath = sq::resource(path);
-                auto cachePath = transcodeCachePath(resolvedPath.c_str());
+                file.reset();
+                auto cachePath = transcodeCachePath(path);
 
                 // Try loading cached ETC2 version
                 std::ifstream cached(cachePath, std::ios::binary);
@@ -571,7 +572,7 @@ Texture Texture::fromFile(wgpu::Device device, wgpu::Queue queue, const char* pa
                 }
 
                 // Cache miss — transcode ASTC→ETC2
-                if (!transcodeAstcToEtc2(resolvedPath.c_str(), cachePath.c_str())) {
+                if (!transcodeAstcToEtc2(path, cachePath.c_str())) {
                     throw std::runtime_error(
                         std::string("Failed to transcode ASTC→ETC2 for ") + path);
                 }
@@ -589,11 +590,11 @@ Texture Texture::fromFile(wgpu::Device device, wgpu::Queue queue, const char* pa
             }
         }
 #endif
-        r = loadSqtex(device, queue, file, path);
+        r = loadSqtex(device, queue, *file, path);
     } else if (std::memcmp(magic, kAstcMagic, 4) == 0) {
-        r = loadAstc(device, queue, file, path);
+        r = loadAstc(device, queue, *file, path);
     } else {
-        file.close();
+        file.reset();
         r = loadSdlImage(device, queue, path);
     }
 

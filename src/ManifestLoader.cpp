@@ -1,6 +1,6 @@
 #include <sq/ManifestLoader.h>
+#include <sq/FileIO.h>
 #include <sq/ModelFormat.h>
-#include <sq/Resource.h>
 #include <cstring>
 #include <stdexcept>
 
@@ -14,19 +14,19 @@ std::unordered_map<std::string, Mesh> loadMeshPack(wgpu::Device device, const st
     try {
         std::unordered_map<std::string, Mesh> meshes;
 
-        std::ifstream f(sq::resource(path), std::ios::binary);
-        if (!f) {
+        auto f = sq::openFile(path, true);
+        if (!f || !*f) {
             throw std::runtime_error("file not found");
         }
 
         uint32_t meshCount = 0;
-        f.read(reinterpret_cast<char*>(&meshCount), sizeof(meshCount));
+        f->read(reinterpret_cast<char*>(&meshCount), sizeof(meshCount));
 
-        for (uint32_t i = 0; i < meshCount && f.good(); ++i) {
+        for (uint32_t i = 0; i < meshCount && f->good(); ++i) {
             char nameBuf[kMeshNameSize] = {};
-            f.read(nameBuf, kMeshNameSize);
+            f->read(nameBuf, kMeshNameSize);
             std::string name(nameBuf);
-            meshes.emplace(name, Mesh::fromStream(device, f, name));
+            meshes.emplace(name, Mesh::fromStream(device, *f, name));
         }
 
         SPDLOG_INFO("Loaded {} meshes from {}", meshes.size(), path);

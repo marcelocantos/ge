@@ -1,5 +1,6 @@
 #include <sq/GpuContext.h>
 #include <sq/WireTransport.h>
+#include "NativeSurface.h"
 #include <dawn/native/DawnNative.h>
 #include <dawn/dawn_proc.h>
 #include <spdlog/spdlog.h>
@@ -46,21 +47,16 @@ GpuContext::GpuContext(void* nativeLayer, int width, int height, WireTransport* 
     m->dawnInstance = std::make_unique<dawn::native::Instance>(&instanceDesc);
     WGPUInstance nativeInstance = m->dawnInstance->Get();
 
-    // Create surface from Metal layer using native procs
-    // (surface creation requires native window handle, can't go through wire)
-    WGPUSurfaceSourceMetalLayer metalSource = WGPU_SURFACE_SOURCE_METAL_LAYER_INIT;
-    metalSource.layer = nativeLayer;
-
-    WGPUSurfaceDescriptor surfaceDesc{};
-    surfaceDesc.nextInChain = reinterpret_cast<WGPUChainedStruct*>(&metalSource);
-
+    // Create surface from native window handle (platform-specific helper).
+    // Surface creation requires a native window handle, can't go through wire.
     WGPUSurface nativeSurface;
     if (wireTransport) {
-        // Use native procs for surface creation (wire can't handle native window handles)
-        nativeSurface = wireTransport->nativeProcs().instanceCreateSurface(nativeInstance, &surfaceDesc);
+        // Wire mode: use native procs (global procs point to wire client)
+        nativeSurface = createNativeSurface(nativeInstance, nativeLayer,
+                                            &wireTransport->nativeProcs());
     } else {
-        // Use global procs (which are native when not using wire)
-        nativeSurface = wgpuInstanceCreateSurface(nativeInstance, &surfaceDesc);
+        // Native mode: use global procs
+        nativeSurface = createNativeSurface(nativeInstance, nativeLayer);
     }
 
     if (!nativeSurface) {
