@@ -404,6 +404,16 @@ public:
                 }
             }
         }
+
+        // Detect disconnect when idle (no data to read, no writes happening)
+        if (socket_.available() == 0) {
+            char peek;
+            ssize_t n = ::recv(socket_.native_handle(), &peek, 1,
+                               MSG_PEEK | MSG_DONTWAIT);
+            if (n == 0 || (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK)) {
+                throw asio::system_error(asio::error::eof, "receiver disconnected");
+            }
+        }
     }
 
 private:
@@ -704,7 +714,12 @@ void WireSession::run(std::function<void(float dt)> onFrame,
     // waits for a FrameReady signal from the receiver before proceeding.
     for (;;) {
         while (m->serializer->frameReadyCount <= 0) {
-            m->serializer->processResponses(*m->wireClient, m->onEvent);
+            try {
+                m->serializer->processResponses(*m->wireClient, m->onEvent);
+            } catch (const asio::system_error& e) {
+                SPDLOG_WARN("Receiver disconnected: {}", e.what());
+                return;
+            }
             m->instance.ProcessEvents();
 
             // Burst all pending mips in one go to avoid frame interleaving
