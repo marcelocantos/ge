@@ -722,14 +722,27 @@ void WireSession::run(std::function<void(float dt)> onFrame,
             }
             m->instance.ProcessEvents();
 
-            // Burst all pending mips in one go to avoid frame interleaving
-            while (m->serializer->hasDeferredMips() &&
-                   m->serializer->sendBufferAvailable() >= 64 * 1024) {
-                try {
-                    m->serializer->streamNextDeferredMip();
-                } catch (const asio::system_error& e) {
-                    SPDLOG_WARN("Disconnect during mip streaming: {}", e.what());
-                    return;
+            // Send one mip per idle iteration so frames interleave with mip
+            // deliveries, giving progressive quality (blurry → sharp).
+            if (m->serializer->hasDeferredMips() &&
+                m->serializer->sendBufferAvailable() >= 64 * 1024) {
+                static const int mipDelayMs = [] {
+                    const char* e = std::getenv("SQ_MIP_DELAY_MS");
+                    return (e && e[0]) ? std::atoi(e) : 0;
+                }();
+                static auto lastMipTime = std::chrono::steady_clock::now();
+                auto now = std::chrono::steady_clock::now();
+                auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    now - lastMipTime).count();
+
+                if (mipDelayMs <= 0 || elapsed >= mipDelayMs) {
+                    try {
+                        m->serializer->streamNextDeferredMip();
+                        lastMipTime = now;
+                    } catch (const asio::system_error& e) {
+                        SPDLOG_WARN("Disconnect during mip streaming: {}", e.what());
+                        return;
+                    }
                 }
             }
 
