@@ -34,6 +34,10 @@ sq/SRC = \
 	sq/src/WireSession.cpp \
 	sq/vendor/github.com/nayuki/QR-Code-generator/cpp/qrcodegen.cpp
 
+# Session backend objects (linked by the parent, not part of libsq.a)
+sq/SESSION_WIRE_OBJ = $(BUILD_DIR)/sq/src/SessionWire.o
+sq/SESSION_DIRECT_OBJ = $(BUILD_DIR)/sq/src/SessionDirect.o
+
 sq/OBJ = $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(sq/SRC))
 sq/LIB = $(BUILD_DIR)/libsq.a
 

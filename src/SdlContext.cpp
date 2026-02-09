@@ -60,7 +60,8 @@ SdlContext::SdlContext(const char* windowTitle, int width, int height)
 
     // Create window with Metal support
     m->window = SDL_CreateWindow(windowTitle, width, height,
-                                  SDL_WINDOW_RESIZABLE | SDL_WINDOW_METAL);
+                                  SDL_WINDOW_RESIZABLE | SDL_WINDOW_METAL |
+                                  SDL_WINDOW_HIGH_PIXEL_DENSITY);
     if (!m->window) {
         SDL_Quit();
         throw std::runtime_error(std::string("SDL_CreateWindow failed: ") + SDL_GetError());

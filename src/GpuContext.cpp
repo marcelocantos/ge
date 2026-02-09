@@ -1,6 +1,7 @@
 #include <sq/GpuContext.h>
 #include <sq/WireTransport.h>
 #include <dawn/native/DawnNative.h>
+#include <dawn/dawn_proc.h>
 #include <spdlog/spdlog.h>
 #include <memory>
 #include <stdexcept>
@@ -34,6 +35,10 @@ GpuContext::GpuContext(void* nativeLayer, int width, int height, WireTransport* 
     m->wire = wireTransport;
 
     SPDLOG_INFO("Initializing WebGPU (Dawn)...");
+
+    if (!wireTransport) {
+        dawnProcSetProcs(&dawn::native::GetProcs());
+    }
 
     // Create Dawn native instance (always needed for adapter enumeration)
     wgpu::InstanceDescriptor instanceDesc{};
