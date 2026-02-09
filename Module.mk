@@ -137,13 +137,19 @@ sq/android:
 	cd sq/tools/android && ./gradlew assembleDebug
 	@echo "APK: sq/tools/android/app/build/outputs/apk/debug/app-debug.apk"
 
-# Android direct-mode project generation
-# Parent Makefile sets ANDROID_PACKAGE and ANDROID_APP_NAME before calling.
+# Direct-mode project generation
+# Parent Makefile sets APP_ID and APP_NAME before calling.
 .PHONY: sq/android-init
 sq/android-init:
-	@if [ -z "$(ANDROID_PACKAGE)" ] || [ -z "$(ANDROID_APP_NAME)" ]; then \
-		echo "Error: set ANDROID_PACKAGE and ANDROID_APP_NAME"; exit 1; fi
-	sq/tools/init-android.sh "$(ANDROID_PACKAGE)" "$(ANDROID_APP_NAME)"
+	@if [ -z "$(APP_ID)" ] || [ -z "$(APP_NAME)" ]; then \
+		echo "Error: set APP_ID and APP_NAME"; exit 1; fi
+	sq/tools/init-android.sh "$(APP_ID)" "$(APP_NAME)"
+
+.PHONY: sq/ios-init
+sq/ios-init:
+	@if [ -z "$(APP_ID)" ] || [ -z "$(APP_NAME)" ]; then \
+		echo "Error: set APP_ID and APP_NAME"; exit 1; fi
+	sq/tools/init-ios.sh "$(APP_ID)" "$(APP_NAME)"
 
 # ────────────────────────────────────────────────
 # Generic targets (use CLEAN, CLEAN_SHADERS, COMPILE_DB_DEPS)

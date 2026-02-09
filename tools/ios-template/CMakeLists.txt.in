@@ -1,0 +1,66 @@
+cmake_minimum_required(VERSION 3.28)
+project(__CMAKE_PROJECT__ LANGUAGES CXX OBJCXX)
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_XCODE_LINK_BUILD_PHASE_MODE KNOWN_LOCATION)
+
+set(PROJECT_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/..)
+set(SQ_ROOT ${PROJECT_ROOT}/sq)
+
+# ── sq engine (direct mode — no wire/networking) ─────
+
+set(SQ_DIRECT ON CACHE BOOL "" FORCE)
+add_subdirectory(${SQ_ROOT} ${CMAKE_BINARY_DIR}/sq)
+
+# ── Sources ──────────────────────────────────────────
+
+set(GAME_SOURCES
+    ${PROJECT_ROOT}/src/main.cpp
+    ${PROJECT_ROOT}/src/Application.cpp
+)
+
+add_executable(__CMAKE_PROJECT__ MACOSX_BUNDLE ${GAME_SOURCES})
+
+# main.cpp needs ObjC++ on iOS for SDL_main.h UIApplication integration
+set_source_files_properties(${PROJECT_ROOT}/src/main.cpp PROPERTIES LANGUAGE OBJCXX)
+
+target_include_directories(__CMAKE_PROJECT__ PRIVATE
+    ${PROJECT_ROOT}/src
+    ${PROJECT_ROOT}/include
+)
+
+# xcframeworks + iOS system frameworks propagate from sq via INTERFACE linking
+target_link_libraries(__CMAKE_PROJECT__ PRIVATE sq)
+
+# ── Bundle resources ─────────────────────────────────
+
+set(RESOURCE_FILES
+    ${PROJECT_ROOT}/data/manifest.json
+    ${PROJECT_ROOT}/data/meshes.bin
+    ${PROJECT_ROOT}/shaders/atlas.wgsl
+)
+
+file(GLOB TEXTURE_FILES ${PROJECT_ROOT}/data/textures/*.sqtex)
+list(APPEND RESOURCE_FILES ${TEXTURE_FILES})
+
+target_sources(__CMAKE_PROJECT__ PRIVATE ${RESOURCE_FILES})
+
+# Place data files in their subdirectories within the bundle
+foreach(FILE ${RESOURCE_FILES})
+    file(RELATIVE_PATH REL_PATH ${PROJECT_ROOT} ${FILE})
+    get_filename_component(REL_DIR ${REL_PATH} DIRECTORY)
+    set_source_files_properties(${FILE} PROPERTIES
+        MACOSX_PACKAGE_LOCATION "Resources/${REL_DIR}")
+endforeach()
+
+# ── Xcode properties ────────────────────────────────
+
+set_target_properties(__CMAKE_PROJECT__ PROPERTIES
+    MACOSX_BUNDLE_GUI_IDENTIFIER __BUNDLE_ID__
+    MACOSX_BUNDLE_BUNDLE_VERSION 1
+    MACOSX_BUNDLE_SHORT_VERSION_STRING "1.0"
+    MACOSX_BUNDLE_INFO_PLIST ${CMAKE_CURRENT_SOURCE_DIR}/Info.plist
+    XCODE_ATTRIBUTE_TARGETED_DEVICE_FAMILY "1,2"
+    XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "__BUNDLE_ID__"
+    XCODE_GENERATE_SCHEME TRUE
+    XCODE_SCHEME_ENABLE_GPU_API_VALIDATION OFF
+)
