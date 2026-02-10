@@ -13,11 +13,11 @@ From $ARGUMENTS, extract the issue number and the comment text.
 2. Append a new dated subsection under `## Updates`:
 
 ```markdown
-### YYYY-MM-DD
+### YYYY-MM-DD — Author Name
 
 Comment text here.
 ```
 
-Use today's date. If there's already an entry for today, append a second `### YYYY-MM-DD` section (don't merge).
+Resolve the author name via `git config user.name`. Use today's date. If there's already an entry for today, append a second `### YYYY-MM-DD` section (don't merge).
 
 Keep the comment concise. If $ARGUMENTS contains just a number with no comment text, use the recent conversation context to write a brief status update.
