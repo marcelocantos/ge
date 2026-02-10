@@ -633,7 +633,8 @@ ConnectionResult Player::M::connectAndRun() {
                 case SDL_EVENT_KEY_DOWN:
                     if (event.key.key == SDLK_Q)
                         return ConnectionResult::Quit;
-                    break;
+                    [[fallthrough]];
+                case SDL_EVENT_KEY_UP:
                 case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
                 case SDL_EVENT_MOUSE_BUTTON_DOWN:
                 case SDL_EVENT_MOUSE_BUTTON_UP:

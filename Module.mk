@@ -44,6 +44,7 @@ sq/SRC = \
 	sq/src/BindGroup.cpp \
 	sq/src/Resource.cpp \
 	sq/src/FileIO.cpp \
+	sq/src/TextRenderer.cpp \
 	sq/src/CaptureTarget.cpp \
 	sq/src/WireTransport.cpp \
 	sq/src/WireSession.cpp \
