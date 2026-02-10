@@ -38,4 +38,4 @@ From $ARGUMENTS (or the conversation context if no arguments), write:
 
 Keep it terse. Don't editorialize or add priority/severity.
 
-4. Update `docs/issues/README.md`: add a row to the **Open** table with the issue number (linked to the file), title, tags, and created date.
+4. Update `docs/issues/README.md`: add a row to the **Open** table with the issue number (linked to the file), title, tags, assignee (empty), and created date.
