@@ -1,4 +1,4 @@
-package com.squz.remote;
+package com.squz.player;
 
 import android.app.Activity;
 

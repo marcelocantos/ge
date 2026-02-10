@@ -153,11 +153,17 @@ sq/ios-testflight: sq/ios-archive
 	    -allowProvisioningUpdates
 	@echo "Uploaded to App Store Connect — check TestFlight in https://appstoreconnect.apple.com"
 
-# Android APK build (player)
+# Android debug APK (player)
 .PHONY: sq/android
 sq/android:
 	cd sq/tools/android && ./gradlew assembleDebug
 	@echo "APK: sq/tools/android/app/build/outputs/apk/debug/app-debug.apk"
+
+# Android release AAB for Play Store upload
+.PHONY: sq/android-release
+sq/android-release:
+	cd sq/tools/android && ./gradlew bundleRelease
+	@echo "AAB: sq/tools/android/app/build/outputs/bundle/release/app-release.aab"
 
 # Direct-mode project generation
 # Parent Makefile sets APP_ID and APP_NAME before calling.

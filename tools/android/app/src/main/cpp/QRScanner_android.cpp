@@ -21,7 +21,7 @@ ScanResult scanQRCode() {
         return {};
     }
 
-    jclass bridgeClass = env->FindClass("com/squz/remote/QRScannerBridge");
+    jclass bridgeClass = env->FindClass("com/squz/player/QRScannerBridge");
     if (!bridgeClass) {
         SPDLOG_ERROR("Failed to find QRScannerBridge class");
         return {};
