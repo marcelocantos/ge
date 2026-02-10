@@ -4,9 +4,9 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleName</key>
-    <string>Squz Remote</string>
+    <string>Squz Player</string>
     <key>CFBundleDisplayName</key>
-    <string>Squz Remote</string>
+    <string>Squz Player</string>
     <key>CFBundleIdentifier</key>
     <string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
     <key>CFBundleVersion</key>

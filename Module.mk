@@ -131,6 +131,27 @@ sq/ios:
 	    -DCMAKE_OSX_DEPLOYMENT_TARGET=16.0
 	@echo "Open sq/tools/ios/build/xcode/Player.xcodeproj in Xcode"
 
+# iOS player archive (generate Xcode project + xcodebuild archive)
+.PHONY: sq/ios-archive
+sq/ios-archive: sq/ios
+	cd sq/tools/ios && xcodebuild \
+	    -project build/xcode/Player.xcodeproj \
+	    -scheme Player \
+	    -destination "generic/platform=iOS" \
+	    -archivePath build/Player.xcarchive \
+	    -allowProvisioningUpdates \
+	    archive
+
+# iOS player TestFlight upload (archive + export/upload to App Store Connect)
+.PHONY: sq/ios-testflight
+sq/ios-testflight: sq/ios-archive
+	cd sq/tools/ios && xcodebuild -exportArchive \
+	    -archivePath build/Player.xcarchive \
+	    -exportOptionsPlist ExportOptions.plist \
+	    -exportPath build/export \
+	    -allowProvisioningUpdates
+	@echo "Uploaded to App Store Connect — check TestFlight in https://appstoreconnect.apple.com"
+
 # Android APK build (player)
 .PHONY: sq/android
 sq/android:
