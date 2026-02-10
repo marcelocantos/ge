@@ -4,14 +4,15 @@
 
 namespace sq {
 
-CaptureTarget::CaptureTarget(wgpu::Device device, int width, int height)
-    : width_(width), height_(height) {
+CaptureTarget::CaptureTarget(wgpu::Device device, int width, int height,
+                             wgpu::TextureFormat format)
+    : format_(format), width_(width), height_(height) {
 
     wgpu::TextureDescriptor texDesc{
         .usage = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::CopySrc,
         .dimension = wgpu::TextureDimension::e2D,
         .size = {static_cast<uint32_t>(width), static_cast<uint32_t>(height), 1},
-        .format = wgpu::TextureFormat::RGBA8Unorm,
+        .format = format,
         .mipLevelCount = 1,
         .sampleCount = 1,
     };
@@ -23,7 +24,7 @@ CaptureTarget::CaptureTarget(wgpu::Device device, int width, int height)
     colorTexture_ = WgpuTexture(std::move(tex));
 
     wgpu::TextureViewDescriptor viewDesc{
-        .format = wgpu::TextureFormat::RGBA8Unorm,
+        .format = format,
         .dimension = wgpu::TextureViewDimension::e2D,
         .baseMipLevel = 0,
         .mipLevelCount = 1,
@@ -75,20 +76,20 @@ std::vector<uint8_t> CaptureTarget::readPixels(wgpu::Device device, wgpu::Queue 
     // Wait for GPU work to complete
     bool workDone = false;
     queue.OnSubmittedWorkDone(
-        wgpu::CallbackMode::AllowProcessEvents,
+        wgpu::CallbackMode::AllowSpontaneous,
         [&](wgpu::QueueWorkDoneStatus, const char*) { workDone = true; });
 
     for (int i = 0; i < 100000 && !workDone; ++i) {
         device.Tick();
     }
 
-    // Map buffer - initiate async map request
+    // Map buffer
     stagingBuffer.MapAsync(
         wgpu::MapMode::Read, 0, bufferSize,
-        wgpu::CallbackMode::AllowProcessEvents,
+        wgpu::CallbackMode::AllowSpontaneous,
         [](wgpu::MapAsyncStatus, wgpu::StringView) {});
 
-    // Poll using GetMapState until buffer is mapped
+    // Poll until buffer is mapped
     for (int i = 0; i < 100000; ++i) {
         device.Tick();
         if (stagingBuffer.GetMapState() == wgpu::BufferMapState::Mapped) {
@@ -113,6 +114,13 @@ std::vector<uint8_t> CaptureTarget::readPixels(wgpu::Device device, wgpu::Queue 
     }
 
     stagingBuffer.Unmap();
+
+    // Convert BGRA → RGBA if needed so callers always get RGBA
+    if (format_ == wgpu::TextureFormat::BGRA8Unorm) {
+        for (size_t i = 0; i < pixels.size(); i += 4) {
+            std::swap(pixels[i], pixels[i + 2]);
+        }
+    }
 
     return pixels;
 }
