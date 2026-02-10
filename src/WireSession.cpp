@@ -638,11 +638,18 @@ WireSession::WireSession()
             SPDLOG_ERROR("WebGPU error: {}", std::string_view(message.data, message.length));
         });
 
-    wgpu::FeatureName astcFeature = wgpu::FeatureName::TextureCompressionASTC;
-    if (adapter.HasFeature(astcFeature)) {
-        deviceDesc.requiredFeatureCount = 1;
-        deviceDesc.requiredFeatures = &astcFeature;
+    std::vector<wgpu::FeatureName> features;
+    if (adapter.HasFeature(wgpu::FeatureName::TextureCompressionASTC)) {
+        features.push_back(wgpu::FeatureName::TextureCompressionASTC);
         SPDLOG_INFO("Requesting ASTC texture compression");
+    }
+    if (adapter.HasFeature(wgpu::FeatureName::TextureCompressionETC2)) {
+        features.push_back(wgpu::FeatureName::TextureCompressionETC2);
+        SPDLOG_INFO("Requesting ETC2 texture compression");
+    }
+    if (!features.empty()) {
+        deviceDesc.requiredFeatureCount = features.size();
+        deviceDesc.requiredFeatures = features.data();
     }
 
     adapter.RequestDevice(

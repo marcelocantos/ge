@@ -128,6 +128,7 @@ sq/ios:
 	cd sq/tools/ios && cmake -G Xcode -B build/xcode \
 	    -DCMAKE_SYSTEM_NAME=iOS \
 	    -DCMAKE_OSX_ARCHITECTURES=arm64 \
+	    -DCMAKE_OSX_SYSROOT=iphoneos \
 	    -DCMAKE_OSX_DEPLOYMENT_TARGET=16.0
 	@echo "Open sq/tools/ios/build/xcode/Player.xcodeproj in Xcode"
 
