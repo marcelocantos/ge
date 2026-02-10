@@ -2,7 +2,7 @@
 
 Reusable rendering and asset engine built on Dawn (WebGPU) + SDL3. Consumed as a git submodule; build integration via `Module.mk`.
 
-Apps built on sq use a **server/receiver architecture**: the app (server) issues WebGPU draw commands through Dawn's wire protocol over TCP, and a platform-native receiver renders them and sends input back. This means the app itself has zero platform-specific code — sq and the receiver handle all of that.
+Apps built on sq use a **server/player architecture**: the app (server) issues WebGPU draw commands through Dawn's wire protocol over TCP, and the platform-native Squz Player renders them and sends input back. This means the app itself has zero platform-specific code — sq and the player handle all of that.
 
 ## Integrating sq into a New App
 
@@ -19,7 +19,7 @@ int main() {
     MyState state;  // Persistent game state (survives reconnects)
 
     for (;;) {
-        sq::WireSession session;            // Blocks until a receiver connects
+        sq::WireSession session;            // Blocks until a player connects
         MyApp app(session.gpu());           // Create GPU resources
 
         session.run(
@@ -31,17 +31,17 @@ int main() {
                     app.handleInput(e, state);
             }
         );
-        // Disconnected → loop back, wait for next receiver
+        // Disconnected → loop back, wait for next player
         // Ctrl+C terminates the process via default SIGINT handler
     }
 }
 ```
 
 Key points:
-- **State lives outside the session loop** so it persists across receiver reconnects
+- **State lives outside the session loop** so it persists across player reconnects
 - **App/GPU resources are recreated** each connection (new wire handles)
 - `session.run()` drives the render loop at ~60fps with frame delta timing
-- Returns when the receiver disconnects; Ctrl+C terminates the process
+- Returns when the player disconnects; Ctrl+C terminates the process
 
 **Makefile** — minimal integration:
 
@@ -68,7 +68,7 @@ $(APP): $(OBJ) $(sq/LIB) $(sq/FRAMEWORK_LIBS)
 	@mkdir -p $(@D)
 	$(CXX) $(OBJ) $(sq/LIB) $(sq/DAWN_LIBS) $(FRAMEWORKS) $(SDL_LIBS) -o $@
 
-receiver: $(sq/RECEIVER)
+player: $(sq/PLAYER)
 
 $(BUILD_DIR)/%.o: %.cpp
 	@mkdir -p $(@D)
@@ -79,24 +79,24 @@ $(BUILD_DIR)/%.o: %.cpp
 
 ```bash
 make && bin/myapp          # Terminal 1: server (prints QR code)
-make receiver && bin/receiver   # Terminal 2: desktop receiver
+make player && bin/player   # Terminal 2: desktop player
 ```
 
-The server prints a QR code to stderr. Mobile receivers scan it; desktop receivers connect to localhost.
+The server prints a QR code to stderr. Mobile players scan it; desktop players connect to localhost.
 
 ### What sq Gives You
 
 | Concern | sq handles it | You write |
 |---------|--------------|-----------|
 | GPU device setup | WireSession acquires adapter/device/queue via wire | Nothing |
-| Window/surface | Receiver creates native window + Metal/Vulkan surface | Nothing |
+| Window/surface | Player creates native window + Metal/Vulkan surface | Nothing |
 | Frame loop | `session.run()` with delta timing + signal handling | `onFrame(dt)` callback |
-| Input | Receiver captures SDL events, sends over TCP | `onEvent(e)` callback |
+| Input | Player captures SDL events, sends over TCP | `onEvent(e)` callback |
 | Reconnection | Outer loop in main.cpp | Separate State from App |
 | QR code | Auto-generated from LAN IP | Nothing |
 | Asset loading | `sq::loadManifest<T>()` for meshes + textures | manifest.json + data files |
 | Shaders | WGSL loaded at runtime via `Pipeline` | .wgsl shader files |
-| Mobile builds | iOS/Android receiver projects in `sq/tools/` | Nothing (shared receiver) |
+| Mobile builds | iOS/Android player projects in `sq/tools/` | Nothing (shared player) |
 
 ## Module.mk Integration
 
@@ -144,8 +144,8 @@ Engine-internal variables use the `sq/` prefix. These are read-only — the pare
 | `sq/FRAMEWORK_LIBS` | Alias for `$(sq/DAWN_LIBS)` |
 | `sq/TEST_SRC`, `sq/TEST_OBJ` | Unit test sources and objects |
 | `sq/TRIANGLE_OBJ` | Triangle library object (for tools that need triangulation) |
-| `sq/RECEIVER_SRC`, `sq/RECEIVER_OBJ` | Wire receiver source and object |
-| `sq/RECEIVER` | Wire receiver binary path (`bin/receiver`) |
+| `sq/PLAYER_SRC`, `sq/PLAYER_OBJ` | Squz Player source and object |
+| `sq/PLAYER` | Squz Player binary path (`bin/player`) |
 
 ### Shared Variables
 
@@ -154,7 +154,7 @@ Module.mk provides sensible defaults for project-wide variables. The parent exte
 | Variable | Default | Parent extends with |
 |----------|---------|---------------------|
 | `CLEAN` | `bin build` | Additional directories for `make clean` |
-| `COMPILE_DB_DEPS` | `$(sq/SRC) $(sq/TEST_SRC) $(sq/RECEIVER_SRC) sq/Module.mk` | App sources and Makefile |
+| `COMPILE_DB_DEPS` | `$(sq/SRC) $(sq/TEST_SRC) $(sq/PLAYER_SRC) sq/Module.mk` | App sources and Makefile |
 
 Example:
 
@@ -193,10 +193,10 @@ $(APP): $(APP_OBJ) $(sq/LIB) $(sq/FRAMEWORK_LIBS)
 	$(CXX) $(APP_OBJ) $(sq/LIB) $(sq/DAWN_LIBS) $(FRAMEWORKS) $(SDL_LIBS) -o $@
 ```
 
-Link the receiver:
+Link the player:
 
 ```makefile
-receiver: $(sq/RECEIVER)
+player: $(sq/PLAYER)
 ```
 
 ## Module Structure
@@ -205,29 +205,29 @@ receiver: $(sq/RECEIVER)
 |-----------|----------|
 | `include/` | Public headers (one per class) |
 | `src/` | Implementation files + test files (`*_test.cpp`) |
-| `tools/` | Receiver: shared core (`receiver_core.cpp`), desktop entry (`receiver.cpp`), platform backends |
-| `tools/ios/` | iOS receiver: Xcode project, QR scanner, build scripts |
-| `tools/android/` | Android receiver: Gradle project, QR scanner |
+| `tools/` | Player: shared core (`player_core.cpp`), desktop entry (`player.cpp`), platform backends |
+| `tools/ios/` | iOS player: Xcode project, QR scanner, build scripts |
+| `tools/android/` | Android player: Gradle project, QR scanner |
 | `vendor/` | Third-party dependencies: Dawn, spdlog, linalg.h, earcut.hpp, doctest, Triangle, asio, qrcodegen |
 
 ## Wire Protocol
 
-The server and receiver communicate over TCP using a custom framing protocol on top of Dawn's wire serialization.
+The server and player communicate over TCP using a custom framing protocol on top of Dawn's wire serialization.
 
 ### Connection Handshake
 
 ```
-Receiver → Server:  DeviceInfo   (dimensions, pixel ratio, texture format)
-Server  → Receiver: SessionInit  (reserved wire handles for instance/adapter/device/queue/surface)
-Receiver → Server:  SessionReady (resources injected, ready to render)
+Player → Server:  DeviceInfo   (dimensions, pixel ratio, texture format)
+Server → Player:  SessionInit  (reserved wire handles for instance/adapter/device/queue/surface)
+Player → Server:  SessionReady (resources injected, ready to render)
 ```
 
 ### Steady-State Messages
 
 ```
-Server  → Receiver: MessageHeader{kWireCommandMagic} + Dawn wire commands
-Receiver → Server:  MessageHeader{kWireResponseMagic} + Dawn wire responses
-Receiver → Server:  MessageHeader{kSdlEventMagic} + SDL_Event structs (input)
+Server → Player:  MessageHeader{kWireCommandMagic} + Dawn wire commands
+Player → Server:  MessageHeader{kWireResponseMagic} + Dawn wire responses
+Player → Server:  MessageHeader{kSdlEventMagic} + SDL_Event structs (input)
 ```
 
 ### Key Constants (`Protocol.h`)
@@ -236,9 +236,9 @@ Receiver → Server:  MessageHeader{kSdlEventMagic} + SDL_Event structs (input)
 |----------|-------|---------|
 | `kProtocolVersion` | 1 | Protocol version for compatibility checking |
 | `kMaxMessageSize` | 512 MB | Accommodates initial texture uploads over wire |
-| `kDeviceInfoMagic` | `0x59573244` | "YW2D" — receiver device info |
+| `kDeviceInfoMagic` | `0x59573244` | "YW2D" — player device info |
 | `kSessionInitMagic` | `0x59573253` | "YW2S" — server session init |
-| `kSessionReadyMagic` | `0x59573259` | "YW2Y" — receiver ready |
+| `kSessionReadyMagic` | `0x59573259` | "YW2Y" — player ready |
 | `kWireCommandMagic` | `0x59573243` | "YW2C" — GPU commands |
 | `kWireResponseMagic` | `0x59573252` | "YW2R" — GPU responses |
 | `kSdlEventMagic` | `0x59573249` | "YW2I" — input events |
@@ -255,7 +255,7 @@ The server auto-discovers its LAN IP (via UDP socket to 8.8.8.8, no packets sent
 
 ## QR Code Connection
 
-The server prints a QR code to stderr on startup containing `squz-remote://<lan-ip>:<port>`. Mobile receivers scan this to connect:
+The server prints a QR code to stderr on startup containing `squz-remote://<lan-ip>:<port>`. Mobile players scan this to connect:
 
 - **iOS device:** `QRScanner.mm` uses AVFoundation camera to detect QR codes with the `squz-remote://` scheme
 - **iOS simulator:** Skips QR scan, connects directly to `localhost:42069`
@@ -263,13 +263,13 @@ The server prints a QR code to stderr on startup containing `squz-remote://<lan-
 - **Android emulator:** Connects to `10.0.2.2:42069` (host localhost alias)
 - **Desktop:** CLI argument or `localhost:42069` default
 
-## Receiver
+## Player
 
-The receiver is a shared binary that works with any sq app. It has no app-specific code — it just renders whatever wire commands the server sends and forwards input back.
+The Squz Player is a shared binary that works with any sq app. It has no app-specific code — it just renders whatever wire commands the server sends and forwards input back.
 
 ### Platform Backends
 
-The receiver uses a thin platform abstraction (`receiver_platform.h`):
+The player uses a thin platform abstraction (`player_platform.h`):
 
 ```cpp
 SDL_WindowFlags windowFlags();              // SDL_WINDOW_METAL on Apple
@@ -277,11 +277,11 @@ WGPUSurface createSurface(instance, window); // Platform-specific surface
 void syncDrawableSize(window, &w, &h);      // iOS: force-resize on rotation
 ```
 
-Implementations: `receiver_platform_apple.cpp` (macOS/iOS Metal), `receiver_platform_android.cpp` (Android Vulkan).
+Implementations: `player_platform_apple.cpp` (macOS/iOS Metal), `player_platform_android.cpp` (Android Vulkan).
 
 ### Reconnection
 
-The receiver retries on disconnect with exponential backoff: 10ms initial, doubling to 2000ms cap, reset on success. This means you can restart the server and the receiver will reconnect automatically.
+The player retries on disconnect with exponential backoff: 10ms initial, doubling to 2000ms cap, reset on success. This means you can restart the server and the player will reconnect automatically.
 
 ### Mobile Builds
 
@@ -291,7 +291,7 @@ The receiver retries on disconnect with exponential backoff: 10ms initial, doubl
 
 ## Standalone iOS App (Direct Mode)
 
-Apps can also run directly on iOS without the wire receiver, rendering natively on-device. This uses `Session` compiled with `SessionDirect.cpp` instead of `SessionWire.cpp` — same API, no networking.
+Apps can also run directly on iOS without the wire player, rendering natively on-device. This uses `Session` compiled with `SessionDirect.cpp` instead of `SessionWire.cpp` — same API, no networking.
 
 ### Prerequisites
 
@@ -434,7 +434,7 @@ For real devices, omit `-DCMAKE_OSX_SYSROOT=iphonesimulator` (defaults to `iphon
 | Concern | Wire mode | Direct mode |
 |---------|-----------|-------------|
 | Session | `SessionWire.cpp` (TCP server) | `SessionDirect.cpp` (SDL window) |
-| Rendering | Receiver renders on-device | App renders directly via Metal |
+| Rendering | Player renders on-device | App renders directly via Metal |
 | Dependencies | asio, QR code generator | None (no networking) |
 | Entry point | `main()` (plain C++) | `main(int, char*[])` with `SDL_main.h` |
 | Asset paths | Relative to working directory | `sq::resource()` resolves to bundle |
@@ -452,7 +452,7 @@ Use `SDL_EVENT_FINGER_*` events exclusively for touch/drag input. SDL3 synthesiz
 
 ### Wire Transport
 
-- **`WireSession`** — TCP wire server session. Listens for a receiver connection, performs the Dawn wire handshake, acquires adapter/device/queue through wire. Owns the resulting `GpuContext`. `run()` manages the render loop with signal handling and frame timing. pImpl.
+- **`WireSession`** — TCP wire server session. Listens for a player connection, performs the Dawn wire handshake, acquires adapter/device/queue through wire. Owns the resulting `GpuContext`. `run()` manages the render loop with signal handling and frame timing. pImpl.
 - **`WireTransport`** — In-process wire transport connecting WireClient to WireServer via memory buffers. Used for testing. pImpl.
 - **`Protocol`** — Wire protocol structs (`DeviceInfo`, `SessionInit`, `SessionReady`, `MessageHeader`) and magic numbers. Header-only.
 
@@ -514,21 +514,21 @@ make unit-test    # Build and run sq unit tests
 
 ### Modifying the engine
 
-Changes to `sq/` affect all apps that consume it. After modifying engine code, rebuild both the app and receiver to ensure compatibility:
+Changes to `sq/` affect all apps that consume it. After modifying engine code, rebuild both the app and player to ensure compatibility:
 
 ```bash
-make && make receiver
+make && make player
 ```
 
-### Modifying the receiver
+### Modifying the player
 
-Shared receiver logic lives in `tools/receiver_core.cpp`. Platform-specific code is in `tools/receiver_platform_*.cpp`. Mobile entry points are in `tools/ios/main.mm` and `tools/android/`. The desktop entry point is `tools/receiver.cpp`.
+Shared player logic lives in `tools/player_core.cpp`. Platform-specific code is in `tools/player_platform_*.cpp`. Mobile entry points are in `tools/ios/main.mm` and `tools/android/`. The desktop entry point is `tools/player.cpp`.
 
-The receiver is app-agnostic — it renders whatever wire commands it receives. Avoid adding app-specific logic to the receiver.
+The player is app-agnostic — it renders whatever wire commands it receives. Avoid adding app-specific logic to the player.
 
 ### Modifying the wire protocol
 
-Protocol changes require updating both `WireSession` (server side) and `receiver_core.cpp` (receiver side) in lockstep. Bump `kProtocolVersion` in `Protocol.h` when making breaking changes.
+Protocol changes require updating both `WireSession` (server side) and `player_core.cpp` (player side) in lockstep. Bump `kProtocolVersion` in `Protocol.h` when making breaking changes.
 
 ### Adding a new public API class
 

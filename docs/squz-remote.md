@@ -1,8 +1,8 @@
-# Squz Remote - Mobile Receiver Setup
+# Squz Remote - Mobile Player Setup
 
 Squz Remote is a mobile companion app that renders the game on an iOS or Android device. The game runs as a headless server on your Mac, streaming WebGPU draw calls over the local network to the phone/tablet via Dawn's wire protocol.
 
-You don't need to modify Squz Remote to develop the game. The mobile app is a thin receiver - all game logic runs in the parent repo. This guide covers how to build the receiver, install it on a device, and connect it to your development server.
+You don't need to modify Squz Remote to develop the game. The mobile app is a thin player - all game logic runs in the parent repo. This guide covers how to build the player, install it on a device, and connect it to your development server.
 
 ## How it works
 
@@ -38,16 +38,16 @@ You only need to re-run `build-deps.sh` if you update the Dawn version (the comm
 - A USB-connected Android device with Developer Mode enabled
 - Java 17+ (bundled with Android Studio, or install separately)
 
-## Desktop receiver
+## Desktop player
 
-For quick iteration without a phone, use the desktop receiver:
+For quick iteration without a phone, use the desktop player:
 
 ```bash
-make receiver           # Build
-bin/receiver            # Run (connects to localhost:42069 by default)
+make player             # Build
+bin/player              # Run (connects to localhost:42069 by default)
 ```
 
-Run `make run` in another terminal to start the server. The desktop receiver connects automatically without QR scanning.
+Run `make run` in another terminal to start the server. The desktop player connects automatically without QR scanning.
 
 ## iOS
 
@@ -66,11 +66,11 @@ bash build-deps.sh      # Cross-compiles Dawn and SDL3 for iOS (~20 min)
 make sq/ios
 ```
 
-This runs CMake to generate `sq/tools/ios/build/xcode/Receiver.xcodeproj`.
+This runs CMake to generate `sq/tools/ios/build/xcode/Player.xcodeproj`.
 
 ### Build and run
 
-1. Open `sq/tools/ios/build/xcode/Receiver.xcodeproj` in Xcode
+1. Open `sq/tools/ios/build/xcode/Player.xcodeproj` in Xcode
 2. Select your iOS device as the build target
 3. Set the development team in Signing & Capabilities (your Apple ID)
 4. Build and run (Cmd+R)

@@ -1,8 +1,8 @@
-// Android wire receiver entry point.
+// Android Squz Player entry point.
 // Scans a QR code on startup to discover the game server, then runs the shared
-// Receiver.
+// Player.
 
-#include "Receiver.h"
+#include "Player.h"
 #include "QRScanner.h"
 #include <SDL3/SDL_main.h>
 #include <spdlog/spdlog.h>
@@ -17,7 +17,7 @@ bool isEmulator() {
 } // namespace
 
 int main(int argc, char* argv[]) {
-    SPDLOG_INFO("Wire Receiver (Android) starting...");
+    SPDLOG_INFO("Squz Player (Android) starting...");
 
     std::string host;
     uint16_t port = kDefaultPort;
@@ -40,6 +40,6 @@ int main(int argc, char* argv[]) {
 
     SPDLOG_INFO("Target: {}:{}, dimensions: {}x{}", host, port, width, height);
 
-    Receiver receiver(host, port, width, height);
-    return receiver.run();
+    Player player(host, port, width, height);
+    return player.run();
 }

@@ -1,14 +1,14 @@
-// iOS wire receiver entry point.
-// Scans a QR code on startup to discover the game server, then runs the shared Receiver.
+// iOS Squz Player entry point.
+// Scans a QR code on startup to discover the game server, then runs the shared Player.
 
 #include <TargetConditionals.h>
-#include "Receiver.h"
+#include "Player.h"
 #include "QRScanner.h"
 #include <SDL3/SDL_main.h>
 #include <spdlog/spdlog.h>
 
 int main(int argc, char* argv[]) {
-    SPDLOG_INFO("Wire Receiver (iOS) starting...");
+    SPDLOG_INFO("Squz Player (iOS) starting...");
 
 #if TARGET_OS_SIMULATOR
     std::string host = kDefaultHost;
@@ -29,6 +29,6 @@ int main(int argc, char* argv[]) {
 
     SPDLOG_INFO("Target: {}:{}, dimensions: {}x{}", host, port, width, height);
 
-    Receiver receiver(host, port, width, height);
-    return receiver.run();
+    Player player(host, port, width, height);
+    return player.run();
 }

@@ -272,7 +272,7 @@ public:
         return !deferredMips_.empty() || !pendingMips_.empty();
     }
 
-    // Sends the next deferred mip (hash probe or full data) to the receiver.
+    // Sends the next deferred mip (hash probe or full data) to the player.
     // Returns true when all mips are fully resolved (queue and pending both empty).
     bool streamNextDeferredMip() {
         if (deferredMips_.empty()) return pendingMips_.empty();
@@ -411,7 +411,7 @@ public:
             ssize_t n = ::recv(socket_.native_handle(), &peek, 1,
                                MSG_PEEK | MSG_DONTWAIT);
             if (n == 0 || (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK)) {
-                throw asio::system_error(asio::error::eof, "receiver disconnected");
+                throw asio::system_error(asio::error::eof, "player disconnected");
             }
         }
     }
@@ -530,7 +530,7 @@ WireSession::WireSession()
 
     auto lanIp = getLanAddress(m->io);
     auto url = "squz-remote://" + lanIp + ":" + std::to_string(port);
-    SPDLOG_INFO("Waiting for receiver connection...");
+    SPDLOG_INFO("Waiting for player connection...");
     static bool qrPrinted = false;
     if (!qrPrinted) {
         printQrCode(url);
@@ -538,7 +538,7 @@ WireSession::WireSession()
     }
 
     acceptor.accept(m->socket);
-    SPDLOG_INFO("Receiver connected from {}",
+    SPDLOG_INFO("Player connected from {}",
                 m->socket.remote_endpoint().address().to_string());
 
     // Receive DeviceInfo
@@ -549,7 +549,7 @@ WireSession::WireSession()
         throw std::runtime_error("Invalid DeviceInfo magic");
     }
 
-    SPDLOG_INFO("Receiver: {}x{} @ {}x, format={}",
+    SPDLOG_INFO("Player: {}x{} @ {}x, format={}",
                 deviceInfo.width, deviceInfo.height,
                 deviceInfo.pixelRatio, deviceInfo.preferredFormat);
     m->pixelRatio = std::max(1, (int)deviceInfo.pixelRatio);
@@ -711,13 +711,13 @@ void WireSession::run(std::function<void(float dt)> onFrame,
 
     // Credit-based double buffering: frameReadyCount starts at 2, so the first
     // two frames send immediately (priming the pipeline). After that, each frame
-    // waits for a FrameReady signal from the receiver before proceeding.
+    // waits for a FrameReady signal from the player before proceeding.
     for (;;) {
         while (m->serializer->frameReadyCount <= 0) {
             try {
                 m->serializer->processResponses(*m->wireClient, m->onEvent);
             } catch (const asio::system_error& e) {
-                SPDLOG_WARN("Receiver disconnected: {}", e.what());
+                SPDLOG_WARN("Player disconnected: {}", e.what());
                 return;
             }
             m->instance.ProcessEvents();
@@ -757,7 +757,7 @@ void WireSession::run(std::function<void(float dt)> onFrame,
             flush();
             m->serializer->sendFrameEnd();
         } catch (const asio::system_error& e) {
-            SPDLOG_WARN("Receiver disconnected: {}", e.what());
+            SPDLOG_WARN("Player disconnected: {}", e.what());
             return;
         }
     }

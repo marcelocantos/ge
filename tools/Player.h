@@ -8,11 +8,11 @@ constexpr int kDefaultHeight = 844;
 constexpr char kDefaultHost[] = "localhost";
 constexpr uint16_t kDefaultPort = 42069;
 
-class Receiver {
+class Player {
 public:
-    Receiver(std::string host, uint16_t port, int width, int height,
-             bool maximized = false);
-    ~Receiver();
+    Player(std::string host, uint16_t port, int width, int height,
+           bool maximized = false);
+    ~Player();
     int run();
 
 private:

@@ -14,16 +14,16 @@ constexpr uint32_t kSessionInitMagic = 0x59573253;  // "YW2S"
 constexpr uint32_t kWireCommandMagic = 0x59573243;  // "YW2C"
 constexpr uint32_t kWireResponseMagic = 0x59573252; // "YW2R"
 constexpr uint32_t kSdlEventMagic = 0x59573249;    // "YW2I"
-constexpr uint32_t kFrameEndMagic = 0x59573246;    // "YW2F" — server → receiver: frame boundary
-constexpr uint32_t kFrameReadyMagic = 0x59573247;  // "YW2G" — receiver → server: ready for next
-constexpr uint32_t kDeferredMipMagic = 0x59573248; // "YW2H" — server → receiver: deferred mip data
-constexpr uint32_t kMipCacheHitMagic = 0x5957324A; // "YW2J" — receiver → server: cached mip found
-constexpr uint32_t kMipCacheMissMagic = 0x5957324B; // "YW2K" — receiver → server: cached mip not found
+constexpr uint32_t kFrameEndMagic = 0x59573246;    // "YW2F" — server → player: frame boundary
+constexpr uint32_t kFrameReadyMagic = 0x59573247;  // "YW2G" — player → server: ready for next
+constexpr uint32_t kDeferredMipMagic = 0x59573248; // "YW2H" — server → player: deferred mip data
+constexpr uint32_t kMipCacheHitMagic = 0x5957324A; // "YW2J" — player → server: cached mip found
+constexpr uint32_t kMipCacheMissMagic = 0x5957324B; // "YW2K" — player → server: cached mip not found
 
 constexpr uint16_t kProtocolVersion = 2;
 constexpr size_t kMaxMessageSize = 512 * 1024 * 1024;  // 512MB (initial resource uploads can be large)
 
-// Sent by receiver after connecting to game server
+// Sent by player after connecting to game server
 struct DeviceInfo {
     uint32_t magic = kDeviceInfoMagic;
     uint16_t version = kProtocolVersion;
@@ -41,12 +41,12 @@ struct Handle {
 };
 
 // Sent by game server after receiving DeviceInfo
-// Contains reserved handles that the receiver should inject native resources into
+// Contains reserved handles that the player should inject native resources into
 struct SessionInit {
     uint32_t magic = kSessionInitMagic;
     uint16_t version = kProtocolVersion;
     uint16_t reserved = 0;
-    // Reserved handles from WireClient that receiver should inject into
+    // Reserved handles from WireClient that player should inject into
     Handle instanceHandle;
     Handle adapterHandle;
     Handle deviceHandle;
@@ -54,7 +54,7 @@ struct SessionInit {
     Handle surfaceHandle;
 };
 
-// Sent by receiver after injecting native resources
+// Sent by player after injecting native resources
 constexpr uint32_t kSessionReadyMagic = 0x59573259;  // "YW2Y"
 struct SessionReady {
     uint32_t magic = kSessionReadyMagic;
@@ -81,7 +81,7 @@ struct DeferredMipHeader {
     uint8_t  reserved[3] = {};
 };
 
-// Receiver → server response to a hash probe
+// Player → server response to a hash probe
 struct MipCacheResponse {
     uint32_t textureId;
     uint32_t mipLevel;

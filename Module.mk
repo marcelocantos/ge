@@ -65,10 +65,10 @@ sq/TRIANGLE_SRC = sq/vendor/src/triangle.c
 sq/TRIANGLE_OBJ = $(BUILD_DIR)/sq/vendor/triangle.o
 sq/TRIANGLE_CFLAGS = -O2 -Isq/vendor/include -DTRILIBRARY -DREAL=double -DANSI_DECLARATORS -DNO_TIMER
 
-# Wire receiver tool (standalone binary)
-sq/RECEIVER_SRC = sq/tools/receiver.cpp sq/tools/receiver_core.cpp sq/tools/receiver_platform_apple.cpp
-sq/RECEIVER_OBJ = $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(sq/RECEIVER_SRC))
-sq/RECEIVER = bin/receiver
+# Player tool (standalone binary)
+sq/PLAYER_SRC = sq/tools/player.cpp sq/tools/player_core.cpp sq/tools/player_platform_apple.cpp
+sq/PLAYER_OBJ = $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(sq/PLAYER_SRC))
+sq/PLAYER = bin/player
 
 # Framework libraries (Dawn WebGPU)
 sq/FRAMEWORK_LIBS = $(sq/DAWN_LIBS)
@@ -83,7 +83,7 @@ sq/TEST_OBJ = $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(sq/TEST_SRC))
 
 # Shared variables (parent can += to extend)
 CLEAN = bin build deps.dot deps.svg deps.png
-COMPILE_DB_DEPS = $(sq/SRC) $(sq/TEST_SRC) $(sq/RECEIVER_SRC) sq/Module.mk
+COMPILE_DB_DEPS = $(sq/SRC) $(sq/TEST_SRC) $(sq/PLAYER_SRC) sq/Module.mk
 sq/DEPGRAPH_DEPS = $(sq/SRC) $(wildcard sq/include/sq/*.h) sq/tools/depgraph.py
 
 # ────────────────────────────────────────────────
@@ -110,15 +110,15 @@ $(sq/TRIANGLE_OBJ): $(sq/TRIANGLE_SRC)
 	@mkdir -p $(dir $@)
 	$(CC) $(sq/TRIANGLE_CFLAGS) -c $< -o $@
 
-# Receiver objects
+# Player objects
 $(BUILD_DIR)/sq/tools/%.o: sq/tools/%.cpp
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) $(SDL_CFLAGS) -MMD -MP -c $< -o $@
 
-# Receiver binary
-$(sq/RECEIVER): $(sq/RECEIVER_OBJ) $(sq/LIB) $(sq/DAWN_LIBS)
+# Player binary
+$(sq/PLAYER): $(sq/PLAYER_OBJ) $(sq/LIB) $(sq/DAWN_LIBS)
 	@mkdir -p bin
-	$(CXX) $(sq/RECEIVER_OBJ) $(sq/LIB) $(sq/DAWN_LIBS) $(FRAMEWORKS) $(SDL_LIBS) -o $@
+	$(CXX) $(sq/PLAYER_OBJ) $(sq/LIB) $(sq/DAWN_LIBS) $(FRAMEWORKS) $(SDL_LIBS) -o $@
 
 # Dawn libraries are prebuilt; no build rule needed
 
@@ -129,9 +129,9 @@ sq/ios:
 	    -DCMAKE_SYSTEM_NAME=iOS \
 	    -DCMAKE_OSX_ARCHITECTURES=arm64 \
 	    -DCMAKE_OSX_DEPLOYMENT_TARGET=16.0
-	@echo "Open sq/tools/ios/build/xcode/Receiver.xcodeproj in Xcode"
+	@echo "Open sq/tools/ios/build/xcode/Player.xcodeproj in Xcode"
 
-# Android APK build (receiver)
+# Android APK build (player)
 .PHONY: sq/android
 sq/android:
 	cd sq/tools/android && ./gradlew assembleDebug

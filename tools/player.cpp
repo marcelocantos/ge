@@ -1,7 +1,7 @@
-// Desktop wire receiver entry point.
-// Usage: bin/receiver [--maximized] [host:port] [width] [height]
+// Desktop Squz Player entry point.
+// Usage: bin/player [--maximized] [host:port] [width] [height]
 
-#include "Receiver.h"
+#include "Player.h"
 #include <cstring>
 #include <spdlog/spdlog.h>
 #include <string>
@@ -40,10 +40,10 @@ int main(int argc, char* argv[]) {
     if (pos < argc) width = std::stoi(argv[pos++]);
     if (pos < argc) height = std::stoi(argv[pos++]);
 
-    SPDLOG_INFO("Wire Receiver starting...");
+    SPDLOG_INFO("Squz Player starting...");
     SPDLOG_INFO("Target: {}:{}, dimensions: {}x{}{}", host, port, width, height,
                 maximized ? " (maximized)" : "");
 
-    Receiver receiver(host, port, width, height, maximized);
-    return receiver.run();
+    Player player(host, port, width, height, maximized);
+    return player.run();
 }

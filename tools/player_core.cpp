@@ -1,11 +1,11 @@
-// Receiver — shared wire rendering receiver implementation.
-// Platform-specific entry points: receiver.cpp (desktop), ios/main.mm (iOS).
+// Player — shared wire rendering player implementation.
+// Platform-specific entry points: player.cpp (desktop), ios/main.mm (iOS).
 
 #define ASIO_STANDALONE
 #include <asio.hpp>
 
-#include "Receiver.h"
-#include "receiver_platform.h"
+#include "Player.h"
+#include "player_platform.h"
 
 #include <SDL3/SDL.h>
 #include <spdlog/spdlog.h>
@@ -462,7 +462,7 @@ void MipTracker::rewriteSetBindGroups(char* data, size_t size) {
 
 } // namespace
 
-struct Receiver::M {
+struct Player::M {
     std::string host;
     uint16_t port;
     int width;
@@ -486,7 +486,7 @@ struct Receiver::M {
     ConnectionResult connectAndRun();
 };
 
-Receiver::Receiver(std::string host, uint16_t port, int width, int height,
+Player::Player(std::string host, uint16_t port, int width, int height,
                    bool maximized)
     : m(std::make_unique<M>()) {
     m->host = std::move(host);
@@ -496,9 +496,9 @@ Receiver::Receiver(std::string host, uint16_t port, int width, int height,
     m->maximized = maximized;
 }
 
-Receiver::~Receiver() = default;
+Player::~Player() = default;
 
-int Receiver::run() {
+int Player::run() {
     try {
         m->initWindow();
         m->initGpu();
@@ -527,7 +527,7 @@ int Receiver::run() {
     }
 }
 
-void Receiver::M::initWindow() {
+void Player::M::initWindow() {
     if (!SDL_Init(SDL_INIT_VIDEO)) {
         throw std::runtime_error(std::string("SDL_Init failed: ") + SDL_GetError());
     }
@@ -536,7 +536,7 @@ void Receiver::M::initWindow() {
 
     SDL_WindowFlags flags = platform::windowFlags();
     if (maximized) flags |= SDL_WINDOW_MAXIMIZED | SDL_WINDOW_RESIZABLE;
-    window = SDL_CreateWindow("Wire Receiver", width, height, flags);
+    window = SDL_CreateWindow("Squz Player", width, height, flags);
     if (!window) {
         SDL_Quit();
         throw std::runtime_error(std::string("SDL_CreateWindow failed: ") + SDL_GetError());
@@ -546,7 +546,7 @@ void Receiver::M::initWindow() {
     SPDLOG_INFO("Window created: {}x{} ({}x{} pixels)", width, height, pixelWidth, pixelHeight);
 }
 
-void Receiver::M::initGpu() {
+void Player::M::initGpu() {
     SPDLOG_INFO("Initializing native WebGPU...");
 
     dawnProcSetProcs(&dawn::native::GetProcs());
@@ -603,7 +603,7 @@ void Receiver::M::initGpu() {
     SPDLOG_INFO("WebGPU initialized: format={}", static_cast<int>(swapChainFormat));
 }
 
-ConnectionResult Receiver::M::connectAndRun() {
+ConnectionResult Player::M::connectAndRun() {
     asio::io_context io;
     asio::ip::tcp::socket socket(io);
 

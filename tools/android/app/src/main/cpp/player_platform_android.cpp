@@ -1,7 +1,7 @@
-// Platform-specific receiver code for Android.
+// Platform-specific player code for Android.
 // Creates a Vulkan-backed WebGPU surface via SDL3's ANativeWindow.
 
-#include "receiver_platform.h"
+#include "player_platform.h"
 
 #include <SDL3/SDL_properties.h>
 #include <SDL3/SDL_video.h>

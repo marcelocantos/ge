@@ -1,7 +1,7 @@
-// Platform-specific receiver code for Apple (macOS / iOS).
+// Platform-specific player code for Apple (macOS / iOS).
 // Creates a Metal-backed WebGPU surface via SDL3.
 
-#include "receiver_platform.h"
+#include "player_platform.h"
 
 #include <SDL3/SDL_metal.h>
 #include <QuartzCore/CAMetalLayer.h>

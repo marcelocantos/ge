@@ -10,12 +10,12 @@ add_subdirectory(
     ${CMAKE_CURRENT_BINARY_DIR}/SDL3
 )
 
-# Sources — Android entry point + shared receiver + wire transport + platform + QR
+# Sources — Android entry point + shared player + wire transport + platform + QR
 add_library(main SHARED
     ${CMAKE_CURRENT_SOURCE_DIR}/main.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/QRScanner_android.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/receiver_platform_android.cpp
-    ${SQ_ROOT}/tools/receiver_core.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/player_platform_android.cpp
+    ${SQ_ROOT}/tools/player_core.cpp
     ${SQ_ROOT}/src/WireTransport.cpp
 )
 
