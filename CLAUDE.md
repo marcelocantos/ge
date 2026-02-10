@@ -537,3 +537,9 @@ Protocol changes require updating both `WireSession` (server side) and `player_c
 3. Use pImpl for classes that pull in Dawn/SDL/asio headers (see parent project's CLAUDE.md for pImpl guidelines)
 4. Add to `sq/SRC` in `Module.mk` if it's a new source file
 5. Update this CLAUDE.md's Public API section
+
+### Issue Tracking
+
+Bugs and issues live in `docs/issues/` as individual markdown files with YAML frontmatter (status, created, tags). Use `/file-bug` to create new issues and `/triage` to review open ones.
+
+**Closing an issue**: After fixing a bug, verify the fix (build, test, manual check as appropriate). Then set `status: closed` in the frontmatter, add a final `## Updates` entry describing the fix and verification, and move the file to `docs/issues/closed/`.
