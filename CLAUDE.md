@@ -540,12 +540,3 @@ Protocol changes require updating both `WireSession` (server side) and `player_c
 4. Add to `sq/SRC` in `Module.mk` if it's a new source file
 5. Update this CLAUDE.md's Public API section
 
-### Issue Tracking
-
-Bugs and issues live in `docs/issues/` as individual markdown files with YAML frontmatter (status, created, tags). Managed via Claude Code skills:
-
-- `/file-bug <description>` — create a new issue
-- `/assign <number> <name>` — assign an issue (use "me" for yourself)
-- `/comment <number> <text>` — add an update to an issue
-- `/close-bug <number>` — close a resolved issue
-- `/triage` — review open issues
