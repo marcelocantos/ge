@@ -4,3 +4,5 @@ app/.cxx/
 .gradle/
 local.properties
 *.apk
+*.aab
+*.jks

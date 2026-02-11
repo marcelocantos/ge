@@ -29,7 +29,7 @@ android {
             def props = new Properties()
             def propsFile = rootProject.file("local.properties")
             if (propsFile.exists()) props.load(propsFile.newDataInputStream())
-            storeFile file(props.getProperty("RELEASE_STORE_FILE", "/dev/null"))
+            storeFile rootProject.file(props.getProperty("RELEASE_STORE_FILE", "/dev/null"))
             storePassword props.getProperty("RELEASE_STORE_PASSWORD", "")
             keyAlias props.getProperty("RELEASE_KEY_ALIAS", "")
             keyPassword props.getProperty("RELEASE_KEY_PASSWORD", "")
