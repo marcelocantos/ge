@@ -480,12 +480,20 @@ TextureResult loadSdlImage(wgpu::Device device, wgpu::Queue queue, const char* p
         surface = converted;
     }
 
+    // Calculate full mip chain so the wire filter can defer large mip levels
+    // without creating invalid texture views.
+    uint32_t mipCount = 1;
+    {
+        uint32_t mw = static_cast<uint32_t>(width), mh = static_cast<uint32_t>(height);
+        while (mw > 1 || mh > 1) { mw = std::max(1u, mw / 2); mh = std::max(1u, mh / 2); mipCount++; }
+    }
+
     wgpu::TextureDescriptor texDesc{
         .usage = wgpu::TextureUsage::TextureBinding | wgpu::TextureUsage::CopyDst,
         .dimension = wgpu::TextureDimension::e2D,
         .size = {static_cast<uint32_t>(width), static_cast<uint32_t>(height), 1},
         .format = wgpu::TextureFormat::RGBA8Unorm,
-        .mipLevelCount = 1,
+        .mipLevelCount = mipCount,
         .sampleCount = 1,
     };
     wgpu::Texture tex = device.CreateTexture(&texDesc);
@@ -494,6 +502,7 @@ TextureResult loadSdlImage(wgpu::Device device, wgpu::Queue queue, const char* p
         throw std::runtime_error(std::string("Failed to create texture for ") + path);
     }
 
+    // Upload mip level 0
     wgpu::TexelCopyTextureInfo dst{
         .texture = tex,
         .mipLevel = 0,
@@ -506,15 +515,54 @@ TextureResult loadSdlImage(wgpu::Device device, wgpu::Queue queue, const char* p
         .rowsPerImage = static_cast<uint32_t>(height),
     };
     wgpu::Extent3D extent{static_cast<uint32_t>(width), static_cast<uint32_t>(height), 1};
-    queue.WriteTexture(&dst, surface->pixels, width * height * 4, &layout, &extent);
+    size_t pixelBytes = static_cast<size_t>(width) * height * 4;
+    queue.WriteTexture(&dst, surface->pixels, pixelBytes, &layout, &extent);
 
-    SDL_DestroySurface(surface);
+    // Generate and upload lower mip levels (2x2 box filter)
+    {
+        std::vector<uint8_t> prev(static_cast<uint8_t*>(surface->pixels),
+                                  static_cast<uint8_t*>(surface->pixels) + pixelBytes);
+        SDL_DestroySurface(surface);
+        uint32_t pw = static_cast<uint32_t>(width), ph = static_cast<uint32_t>(height);
+        for (uint32_t level = 1; level < mipCount; ++level) {
+            uint32_t mw = std::max(1u, pw / 2);
+            uint32_t mh = std::max(1u, ph / 2);
+            std::vector<uint8_t> mip(mw * mh * 4);
+            for (uint32_t y = 0; y < mh; ++y) {
+                for (uint32_t x = 0; x < mw; ++x) {
+                    uint32_t sx = std::min(x * 2, pw - 1);
+                    uint32_t sy = std::min(y * 2, ph - 1);
+                    uint32_t sx1 = std::min(sx + 1, pw - 1);
+                    uint32_t sy1 = std::min(sy + 1, ph - 1);
+                    for (int c = 0; c < 4; ++c) {
+                        uint32_t sum = prev[(sy * pw + sx) * 4 + c]
+                                     + prev[(sy * pw + sx1) * 4 + c]
+                                     + prev[(sy1 * pw + sx) * 4 + c]
+                                     + prev[(sy1 * pw + sx1) * 4 + c];
+                        mip[(y * mw + x) * 4 + c] = static_cast<uint8_t>(sum / 4);
+                    }
+                }
+            }
+            wgpu::TexelCopyTextureInfo mipDst{
+                .texture = tex, .mipLevel = level,
+                .origin = {0, 0, 0}, .aspect = wgpu::TextureAspect::All,
+            };
+            wgpu::TexelCopyBufferLayout mipLayout{
+                .offset = 0, .bytesPerRow = mw * 4, .rowsPerImage = mh,
+            };
+            wgpu::Extent3D mipExtent{mw, mh, 1};
+            queue.WriteTexture(&mipDst, mip.data(), mip.size(), &mipLayout, &mipExtent);
+            prev = std::move(mip);
+            pw = mw;
+            ph = mh;
+        }
+    }
 
     wgpu::TextureViewDescriptor viewDesc{
         .format = wgpu::TextureFormat::RGBA8Unorm,
         .dimension = wgpu::TextureViewDimension::e2D,
         .baseMipLevel = 0,
-        .mipLevelCount = 1,
+        .mipLevelCount = mipCount,
         .baseArrayLayer = 0,
         .arrayLayerCount = 1,
         .aspect = wgpu::TextureAspect::All,
@@ -524,7 +572,7 @@ TextureResult loadSdlImage(wgpu::Device device, wgpu::Queue queue, const char* p
     return {
         std::move(tex),
         std::move(texView),
-        createSampler(device, 1),
+        createSampler(device, mipCount),
         width,
         height,
     };
