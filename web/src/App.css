@@ -57,6 +57,30 @@ body {
   margin-right: auto;
 }
 
+.stop-btn {
+  padding: 4px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  border: 1px solid var(--red);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--red);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.stop-btn:hover:not(:disabled) {
+  background: var(--red);
+  color: #fff;
+}
+
+.stop-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
 .status-dot {
   width: 10px;
   height: 10px;
@@ -224,6 +248,74 @@ body {
 .log-msg {
   color: var(--text-primary);
   flex: 1;
+}
+
+/* ---------- Confirm Dialog ---------- */
+
+.confirm-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+.confirm-dialog {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 24px 28px;
+  text-align: center;
+  min-width: 300px;
+}
+
+.confirm-text {
+  font-size: 16px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.confirm-hint {
+  font-size: 13px;
+  color: var(--text-muted);
+  font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", "SF Mono", "Menlo", monospace;
+  margin-bottom: 8px;
+}
+
+.confirm-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+  margin-top: 16px;
+}
+
+.confirm-btn {
+  padding: 8px 20px;
+  font-size: 14px;
+  font-weight: 600;
+  border-radius: 6px;
+  border: none;
+  cursor: pointer;
+}
+
+.confirm-btn-stop {
+  background: var(--red);
+  color: #fff;
+}
+
+.confirm-btn-stop:hover {
+  background: #d32f2f;
+}
+
+.confirm-btn-cancel {
+  background: var(--border);
+  color: var(--text-primary);
+}
+
+.confirm-btn-cancel:hover {
+  background: #3a3a5a;
 }
 
 /* ---------- Responsive ---------- */

@@ -22,6 +22,7 @@
 #include <stb_image_write.h>
 
 #include <chrono>
+#include <csignal>
 #include <cstdlib>
 #include <queue>
 #include <stdexcept>
@@ -556,6 +557,11 @@ WireSession::WireSession()
     m->httpServer->get("/api/qr", [this](const HttpRequest&, HttpResponse& res) {
         auto png = generateQrPng(m->qrUrl);
         res.png(png.data(), png.size());
+    });
+    m->httpServer->get("/api/stop", [](const HttpRequest&, HttpResponse& res) {
+        SPDLOG_INFO("Stop requested from dashboard");
+        res.json(R"({"ok":true})");
+        kill(getpid(), SIGINT);
     });
     m->httpServer->ws("/ws/logs", dashSink->handler());
     m->httpServer->serveStatic("/", "sq/web/dist");
