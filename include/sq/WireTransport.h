@@ -5,7 +5,6 @@
 #include <dawn/wire/WireServer.h>
 #include <webgpu/webgpu.h>
 #include <memory>
-#include <vector>
 
 namespace sq {
 

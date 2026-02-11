@@ -28,10 +28,17 @@ public:
     int pixelRatio() const;
     void flush();
 
+    // Render loop configuration.
+    struct RunConfig {
+        std::function<void(float dt)> onUpdate;
+        std::function<void(wgpu::TextureView target)> onRender;
+        std::function<void(const SDL_Event&)> onEvent;
+        std::function<void(int w, int h)> onResize;
+    };
+
     // Returns true if the caller should loop (wire: receiver disconnected),
     // false if the session is done (direct: user quit).
-    bool run(std::function<void(float dt)> onFrame,
-             std::function<void(const SDL_Event&)> onEvent = {});
+    bool run(RunConfig config);
 
 private:
     struct M;

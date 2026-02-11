@@ -16,9 +16,8 @@ GpuContext& Session::gpu() { return m->wire.gpu(); }
 int Session::pixelRatio() const { return m->wire.pixelRatio(); }
 void Session::flush() { m->wire.flush(); }
 
-bool Session::run(std::function<void(float dt)> onFrame,
-                  std::function<void(const SDL_Event&)> onEvent) {
-    m->wire.run(std::move(onFrame), std::move(onEvent));
+bool Session::run(RunConfig config) {
+    m->wire.run({std::move(config.onUpdate), std::move(config.onRender), std::move(config.onEvent), std::move(config.onResize)});
     return true;  // Wire disconnect → reconnect
 }
 

@@ -764,10 +764,18 @@ void WireSession::flush() {
     m->serializer->Flush();
 }
 
-void WireSession::run(std::function<void(float dt)> onFrame,
-                      std::function<void(const SDL_Event&)> onEvent) {
+void WireSession::run(RunConfig config) {
     if (!m->connected) connect();
-    m->onEvent = std::move(onEvent);
+    m->onEvent = [this,
+                  userEvent = std::move(config.onEvent),
+                  userResize = std::move(config.onResize)](const SDL_Event& e) {
+        if (e.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED) {
+            m->gfx->resize({e.window.data1, e.window.data2});
+            if (userResize) userResize(e.window.data1, e.window.data2);
+        } else {
+            if (userEvent) userEvent(e);
+        }
+    };
 
     // Flush any resource creation commands issued between construction and run()
     flush();
@@ -819,7 +827,12 @@ void WireSession::run(std::function<void(float dt)> onFrame,
         float dt = frameTimer.tick();
 
         try {
-            onFrame(dt);
+            if (config.onUpdate) config.onUpdate(dt);
+            auto frameView = m->gfx->currentFrameView();
+            if (frameView && config.onRender) {
+                config.onRender(frameView);
+                m->gfx->present();
+            }
             flush();
             m->serializer->sendFrameEnd();
         } catch (const std::exception& e) {

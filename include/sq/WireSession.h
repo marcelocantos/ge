@@ -43,12 +43,17 @@ public:
     // Flush wire commands to receiver and process responses.
     void flush();
 
-    // Run the render loop. Calls onFrame each iteration with the frame delta,
-    // and manages flush cadence. onEvent (optional) is called for each SDL event
-    // received from the receiver. Returns when the receiver disconnects.
+    // Render loop configuration.
+    struct RunConfig {
+        std::function<void(float dt)> onUpdate;
+        std::function<void(wgpu::TextureView target)> onRender;
+        std::function<void(const SDL_Event&)> onEvent;
+        std::function<void(int w, int h)> onResize;
+    };
+
+    // Run the render loop. Returns when the receiver disconnects.
     // Ctrl+C terminates the process via the default SIGINT handler.
-    void run(std::function<void(float dt)> onFrame,
-             std::function<void(const SDL_Event&)> onEvent = {});
+    void run(RunConfig config);
 
 private:
     struct M;
