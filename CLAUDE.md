@@ -15,26 +15,22 @@ A complete sq app needs three things: a `Makefile`, a `main.cpp`, and game logic
 **main.cpp** — the standard entry point pattern:
 
 ```cpp
-#include <sq/WireSession.h>
+#include <sq/Session.h>
 
 int main() {
     MyState state;  // Persistent game state (survives reconnects)
 
-    for (;;) {
-        sq::WireSession session;            // Blocks until a player connects
-        MyApp app(session.gpu());           // Create GPU resources
+    for (bool done = false; !done;) {
+        sq::Session session;
+        auto& ctx = session.gpu();
+        MyApp app(ctx);
 
-        session.run(
-            [&](float dt) { app.render(dt, state); },
-            [&](const SDL_Event& e) {
-                if (e.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED)
-                    app.resize({e.window.data1, e.window.data2});
-                else
-                    app.handleInput(e, state);
-            }
-        );
-        // Disconnected → loop back, wait for next player
-        // Ctrl+C terminates the process via default SIGINT handler
+        done = !session.run({
+            .onUpdate = [&](float dt) { app.update(dt, state); },
+            .onRender = [&](wgpu::TextureView target) { app.render(ctx, state, target); },
+            .onEvent  = [&](const SDL_Event& e) { app.event(e, state); },
+        });
+        // Wire: returns true (reconnect), Direct: returns false (quit)
     }
 }
 ```
@@ -43,6 +39,8 @@ Key points:
 - **State lives outside the session loop** so it persists across player reconnects
 - **App/GPU resources are recreated** each connection (new wire handles)
 - `session.run()` drives the render loop at ~60fps with frame delta timing
+- `RunConfig` uses designated initializers: `onUpdate`, `onRender`, `onEvent`, `onResize`
+- The engine manages frame view acquisition, present, and window resize internally
 - Returns when the player disconnects; Ctrl+C terminates the process
 
 **Makefile** — minimal integration:
@@ -92,8 +90,9 @@ The server prints a QR code to stderr. Mobile players scan it; desktop players c
 |---------|--------------|-----------|
 | GPU device setup | WireSession acquires adapter/device/queue via wire | Nothing |
 | Window/surface | Player creates native window + Metal/Vulkan surface | Nothing |
-| Frame loop | `session.run()` with delta timing + signal handling | `onFrame(dt)` callback |
+| Frame loop | `session.run()` with delta timing + signal handling | `onUpdate(dt)` + `onRender(target)` callbacks |
 | Input | Player captures SDL events, sends over TCP | `onEvent(e)` callback |
+| Window resize | Engine calls `GpuContext::resize()` automatically | Optional `onResize(w, h)` callback |
 | Reconnection | Outer loop in main.cpp | Separate State from App |
 | QR code | Auto-generated from LAN IP | Nothing |
 | Asset loading | `sq::loadManifest<T>()` for meshes + textures | manifest.json + data files |
@@ -461,7 +460,7 @@ Use `SDL_EVENT_FINGER_*` events exclusively for touch/drag input. SDL3 synthesiz
 ### Platform
 
 - **`GpuContext`** — WebGPU device/queue/surface lifecycle. Supports native init (from `SdlContext`) or wire-mode init (device, queue, surface, format, dimensions). `currentFrameView()` + `present()` for frame rendering. pImpl.
-- **`Session`** — Unified session interface. Compiles as wire mode (`SessionWire.cpp`) or direct native mode (`SessionDirect.cpp`). Same API: `gpu()`, `pixelRatio()`, `run(onFrame, onEvent)`. pImpl.
+- **`Session`** — Unified session interface. Compiles as wire mode (`SessionWire.cpp`) or direct native mode (`SessionDirect.cpp`). Same API: `gpu()`, `pixelRatio()`, `run(RunConfig)`. `RunConfig` has `onUpdate`, `onRender`, `onEvent`, `onResize` callbacks. pImpl.
 - **`SdlContext`** — RAII SDL3 window creation with Metal layer for WebGPU surface. pImpl.
 - **`Resource`** — `sq::resource(path)` resolves asset paths. Returns the path unchanged on desktop; prepends the iOS app bundle `Resources/` directory on iOS. Header-only.
 
@@ -488,6 +487,7 @@ Use `SDL_EVENT_FINGER_*` events exclusively for touch/drag input. SDL3 synthesiz
 
 ### Animation
 
+- **`GlobeController`** — Encapsulates `DampedRotation` + drag state + input source arbitration (mouse vs finger). `event()` handles SDL touch/mouse events, `update(dt)` flushes drag accumulation and applies inertia. Header-only.
 - **`DampedRotation`** — Quaternion orientation + angular velocity with exponential decay. Supports screen-space drag, inertia, framerate-independent damping.
 - **`DampedValue`** — 1D value + velocity with exponential decay.
 - **`DeltaTimer`** — Frame delta-time helper.
