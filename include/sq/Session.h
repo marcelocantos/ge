@@ -7,6 +7,8 @@
 
 namespace sq {
 
+class HttpServer;
+
 // Unified session: wire mode (default) or direct native mode (SQ_DIRECT).
 // Drop-in replacement for WireSession — same interface, backend selected
 // at compile time. Two separate compilation units (SessionWire.cpp,
@@ -20,6 +22,8 @@ public:
     Session(const Session&) = delete;
     Session& operator=(const Session&) = delete;
 
+    HttpServer& http();
+    void connect();
     GpuContext& gpu();
     int pixelRatio() const;
     void flush();

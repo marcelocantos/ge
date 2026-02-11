@@ -1,5 +1,7 @@
 # sq/ Engine Module
 
+**IMPORTANT: When adding new functionality, always consider whether it belongs in `sq/` (general-purpose engine feature usable by any app) or in the parent project (game-specific logic). If unsure, ask before implementing.**
+
 Reusable rendering and asset engine built on Dawn (WebGPU) + SDL3. Consumed as a git submodule; build integration via `Module.mk`.
 
 Apps built on sq use a **server/player architecture**: the app (server) issues WebGPU draw commands through Dawn's wire protocol over TCP, and the platform-native Squz Player renders them and sends input back. This means the app itself has zero platform-specific code — sq and the player handle all of that.

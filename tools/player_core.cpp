@@ -1,9 +1,6 @@
 // Player — shared wire rendering player implementation.
 // Platform-specific entry points: player.cpp (desktop), ios/main.mm (iOS).
 
-#define ASIO_STANDALONE
-#include <asio.hpp>
-
 #include "Player.h"
 #include "player_platform.h"
 
@@ -15,6 +12,10 @@
 #include <webgpu/webgpu_cpp.h>
 
 #include <sq/Protocol.h>
+
+// Engine headers for WebSocket
+#include "../src/HttpServer.h"
+#include "../src/WebSocketSerializer.h"
 
 #include <filesystem>
 #include <fstream>
@@ -106,67 +107,6 @@ struct MipTracker {
     // Rewrite SetBindGroup commands in a frame command buffer (in-place)
     void rewriteSetBindGroups(char* data, size_t size);
 };
-
-class SocketSerializer : public dawn::wire::CommandSerializer {
-public:
-    explicit SocketSerializer(asio::ip::tcp::socket& socket)
-        : socket_(socket) {
-        buffer_.reserve(64 * 1024);
-    }
-
-    void* GetCmdSpace(size_t size) override {
-        if (size > wire::kMaxMessageSize) {
-            return nullptr;
-        }
-        size_t offset = buffer_.size();
-        buffer_.resize(offset + size);
-        return buffer_.data() + offset;
-    }
-
-    bool Flush() override {
-        if (buffer_.empty()) return true;
-
-        try {
-            wire::MessageHeader header{wire::kWireResponseMagic, static_cast<uint32_t>(buffer_.size())};
-            asio::write(socket_, asio::buffer(&header, sizeof(header)));
-            asio::write(socket_, asio::buffer(buffer_));
-            buffer_.clear();
-            return true;
-        } catch (const std::exception& e) {
-            SPDLOG_ERROR("SocketSerializer::Flush failed: {}", e.what());
-            buffer_.clear();
-            return false;
-        }
-    }
-
-    size_t GetMaximumAllocationSize() const override {
-        return wire::kMaxMessageSize;
-    }
-
-private:
-    asio::ip::tcp::socket& socket_;
-    std::vector<char> buffer_;
-};
-
-void sendEvent(asio::ip::tcp::socket& socket, const SDL_Event& event) {
-    wire::MessageHeader header{wire::kSdlEventMagic, sizeof(SDL_Event)};
-    asio::write(socket, asio::buffer(&header, sizeof(header)));
-    asio::write(socket, asio::buffer(&event, sizeof(event)));
-}
-
-void sendMipCacheHit(asio::ip::tcp::socket& socket, uint32_t texId, uint32_t mipLevel) {
-    wire::MipCacheResponse resp{texId, mipLevel};
-    wire::MessageHeader header{wire::kMipCacheHitMagic, sizeof(resp)};
-    asio::write(socket, asio::buffer(&header, sizeof(header)));
-    asio::write(socket, asio::buffer(&resp, sizeof(resp)));
-}
-
-void sendMipCacheMiss(asio::ip::tcp::socket& socket, uint32_t texId, uint32_t mipLevel) {
-    wire::MipCacheResponse resp{texId, mipLevel};
-    wire::MessageHeader header{wire::kMipCacheMissMagic, sizeof(resp)};
-    asio::write(socket, asio::buffer(&header, sizeof(header)));
-    asio::write(socket, asio::buffer(&resp, sizeof(resp)));
-}
 
 // Round up to next multiple of 8 (wire buffer alignment)
 inline size_t wireAlign(size_t n) { return (n + 7) & ~size_t(7); }
@@ -604,19 +544,14 @@ void Player::M::initGpu() {
 }
 
 ConnectionResult Player::M::connectAndRun() {
-    asio::io_context io;
-    asio::ip::tcp::socket socket(io);
-
     SPDLOG_INFO("Connecting to {}:{}...", host, port);
-    try {
-        asio::ip::tcp::resolver resolver(io);
-        auto endpoints = resolver.resolve(host, std::to_string(port));
-        asio::connect(socket, endpoints);
-    } catch (const std::exception& e) {
-        SPDLOG_WARN("Connection failed: {}", e.what());
+
+    auto wsConn = sq::connectWebSocket(host, port, "/ws/wire");
+    if (!wsConn) {
+        SPDLOG_WARN("WebSocket connection failed");
         return ConnectionResult::Disconnected;
     }
-    SPDLOG_INFO("Connected to game server");
+    SPDLOG_INFO("Connected via WebSocket");
 
     // Sync the GPU layer's drawable size with the window — on iOS the
     // CAMetalLayer may not auto-resize after rotation.
@@ -630,21 +565,25 @@ ConnectionResult Player::M::connectAndRun() {
     deviceInfo.pixelRatio = static_cast<uint16_t>(width > 0 ? pixelWidth / width : 2);
     deviceInfo.preferredFormat = static_cast<uint32_t>(swapChainFormat);
 
-    try {
-        asio::write(socket, asio::buffer(&deviceInfo, sizeof(deviceInfo)));
-    } catch (const std::exception& e) {
-        SPDLOG_WARN("Failed to send DeviceInfo: {}", e.what());
-        return ConnectionResult::Disconnected;
-    }
+    // Create serializer for sending responses back to the server
+    auto serializer = std::make_unique<sq::WebSocketSerializer>(
+        wsConn, wire::kWireResponseMagic);
+
+    // Send DeviceInfo as a protocol message
+    serializer->sendMessage(wire::kDeviceInfoMagic, &deviceInfo, sizeof(deviceInfo));
     SPDLOG_INFO("Sent DeviceInfo");
 
-    wire::SessionInit sessionInit{};
-    try {
-        asio::read(socket, asio::buffer(&sessionInit, sizeof(sessionInit)));
-    } catch (const std::exception& e) {
-        SPDLOG_WARN("Failed to read SessionInit: {}", e.what());
+    // Receive SessionInit
+    wire::MessageHeader initHdr{};
+    std::vector<char> initPayload;
+    if (!serializer->recvMessage(initHdr, initPayload) ||
+        initPayload.size() < sizeof(wire::SessionInit)) {
+        SPDLOG_WARN("Failed to read SessionInit");
         return ConnectionResult::Disconnected;
     }
+
+    wire::SessionInit sessionInit{};
+    std::memcpy(&sessionInit, initPayload.data(), sizeof(sessionInit));
     if (sessionInit.magic != wire::kSessionInitMagic) {
         SPDLOG_WARN("Invalid SessionInit magic");
         return ConnectionResult::Disconnected;
@@ -652,7 +591,6 @@ ConnectionResult Player::M::connectAndRun() {
     SPDLOG_INFO("Received SessionInit with instance handle={{id={}, gen={}}}",
                 sessionInit.instanceHandle.id, sessionInit.instanceHandle.generation);
 
-    auto serializer = std::make_unique<SocketSerializer>(socket);
     dawn::wire::WireServerDescriptor serverDesc{
         .procs = &dawn::native::GetProcs(),
         .serializer = serializer.get(),
@@ -673,13 +611,9 @@ ConnectionResult Player::M::connectAndRun() {
     }
     SPDLOG_INFO("Injected native surface");
 
+    // Send SessionReady
     wire::SessionReady sessionReady{};
-    try {
-        asio::write(socket, asio::buffer(&sessionReady, sizeof(sessionReady)));
-    } catch (const std::exception& e) {
-        SPDLOG_WARN("Failed to send SessionReady: {}", e.what());
-        return ConnectionResult::Disconnected;
-    }
+    serializer->sendMessage(wire::kSessionReadyMagic, &sessionReady, sizeof(sessionReady));
     SPDLOG_INFO("Sent SessionReady, entering render loop");
 
     backoffMs = 10;
@@ -708,7 +642,7 @@ ConnectionResult Player::M::connectAndRun() {
                 case SDL_EVENT_FINGER_MOTION:
                 case SDL_EVENT_FINGER_UP:
                     try {
-                        sendEvent(socket, event);
+                        serializer->sendMessage(wire::kSdlEventMagic, &event, sizeof(event));
                     } catch (const std::exception&) {
                         SPDLOG_WARN("Connection lost (event send)");
                         return ConnectionResult::Disconnected;
@@ -717,35 +651,16 @@ ConnectionResult Player::M::connectAndRun() {
             }
         }
 
-        io.poll();
-
-        if (socket.is_open()) {
-            asio::error_code availEc;
-            size_t avail = socket.available(availEc);
-            if (availEc) {
-                SPDLOG_WARN("Connection lost (available check): {}", availEc.message());
-                return ConnectionResult::Disconnected;
-            }
-            if (avail == 0) {
-                char peekBuf;
-                socket.non_blocking(true);
-                asio::error_code peekEc;
-                socket.receive(asio::buffer(&peekBuf, 1), asio::ip::tcp::socket::message_peek, peekEc);
-                socket.non_blocking(false);
-                if (peekEc == asio::error::eof) {
-                    SPDLOG_WARN("Connection closed by server");
-                    return ConnectionResult::Disconnected;
-                }
-            }
+        if (!wsConn->isOpen()) {
+            SPDLOG_WARN("Connection closed by server");
+            return ConnectionResult::Disconnected;
         }
 
-        while (socket.is_open() && socket.available() > 0) {
+        while (wsConn->available() > 0) {
             wire::MessageHeader header{};
-            asio::error_code ec;
-            asio::read(socket, asio::buffer(&header, sizeof(header)), ec);
-
-            if (ec) {
-                SPDLOG_WARN("Connection lost (header read): {}", ec.message());
+            std::vector<char> payload;
+            if (!serializer->recvMessage(header, payload)) {
+                SPDLOG_WARN("Connection lost (message read)");
                 return ConnectionResult::Disconnected;
             }
 
@@ -755,52 +670,43 @@ ConnectionResult Player::M::connectAndRun() {
                     return ConnectionResult::Disconnected;
                 }
 
-                commandBuffer.resize(header.length);
-                asio::read(socket, asio::buffer(commandBuffer.data(), header.length), ec);
-
-                if (ec) {
-                    SPDLOG_WARN("Connection lost (payload read): {}", ec.message());
-                    return ConnectionResult::Disconnected;
-                }
-
                 // Track texture views and bind groups for deferred mip delivery
-                mipTracker.scanCommands(commandBuffer.data(), commandBuffer.size());
+                mipTracker.scanCommands(payload.data(), payload.size());
 
                 // Rewrite SetBindGroup commands to use fabricated bind groups
-                mipTracker.rewriteSetBindGroups(commandBuffer.data(), commandBuffer.size());
+                mipTracker.rewriteSetBindGroups(payload.data(), payload.size());
 
                 const volatile char* result = wireServer->HandleCommands(
-                    commandBuffer.data(), commandBuffer.size());
+                    payload.data(), payload.size());
                 if (result == nullptr) {
                     SPDLOG_ERROR("WireServer failed to handle commands");
                 }
 
                 serializer->Flush();
             } else if (header.magic == wire::kDeferredMipMagic) {
-                if (header.length < sizeof(wire::DeferredMipHeader)) {
+                if (payload.size() < sizeof(wire::DeferredMipHeader)) {
                     SPDLOG_WARN("Deferred mip message too small");
                     return ConnectionResult::Disconnected;
                 }
 
                 wire::DeferredMipHeader dh{};
-                asio::read(socket, asio::buffer(&dh, sizeof(dh)), ec);
-                if (ec) {
-                    SPDLOG_WARN("Connection lost (deferred mip header): {}", ec.message());
+                std::memcpy(&dh, payload.data(), sizeof(dh));
+                const char* mipData = payload.data() + sizeof(dh);
+                size_t mipDataSize = payload.size() - sizeof(dh);
+
+                if (mipDataSize < dh.commandSize) {
+                    SPDLOG_WARN("Deferred mip data truncated");
                     return ConnectionResult::Disconnected;
                 }
 
-                commandBuffer.resize(dh.commandSize);
-                asio::read(socket, asio::buffer(commandBuffer.data(), dh.commandSize), ec);
-                if (ec) {
-                    SPDLOG_WARN("Connection lost (deferred mip data): {}", ec.message());
-                    return ConnectionResult::Disconnected;
-                }
+                commandBuffer.assign(mipData, mipData + dh.commandSize);
 
                 if (dh.hashOnly) {
                     // Hash probe: commandBuffer = head[128] + hash[8]
                     if (dh.commandSize < wire::kMipHeadSize + sizeof(uint64_t)) {
                         SPDLOG_WARN("Mip probe too small");
-                        try { sendMipCacheMiss(socket, dh.textureId, dh.mipLevel); } catch (...) {}
+                        wire::MipCacheResponse resp{dh.textureId, dh.mipLevel};
+                        try { serializer->sendMessage(wire::kMipCacheMissMagic, &resp, sizeof(resp)); } catch (...) {}
                     } else {
                         uint64_t serverHash;
                         std::memcpy(&serverHash, commandBuffer.data() + wire::kMipHeadSize,
@@ -822,18 +728,21 @@ ConnectionResult Player::M::connectAndRun() {
                                             dh.textureId, dh.mipLevel);
                                 std::error_code fsec;
                                 fs::remove(mipCachePath(cacheDir, serverHash), fsec);
-                                try { sendMipCacheMiss(socket, dh.textureId, dh.mipLevel); } catch (...) {}
+                                wire::MipCacheResponse resp{dh.textureId, dh.mipLevel};
+                                try { serializer->sendMessage(wire::kMipCacheMissMagic, &resp, sizeof(resp)); } catch (...) {}
                             } else {
                                 SPDLOG_INFO("Mip cache HIT: tex={} level={} ({:.1f} KB)",
                                             dh.textureId, dh.mipLevel,
                                             (wire::kMipHeadSize + cachedTail.size()) / 1024.0);
                                 mipTracker.processDeferredMip(dh.textureId, dh.mipLevel,
                                                                *wireServer, *serializer);
-                                try { sendMipCacheHit(socket, dh.textureId, dh.mipLevel); } catch (...) {}
+                                wire::MipCacheResponse resp{dh.textureId, dh.mipLevel};
+                                try { serializer->sendMessage(wire::kMipCacheHitMagic, &resp, sizeof(resp)); } catch (...) {}
                             }
                         } else {
                             SPDLOG_INFO("Mip cache MISS: tex={} level={}", dh.textureId, dh.mipLevel);
-                            try { sendMipCacheMiss(socket, dh.textureId, dh.mipLevel); } catch (...) {}
+                            wire::MipCacheResponse resp{dh.textureId, dh.mipLevel};
+                            try { serializer->sendMessage(wire::kMipCacheMissMagic, &resp, sizeof(resp)); } catch (...) {}
                         }
                     }
                 } else {
@@ -860,8 +769,7 @@ ConnectionResult Player::M::connectAndRun() {
                 serializer->Flush();
                 break; // yield so a frame can render with updated quality
             } else if (header.magic == wire::kFrameEndMagic) {
-                wire::MessageHeader ready{wire::kFrameReadyMagic, 0};
-                asio::write(socket, asio::buffer(&ready, sizeof(ready)));
+                serializer->sendMessage(wire::kFrameReadyMagic);
                 break; // yield to SDL event polling
             } else {
                 SPDLOG_WARN("Unknown message magic: 0x{:08X}", header.magic);

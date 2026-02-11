@@ -7,9 +7,12 @@
 
 namespace sq {
 
-// TCP wire session: listens for a receiver connection, performs the wire
-// handshake, and acquires WebGPU resources (adapter, device, queue) through
-// the Dawn wire protocol.  The resulting GpuContext is owned by the session.
+class HttpServer;
+
+// Wire session: creates an HTTP+WebSocket server, waits for a player to
+// connect via WebSocket, performs the Dawn wire handshake, and acquires
+// WebGPU resources (adapter, device, queue) through the wire protocol.
+// The resulting GpuContext is owned by the session.
 //
 // Listen address is resolved in this order:
 //   1. SQ_WIRE_ADDR environment variable
@@ -23,10 +26,18 @@ public:
     WireSession(const WireSession&) = delete;
     WireSession& operator=(const WireSession&) = delete;
 
+    // Access the HTTP server for registering endpoints.
+    // Available immediately after construction (before connect()).
+    HttpServer& http();
+
+    // Block until a player connects via WebSocket and complete the
+    // Dawn wire handshake.  After this, gpu() and pixelRatio() are valid.
+    void connect();
+
     // Access the GpuContext created from wire resources.
     GpuContext& gpu();
 
-    // Device pixel ratio (e.g. 3 for 3x retina). Available after construction.
+    // Device pixel ratio (e.g. 3 for 3x retina). Available after connect().
     int pixelRatio() const;
 
     // Flush wire commands to receiver and process responses.

@@ -10,7 +10,16 @@
 #include <dawn/wire/WireClient.h>
 #include <webgpu/webgpu_cpp.h>
 
+#include "DashboardSink.h"
+#include "HttpServer.h"
+#include "WebSocketSerializer.h"
+
+#include <fstream>
+
 #include <qrcodegen.hpp>
+
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include <stb_image_write.h>
 
 #include <chrono>
 #include <cstdlib>
@@ -61,22 +70,11 @@ constexpr uint32_t kTextureCreateView = 143;
 constexpr size_t kThreshold = 4 * 1024; // 4 KB — defer WriteTexture cmds above this
 } // namespace wire_filter
 
-// CommandSerializer that sends wire commands over TCP
-class SocketSerializer : public dawn::wire::CommandSerializer {
+// CommandSerializer that sends wire commands over WebSocket with deferred-mip filtering.
+class WsServerSerializer : public sq::WebSocketSerializer {
 public:
-    explicit SocketSerializer(asio::ip::tcp::socket& socket)
-        : socket_(socket) {
-        buffer_.reserve(64 * 1024);
-    }
-
-    void* GetCmdSpace(size_t size) override {
-        if (size > wire::kMaxMessageSize) {
-            return nullptr;
-        }
-        size_t offset = buffer_.size();
-        buffer_.resize(offset + size);
-        return buffer_.data() + offset;
-    }
+    explicit WsServerSerializer(std::shared_ptr<sq::WsConnection> conn)
+        : WebSocketSerializer(std::move(conn), wire::kWireCommandMagic) {}
 
     bool Flush() override {
         if (buffer_.empty()) return true;
@@ -129,12 +127,11 @@ public:
             pos += cmdSize;
         }
 
-        // Pass 2: build scatter-gather spans, skipping large WriteTexture cmds
+        // Pass 2: build output buffer, skipping large WriteTexture cmds
         // and rewriting TextureCreateView for textures with dropped mips.
-        std::vector<asio::const_buffer> segments;
+        std::vector<char> output;
+        output.reserve(buffer_.size());
         pos = 0;
-        size_t segStart = 0;
-        size_t totalSize = 0;
         size_t droppedBytes = 0;
 
         while (pos + wire_filter::kMinCmdBytes <= buffer_.size()) {
@@ -224,23 +221,19 @@ public:
                     dm.hashOnly = true;
                     deferredMips_.push(std::move(dm));
                 }
-
-                // Close current segment (everything before this command)
-                if (pos > segStart) {
-                    segments.emplace_back(buffer_.data() + segStart, pos - segStart);
-                    totalSize += pos - segStart;
-                }
-                segStart = pos + cmdSize;
+            } else {
+                // Copy command to output
+                output.insert(output.end(),
+                              buffer_.data() + pos,
+                              buffer_.data() + pos + cmdSize);
             }
 
             pos += cmdSize;
         }
 
-        // Final segment (from last skip point to end of buffer)
-        if (buffer_.size() > segStart) {
-            segments.emplace_back(buffer_.data() + segStart,
-                                  buffer_.size() - segStart);
-            totalSize += buffer_.size() - segStart;
+        // Append any trailing bytes
+        if (pos < buffer_.size()) {
+            output.insert(output.end(), buffer_.data() + pos, buffer_.data() + buffer_.size());
         }
 
         if (droppedBytes > 0) {
@@ -248,20 +241,13 @@ public:
                         droppedBytes / (1024.0 * 1024.0), deferredMips_.size());
         }
 
-        // Send header + scatter-gather segments
-        wire::MessageHeader header{wire::kWireCommandMagic,
-                                   static_cast<uint32_t>(totalSize)};
-        asio::write(socket_, asio::buffer(&header, sizeof(header)));
-        if (!segments.empty()) {
-            asio::write(socket_, segments);
+        // Send as one WebSocket binary frame
+        if (!output.empty()) {
+            sendMessage(wire::kWireCommandMagic, output.data(), output.size());
         }
 
         buffer_.clear();
         return true;
-    }
-
-    size_t GetMaximumAllocationSize() const override {
-        return wire::kMaxMessageSize;
     }
 
     bool hasDeferredMips() const {
@@ -291,13 +277,16 @@ public:
             dh.commandSize = static_cast<uint32_t>(wire::kMipHeadSize + sizeof(hash));
             dh.hashOnly = 1;
 
+            // Assemble: MessageHeader + DeferredMipHeader + head + hash
             uint32_t payloadSize = static_cast<uint32_t>(sizeof(dh) + dh.commandSize);
-            wire::MessageHeader header{wire::kDeferredMipMagic, payloadSize};
-
-            asio::write(socket_, asio::buffer(&header, sizeof(header)));
-            asio::write(socket_, asio::buffer(&dh, sizeof(dh)));
-            asio::write(socket_, asio::buffer(mip.head, wire::kMipHeadSize));
-            asio::write(socket_, asio::buffer(&hash, sizeof(hash)));
+            std::vector<char> frame(sizeof(wire::MessageHeader) + payloadSize);
+            wire::MessageHeader hdr{wire::kDeferredMipMagic, payloadSize};
+            size_t off = 0;
+            std::memcpy(frame.data() + off, &hdr, sizeof(hdr)); off += sizeof(hdr);
+            std::memcpy(frame.data() + off, &dh, sizeof(dh)); off += sizeof(dh);
+            std::memcpy(frame.data() + off, mip.head, wire::kMipHeadSize); off += wire::kMipHeadSize;
+            std::memcpy(frame.data() + off, &hash, sizeof(hash));
+            conn_->sendBinary(frame.data(), frame.size());
 
             SPDLOG_INFO("Mip probe: tex={} level={} hash={:016x} ({:.1f} KB held)",
                         mip.textureId, mip.mipLevel, hash, mip.tail.size() / 1024.0);
@@ -310,14 +299,16 @@ public:
             dh.hashOnly = 0;
 
             uint32_t payloadSize = static_cast<uint32_t>(sizeof(dh) + dh.commandSize);
-            wire::MessageHeader header{wire::kDeferredMipMagic, payloadSize};
-
-            asio::write(socket_, asio::buffer(&header, sizeof(header)));
-            asio::write(socket_, asio::buffer(&dh, sizeof(dh)));
-            asio::write(socket_, asio::buffer(mip.head, wire::kMipHeadSize));
+            std::vector<char> frame(sizeof(wire::MessageHeader) + payloadSize);
+            wire::MessageHeader hdr{wire::kDeferredMipMagic, payloadSize};
+            size_t off = 0;
+            std::memcpy(frame.data() + off, &hdr, sizeof(hdr)); off += sizeof(hdr);
+            std::memcpy(frame.data() + off, &dh, sizeof(dh)); off += sizeof(dh);
+            std::memcpy(frame.data() + off, mip.head, wire::kMipHeadSize); off += wire::kMipHeadSize;
             if (!mip.tail.empty()) {
-                asio::write(socket_, asio::buffer(mip.tail));
+                std::memcpy(frame.data() + off, mip.tail.data(), mip.tail.size());
             }
+            conn_->sendBinary(frame.data(), frame.size());
 
             SPDLOG_INFO("Streamed deferred mip: tex={} level={} ({:.1f} KB)",
                         mip.textureId, mip.mipLevel,
@@ -328,91 +319,72 @@ public:
     }
 
     void sendFrameEnd() {
-        wire::MessageHeader header{wire::kFrameEndMagic, 0};
-        asio::write(socket_, asio::buffer(&header, sizeof(header)));
-    }
-
-    // Returns bytes available in the kernel send buffer.
-    size_t sendBufferAvailable() const {
-        int pending = 0;
-        socklen_t len = sizeof(pending);
-        if (getsockopt(socket_.native_handle(), SOL_SOCKET, SO_NWRITE,
-                        &pending, &len) == 0) {
-            int sndbuf = 0;
-            len = sizeof(sndbuf);
-            getsockopt(socket_.native_handle(), SOL_SOCKET, SO_SNDBUF,
-                        &sndbuf, &len);
-            return static_cast<size_t>(std::max(0, sndbuf - pending));
-        }
-        return 0;
+        sendMessage(wire::kFrameEndMagic);
     }
 
     int frameReadyCount = 2; // initial credits = pipeline depth (double-buffer)
 
     void processResponses(dawn::wire::WireClient& client,
                            const std::function<void(const SDL_Event&)>& onEvent) {
-        while (socket_.available() > 0) {
+        while (conn_->available() > 0) {
             wire::MessageHeader header{};
-            asio::read(socket_, asio::buffer(&header, sizeof(header)));
+            std::vector<char> payload;
+            if (!recvMessage(header, payload)) {
+                throw std::runtime_error("player disconnected");
+            }
 
             if (header.magic == wire::kWireResponseMagic) {
-                responseBuffer_.resize(header.length);
-                asio::read(socket_, asio::buffer(responseBuffer_.data(), header.length));
-
                 const volatile char* result = client.HandleCommands(
-                    responseBuffer_.data(), responseBuffer_.size());
+                    payload.data(), payload.size());
                 if (result == nullptr) {
                     SPDLOG_ERROR("WireClient failed to handle responses");
                 }
             } else if (header.magic == wire::kSdlEventMagic) {
-                SDL_Event event{};
-                asio::read(socket_, asio::buffer(&event, sizeof(event)));
-                if (onEvent) {
-                    onEvent(event);
+                if (payload.size() >= sizeof(SDL_Event)) {
+                    SDL_Event event{};
+                    std::memcpy(&event, payload.data(), sizeof(event));
+                    if (onEvent) {
+                        onEvent(event);
+                    }
                 }
             } else if (header.magic == wire::kFrameReadyMagic) {
                 ++frameReadyCount;
             } else if (header.magic == wire::kMipCacheHitMagic) {
-                wire::MipCacheResponse resp{};
-                asio::read(socket_, asio::buffer(&resp, sizeof(resp)));
-                uint64_t key = (static_cast<uint64_t>(resp.textureId) << 32) | resp.mipLevel;
-                auto it = pendingMips_.find(key);
-                if (it != pendingMips_.end()) {
-                    SPDLOG_INFO("Mip cache HIT: tex={} level={} ({:.1f} KB saved)",
-                                resp.textureId, resp.mipLevel,
-                                it->second.tail.size() / 1024.0);
-                    pendingMips_.erase(it);
+                if (payload.size() >= sizeof(wire::MipCacheResponse)) {
+                    wire::MipCacheResponse resp{};
+                    std::memcpy(&resp, payload.data(), sizeof(resp));
+                    uint64_t key = (static_cast<uint64_t>(resp.textureId) << 32) | resp.mipLevel;
+                    auto it = pendingMips_.find(key);
+                    if (it != pendingMips_.end()) {
+                        SPDLOG_INFO("Mip cache HIT: tex={} level={} ({:.1f} KB saved)",
+                                    resp.textureId, resp.mipLevel,
+                                    it->second.tail.size() / 1024.0);
+                        pendingMips_.erase(it);
+                    }
                 }
             } else if (header.magic == wire::kMipCacheMissMagic) {
-                wire::MipCacheResponse resp{};
-                asio::read(socket_, asio::buffer(&resp, sizeof(resp)));
-                uint64_t key = (static_cast<uint64_t>(resp.textureId) << 32) | resp.mipLevel;
-                auto it = pendingMips_.find(key);
-                if (it != pendingMips_.end()) {
-                    SPDLOG_INFO("Mip cache MISS: tex={} level={}, requeueing ({:.1f} KB)",
-                                resp.textureId, resp.mipLevel,
-                                it->second.tail.size() / 1024.0);
-                    it->second.hashOnly = false;
-                    deferredMips_.push(std::move(it->second));
-                    pendingMips_.erase(it);
+                if (payload.size() >= sizeof(wire::MipCacheResponse)) {
+                    wire::MipCacheResponse resp{};
+                    std::memcpy(&resp, payload.data(), sizeof(resp));
+                    uint64_t key = (static_cast<uint64_t>(resp.textureId) << 32) | resp.mipLevel;
+                    auto it = pendingMips_.find(key);
+                    if (it != pendingMips_.end()) {
+                        SPDLOG_INFO("Mip cache MISS: tex={} level={}, requeueing ({:.1f} KB)",
+                                    resp.textureId, resp.mipLevel,
+                                    it->second.tail.size() / 1024.0);
+                        it->second.hashOnly = false;
+                        deferredMips_.push(std::move(it->second));
+                        pendingMips_.erase(it);
+                    }
                 }
             } else {
                 SPDLOG_ERROR("Unknown message magic: 0x{:08X}", header.magic);
-                if (header.length > 0 && header.length <= wire::kMaxMessageSize) {
-                    responseBuffer_.resize(header.length);
-                    asio::read(socket_, asio::buffer(responseBuffer_.data(), header.length));
-                }
             }
         }
 
-        // Detect disconnect when idle (no data to read, no writes happening)
-        if (socket_.available() == 0) {
-            char peek;
-            ssize_t n = ::recv(socket_.native_handle(), &peek, 1,
-                               MSG_PEEK | MSG_DONTWAIT);
-            if (n == 0 || (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK)) {
-                throw asio::system_error(asio::error::eof, "player disconnected");
-            }
+        // Detect disconnect when idle
+        if (!conn_->isOpen()) {
+            throw std::runtime_error("player disconnected");
         }
     }
 
@@ -432,8 +404,6 @@ private:
         }
     };
 
-    asio::ip::tcp::socket& socket_;
-    std::vector<char> buffer_;
     std::vector<char> responseBuffer_;
     std::priority_queue<DeferredMip> deferredMips_;
     std::unordered_map<uint64_t, DeferredMip> pendingMips_; // awaiting HIT/MISS
@@ -452,13 +422,14 @@ void parseListenAddr(const std::string& listenAddr, std::string& address, uint16
 std::string resolveListenAddr() {
     const char* env = std::getenv("SQ_WIRE_ADDR");
     if (env && env[0]) return env;
-    return "42069";
+    return "0";  // OS-assigned port by default
 }
 
 // Get the first non-loopback IPv4 address by connecting a UDP socket
 // to a public address (no packets are actually sent).
-std::string getLanAddress(asio::io_context& io) {
+std::string getLanAddress() {
     try {
+        asio::io_context io;
         asio::ip::udp::socket sock(io, asio::ip::udp::v4());
         sock.connect(asio::ip::udp::endpoint(asio::ip::make_address("8.8.8.8"), 80));
         auto addr = sock.local_endpoint().address();
@@ -493,19 +464,58 @@ void printQrCode(const std::string& url) {
     fprintf(stderr, "%s", out.c_str());
 }
 
+// Generate QR code PNG in memory.
+std::vector<char> generateQrPng(const std::string& url) {
+    auto qr = qrcodegen::QrCode::encodeText(url.c_str(), qrcodegen::QrCode::Ecc::LOW);
+    int size = qr.getSize();
+    int scale = 8;
+    int border = 2;
+    int imgSize = (size + border * 2) * scale;
+
+    // Render as grayscale pixels
+    std::vector<uint8_t> pixels(imgSize * imgSize, 255);
+    for (int y = 0; y < size; y++) {
+        for (int x = 0; x < size; x++) {
+            if (qr.getModule(x, y)) {
+                for (int dy = 0; dy < scale; dy++) {
+                    for (int dx = 0; dx < scale; dx++) {
+                        int px = (x + border) * scale + dx;
+                        int py = (y + border) * scale + dy;
+                        pixels[py * imgSize + px] = 0;
+                    }
+                }
+            }
+        }
+    }
+
+    // Encode as PNG to memory
+    std::vector<char> pngData;
+    stbi_write_png_to_func(
+        [](void* ctx, void* data, int size) {
+            auto* out = static_cast<std::vector<char>*>(ctx);
+            auto* bytes = static_cast<const char*>(data);
+            out->insert(out->end(), bytes, bytes + size);
+        },
+        &pngData, imgSize, imgSize, 1, pixels.data(), imgSize);
+
+    return pngData;
+}
+
 } // namespace
 
 namespace sq {
 
 struct WireSession::M {
-    asio::io_context io;
-    asio::ip::tcp::socket socket{io};
-    std::unique_ptr<SocketSerializer> serializer;
+    std::unique_ptr<HttpServer> httpServer;
+    std::shared_ptr<WsConnection> wsConn;
+    std::unique_ptr<WsServerSerializer> serializer;
     std::unique_ptr<dawn::wire::WireClient> wireClient;
     wgpu::Instance instance;
     std::unique_ptr<GpuContext> gfx;
     std::function<void(const SDL_Event&)> onEvent;
     int pixelRatio = 1;
+    std::string qrUrl;
+    bool connected = false;
 };
 
 WireSession::WireSession()
@@ -513,37 +523,75 @@ WireSession::WireSession()
 {
     auto addr = resolveListenAddr();
 
-    // Parse address
+    // Parse address (default: port 0 = OS-assigned)
     std::string address = "0.0.0.0";
-    uint16_t port = 42069;
+    uint16_t port = 0;
     parseListenAddr(addr, address, port);
 
     SPDLOG_INFO("Starting wire server on {}:{}...", address, port);
 
-    // Listen and accept
-    asio::ip::tcp::endpoint endpoint(asio::ip::make_address(address), port);
-    asio::ip::tcp::acceptor acceptor(m->io);
-    acceptor.open(endpoint.protocol());
-    acceptor.set_option(asio::socket_base::reuse_address(true));
-    acceptor.bind(endpoint);
-    acceptor.listen();
+    // Create HTTP server (port 0 → OS picks a free port)
+    m->httpServer = std::make_unique<HttpServer>(port);
 
-    auto lanIp = getLanAddress(m->io);
-    auto url = "squz-remote://" + lanIp + ":" + std::to_string(port);
-    SPDLOG_INFO("Waiting for player connection...");
-    static bool qrPrinted = false;
-    if (!qrPrinted) {
-        printQrCode(url);
-        qrPrinted = true;
+    // Use actual port (may differ from requested when using port 0)
+    auto actualPort = m->httpServer->port();
+
+    auto lanIp = getLanAddress();
+    m->qrUrl = "http://" + lanIp + ":" + std::to_string(actualPort);
+
+    // Write port file for player auto-discovery
+    for (auto* path : {".sqport", "/tmp/.sqport"}) {
+        std::ofstream pf(path);
+        if (pf) pf << actualPort;
     }
 
-    acceptor.accept(m->socket);
-    SPDLOG_INFO("Player connected from {}",
-                m->socket.remote_endpoint().address().to_string());
+    // Dashboard: log sink (created once, shared across reconnects)
+    static auto dashSink = [] {
+        auto s = std::make_shared<DashboardSink>();
+        spdlog::default_logger()->sinks().push_back(s);
+        return s;
+    }();
 
-    // Receive DeviceInfo
+    // Register dashboard endpoints
+    m->httpServer->get("/api/qr", [this](const HttpRequest&, HttpResponse& res) {
+        auto png = generateQrPng(m->qrUrl);
+        res.png(png.data(), png.size());
+    });
+    m->httpServer->ws("/ws/logs", dashSink->handler());
+    m->httpServer->serveStatic("/", "sq/web/dist");
+
+    // Start accepting HTTP connections
+    m->httpServer->start();
+}
+
+void WireSession::connect() {
+    SPDLOG_INFO("Waiting for player connection...");
+    static bool dashboardOpened = false;
+    if (!dashboardOpened) {
+        printQrCode(m->qrUrl);
+        auto localUrl = "http://localhost:" + std::to_string(m->httpServer->port());
+        std::string cmd = "open " + localUrl;
+        if (std::system(cmd.c_str()) != 0)
+            SPDLOG_WARN("Failed to open browser");
+        dashboardOpened = true;
+    }
+
+    // Block until a WebSocket client connects to /ws/wire
+    m->wsConn = m->httpServer->acceptWs("/ws/wire");
+    SPDLOG_INFO("Player connected via WebSocket");
+
+    // Receive DeviceInfo as first binary frame
+    wire::MessageHeader devHdr{};
+    std::vector<char> devPayload;
+    m->serializer = std::make_unique<WsServerSerializer>(m->wsConn);
+
+    if (!m->serializer->recvMessage(devHdr, devPayload) ||
+        devPayload.size() < sizeof(wire::DeviceInfo)) {
+        throw std::runtime_error("Failed to receive DeviceInfo");
+    }
+
     wire::DeviceInfo deviceInfo{};
-    asio::read(m->socket, asio::buffer(&deviceInfo, sizeof(deviceInfo)));
+    std::memcpy(&deviceInfo, devPayload.data(), sizeof(deviceInfo));
 
     if (deviceInfo.magic != wire::kDeviceInfoMagic) {
         throw std::runtime_error("Invalid DeviceInfo magic");
@@ -555,7 +603,6 @@ WireSession::WireSession()
     m->pixelRatio = std::max(1, (int)deviceInfo.pixelRatio);
 
     // Create wire client
-    m->serializer = std::make_unique<SocketSerializer>(m->socket);
     dawn::wire::WireClientDescriptor clientDesc{
         .serializer = m->serializer.get(),
     };
@@ -569,17 +616,24 @@ WireSession::WireSession()
     auto surfaceReservation = m->wireClient->ReserveSurface(
         instanceReservation.instance, &surfaceCaps);
 
-    // Send SessionInit
+    // Send SessionInit as a WebSocket binary frame
     wire::SessionInit sessionInit{};
     sessionInit.instanceHandle = {instanceReservation.handle.id, instanceReservation.handle.generation};
     sessionInit.surfaceHandle = {surfaceReservation.handle.id, surfaceReservation.handle.generation};
 
-    asio::write(m->socket, asio::buffer(&sessionInit, sizeof(sessionInit)));
+    m->serializer->sendMessage(wire::kSessionInitMagic, &sessionInit, sizeof(sessionInit));
     SPDLOG_INFO("Sent SessionInit");
 
     // Wait for SessionReady
+    wire::MessageHeader readyHdr{};
+    std::vector<char> readyPayload;
+    if (!m->serializer->recvMessage(readyHdr, readyPayload) ||
+        readyPayload.size() < sizeof(wire::SessionReady)) {
+        throw std::runtime_error("Failed to receive SessionReady");
+    }
+
     wire::SessionReady sessionReady{};
-    asio::read(m->socket, asio::buffer(&sessionReady, sizeof(sessionReady)));
+    std::memcpy(&sessionReady, readyPayload.data(), sizeof(sessionReady));
 
     if (sessionReady.magic != wire::kSessionReadyMagic) {
         throw std::runtime_error("Invalid SessionReady magic");
@@ -610,7 +664,6 @@ WireSession::WireSession()
 
     m->serializer->Flush();
     while (!adapterReceived) {
-        m->io.poll();
         m->serializer->processResponses(*m->wireClient, m->onEvent);
         m->instance.ProcessEvents();
     }
@@ -666,7 +719,6 @@ WireSession::WireSession()
 
     m->serializer->Flush();
     while (!deviceReceived) {
-        m->io.poll();
         m->serializer->processResponses(*m->wireClient, m->onEvent);
         m->instance.ProcessEvents();
     }
@@ -687,16 +739,23 @@ WireSession::WireSession()
 
     // Flush surface configuration commands
     flush();
+    m->connected = true;
 }
 
 WireSession::~WireSession() = default;
 
 GpuContext& WireSession::gpu() {
+    if (!m->connected) connect();
     return *m->gfx;
 }
 
 int WireSession::pixelRatio() const {
+    if (!m->connected) const_cast<WireSession*>(this)->connect();
     return m->pixelRatio;
+}
+
+HttpServer& WireSession::http() {
+    return *m->httpServer;
 }
 
 void WireSession::flush() {
@@ -707,6 +766,7 @@ void WireSession::flush() {
 
 void WireSession::run(std::function<void(float dt)> onFrame,
                       std::function<void(const SDL_Event&)> onEvent) {
+    if (!m->connected) connect();
     m->onEvent = std::move(onEvent);
 
     // Flush any resource creation commands issued between construction and run()
@@ -723,7 +783,7 @@ void WireSession::run(std::function<void(float dt)> onFrame,
         while (m->serializer->frameReadyCount <= 0) {
             try {
                 m->serializer->processResponses(*m->wireClient, m->onEvent);
-            } catch (const asio::system_error& e) {
+            } catch (const std::exception& e) {
                 SPDLOG_WARN("Player disconnected: {}", e.what());
                 return;
             }
@@ -731,8 +791,7 @@ void WireSession::run(std::function<void(float dt)> onFrame,
 
             // Send one mip per idle iteration so frames interleave with mip
             // deliveries, giving progressive quality (blurry → sharp).
-            if (m->serializer->hasDeferredMips() &&
-                m->serializer->sendBufferAvailable() >= 64 * 1024) {
+            if (m->serializer->hasDeferredMips()) {
                 static const int mipDelayMs = [] {
                     const char* e = std::getenv("SQ_MIP_DELAY_MS");
                     return (e && e[0]) ? std::atoi(e) : 0;
@@ -746,7 +805,7 @@ void WireSession::run(std::function<void(float dt)> onFrame,
                     try {
                         m->serializer->streamNextDeferredMip();
                         lastMipTime = now;
-                    } catch (const asio::system_error& e) {
+                    } catch (const std::exception& e) {
                         SPDLOG_WARN("Disconnect during mip streaming: {}", e.what());
                         return;
                     }
@@ -763,7 +822,7 @@ void WireSession::run(std::function<void(float dt)> onFrame,
             onFrame(dt);
             flush();
             m->serializer->sendFrameEnd();
-        } catch (const asio::system_error& e) {
+        } catch (const std::exception& e) {
             SPDLOG_WARN("Player disconnected: {}", e.what());
             return;
         }

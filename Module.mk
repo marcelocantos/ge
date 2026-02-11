@@ -47,6 +47,7 @@ sq/SRC = \
 	sq/src/CaptureTarget.cpp \
 	sq/src/WireTransport.cpp \
 	sq/src/WireSession.cpp \
+	sq/src/HttpServer.cpp \
 	sq/vendor/github.com/nayuki/QR-Code-generator/cpp/qrcodegen.cpp
 
 # Session backend objects (linked by the parent, not part of libsq.a)
@@ -234,6 +235,11 @@ sq/init:
 	@brew install compiledb
 	@$(MAKE) compile_commands.json
 	@echo "  compile_commands.json generated"
+
+# Dashboard web app (Vite + React)
+.PHONY: web
+web:
+	cd sq/web && npm install && npm run build
 
 # Canned recipe for the parent to expand at the end of its init target.
 define sq/INIT_DONE

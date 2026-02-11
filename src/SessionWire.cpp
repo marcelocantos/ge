@@ -10,6 +10,8 @@ struct Session::M {
 Session::Session() : m(std::make_unique<M>()) {}
 Session::~Session() = default;
 
+HttpServer& Session::http() { return m->wire.http(); }
+void Session::connect() { m->wire.connect(); }
 GpuContext& Session::gpu() { return m->wire.gpu(); }
 int Session::pixelRatio() const { return m->wire.pixelRatio(); }
 void Session::flush() { m->wire.flush(); }

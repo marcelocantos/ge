@@ -3,6 +3,7 @@
 
 #include "Player.h"
 #include <cstring>
+#include <fstream>
 #include <spdlog/spdlog.h>
 #include <string>
 
@@ -17,6 +18,21 @@ void parseHostPort(const char* arg, std::string& host, uint16_t& port) {
     } else {
         host = s;
     }
+}
+
+// Try reading the port from .sqport (written by the server on startup).
+// Checks ./.sqport first (same directory as server), then /tmp/.sqport
+// (readable by iOS Simulator).
+bool readPortFile(uint16_t& port) {
+    for (auto* path : {".sqport", "/tmp/.sqport"}) {
+        std::ifstream f(path);
+        int p = 0;
+        if (f >> p && p > 0 && p <= 65535) {
+            port = static_cast<uint16_t>(p);
+            return true;
+        }
+    }
+    return false;
 }
 
 } // namespace
@@ -36,7 +52,12 @@ int main(int argc, char* argv[]) {
         }
         pos++;
     }
-    if (pos < argc) parseHostPort(argv[pos++], host, port);
+    if (pos < argc) {
+        parseHostPort(argv[pos++], host, port);
+    } else {
+        // No address given — try .sqport for auto-discovery
+        readPortFile(port);
+    }
     if (pos < argc) width = std::stoi(argv[pos++]);
     if (pos < argc) height = std::stoi(argv[pos++]);
 
