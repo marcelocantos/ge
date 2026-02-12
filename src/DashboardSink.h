@@ -1,6 +1,7 @@
 // spdlog sink that broadcasts log messages to WebSocket clients.
 // Each connected client on /ws/logs receives JSON messages:
 //   {"ts":"2026-02-11T12:34:56.789","level":"info","msg":"..."}
+// New clients receive a replay of recent messages on connect.
 #pragma once
 
 #include "../sq/src/HttpServer.h"
@@ -9,6 +10,7 @@
 
 #include <chrono>
 #include <ctime>
+#include <deque>
 #include <iomanip>
 #include <mutex>
 #include <sstream>
@@ -20,6 +22,10 @@ public:
     sq::WsAcceptHandler handler() {
         return [this](std::shared_ptr<sq::WsConnection> conn) {
             std::lock_guard lock(clientsMtx_);
+            // Replay buffered messages to the new client
+            for (auto& msg : history_) {
+                conn->sendText(msg);
+            }
             clients_.push_back(std::move(conn));
         };
     }
@@ -59,8 +65,14 @@ protected:
 
         auto text = json.str();
 
-        // Broadcast to connected clients
+        // Buffer for replay to future clients
         std::lock_guard lock(clientsMtx_);
+        history_.push_back(text);
+        if (history_.size() > kMaxHistory) {
+            history_.pop_front();
+        }
+
+        // Broadcast to connected clients
         auto it = clients_.begin();
         while (it != clients_.end()) {
             if ((*it)->isOpen()) {
@@ -75,6 +87,8 @@ protected:
     void flush_() override {}
 
 private:
+    static constexpr size_t kMaxHistory = 1000;
     std::mutex clientsMtx_;
     std::vector<std::shared_ptr<sq::WsConnection>> clients_;
+    std::deque<std::string> history_;
 };

@@ -114,11 +114,11 @@ class TcpWsConnection : public WsConnection {
 public:
     // Server-side: socket comes from the server's io_context (which outlives us).
     explicit TcpWsConnection(tcp::socket socket, bool serverSide = true)
-        : socket_(std::move(socket)), serverSide_(serverSide) {}
+        : socket_(std::move(socket)), serverSide_(serverSide) { setNoDelay(); }
 
     // Client-side: we own the io_context the socket was created on.
     TcpWsConnection(std::unique_ptr<asio::io_context> io, tcp::socket socket)
-        : ownedIo_(std::move(io)), socket_(std::move(socket)), serverSide_(false) {}
+        : ownedIo_(std::move(io)), socket_(std::move(socket)), serverSide_(false) { setNoDelay(); }
 
     void sendBinary(const void* data, size_t len) override {
         sendFrame(0x02, data, len);
@@ -168,13 +168,14 @@ private:
         std::lock_guard lock(writeMtx_);
         if (!open_) return;
 
-        // Build frame header
-        uint8_t header[10];
-        size_t headerLen = 0;
-        header[0] = 0x80 | opcode;  // FIN + opcode
-
-        bool mask = !serverSide_;  // Clients must mask
+        // Build frame into a single buffer (header + optional mask + payload)
+        // to avoid Nagle/delayed-ACK interaction from split writes.
+        bool mask = !serverSide_;
         uint8_t maskBit = mask ? 0x80 : 0x00;
+
+        size_t headerLen;
+        uint8_t header[10];
+        header[0] = 0x80 | opcode;  // FIN + opcode
 
         if (len < 126) {
             header[1] = maskBit | static_cast<uint8_t>(len);
@@ -191,24 +192,22 @@ private:
             headerLen = 10;
         }
 
-        asio::error_code ec;
-        asio::write(socket_, asio::buffer(header, headerLen), ec);
-        if (ec) { open_ = false; return; }
+        size_t maskLen = mask ? 4 : 0;
+        std::vector<uint8_t> buf(headerLen + maskLen + len);
+        std::memcpy(buf.data(), header, headerLen);
 
         if (mask) {
-            // Generate mask key and write masked data
-            uint8_t maskKey[4] = {0x12, 0x34, 0x56, 0x78};  // Simple mask for client
-            asio::write(socket_, asio::buffer(maskKey, 4), ec);
-            if (ec) { open_ = false; return; }
-
-            std::vector<uint8_t> masked(len);
+            uint8_t maskKey[4] = {0x12, 0x34, 0x56, 0x78};
+            std::memcpy(buf.data() + headerLen, maskKey, 4);
             auto* src = static_cast<const uint8_t*>(data);
             for (size_t i = 0; i < len; ++i)
-                masked[i] = src[i] ^ maskKey[i % 4];
-            asio::write(socket_, asio::buffer(masked), ec);
+                buf[headerLen + 4 + i] = src[i] ^ maskKey[i % 4];
         } else {
-            asio::write(socket_, asio::buffer(data, len), ec);
+            std::memcpy(buf.data() + headerLen, data, len);
         }
+
+        asio::error_code ec;
+        asio::write(socket_, asio::buffer(buf), ec);
         if (ec) open_ = false;
     }
 
@@ -279,6 +278,11 @@ private:
         }
 
         return true;
+    }
+
+    void setNoDelay() {
+        asio::error_code ec;
+        socket_.set_option(tcp::no_delay(true), ec);
     }
 
     std::unique_ptr<asio::io_context> ownedIo_;  // before socket_ so it outlives it
