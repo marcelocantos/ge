@@ -21,6 +21,7 @@
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include <stb_image_write.h>
 
+#include <atomic>
 #include <chrono>
 #include <csignal>
 #include <cstdlib>
@@ -32,6 +33,8 @@
 #include <vector>
 
 namespace {
+
+std::atomic<bool> g_stopRequested{false};
 
 // Dawn wire command constants for filtering large texture uploads.
 // Values from WireCmd_autogen.h — must match the Dawn version in sq/vendor/dawn.
@@ -561,6 +564,9 @@ WireSession::WireSession()
     m->httpServer->get("/api/url", [this](const HttpRequest&, HttpResponse& res) {
         res.json("{\"url\":\"" + m->qrUrl + "\"}");
     });
+    m->httpServer->get("/api/info", [](const HttpRequest&, HttpResponse& res) {
+        res.json(std::string(R"({"name":")") + getprogname() + "\"}");
+    });
     m->httpServer->get("/api/stop", [](const HttpRequest&, HttpResponse& res) {
         SPDLOG_INFO("Stop requested from dashboard");
         res.json(R"({"ok":true})");
@@ -802,12 +808,36 @@ void WireSession::run(RunConfig config) {
 
     DeltaTimer frameTimer;
 
+    // Install SIGINT handler to allow graceful exit with exit message
+    g_stopRequested.store(false);
+    struct sigaction sa{};
+    sa.sa_handler = [](int) { g_stopRequested.store(true, std::memory_order_relaxed); };
+    sigemptyset(&sa.sa_mask);
+    struct sigaction oldSa{};
+    sigaction(SIGINT, &sa, &oldSa);
+    struct SigRestore {
+        struct sigaction old;
+        ~SigRestore() { sigaction(SIGINT, &old, nullptr); }
+    } sigRestore{oldSa};
+
+    auto sendExitAndReturn = [&]() {
+        SPDLOG_INFO("Server exit requested, notifying player");
+        try {
+            m->serializer->sendMessage(wire::kServerExitMagic);
+        } catch (...) {}
+    };
+
     SPDLOG_INFO("Entering render loop...");
 
     // Credit-based double buffering: frameReadyCount starts at 2, so the first
     // two frames send immediately (priming the pipeline). After that, each frame
     // waits for a FrameReady signal from the player before proceeding.
     for (;;) {
+        if (g_stopRequested.load(std::memory_order_relaxed)) {
+            sendExitAndReturn();
+            return;
+        }
+
         while (m->serializer->frameReadyCount <= 0) {
             try {
                 m->serializer->processResponses(*m->wireClient, m->onEvent);
@@ -840,6 +870,10 @@ void WireSession::run(RunConfig config) {
                 }
             }
 
+            if (g_stopRequested.load(std::memory_order_relaxed)) {
+                sendExitAndReturn();
+                return;
+            }
             SDL_Delay(1);
         }
         m->serializer->frameReadyCount--;

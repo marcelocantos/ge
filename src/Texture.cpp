@@ -235,7 +235,7 @@ bool transcodeAstcToEtc2(const char* srcPath, const char* cachePath) {
 
 // Get the cache path for a transcoded texture.
 std::string transcodeCachePath(const char* srcPath) {
-    char* prefPath = SDL_GetPrefPath("squz", "yourworld");
+    char* prefPath = SDL_GetPrefPath("squz", getprogname());
     std::string cacheDir = prefPath ? std::string(prefPath) + "texcache/" : "/tmp/squz-texcache/";
     SDL_free(prefPath);
 

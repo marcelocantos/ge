@@ -26,7 +26,7 @@
 
 namespace {
 
-enum class ConnectionResult { Quit, Disconnected };
+enum class ConnectionResult { Quit, Disconnected, ServerExit };
 
 // Dawn wire command constants for observing texture/view/bind group creation.
 // Values from WireCmd_autogen.h — must match the Dawn version in sq/vendor/dawn.
@@ -469,6 +469,12 @@ int Player::run() {
             if (result == ConnectionResult::Quit)
                 break;
 
+            if (result == ConnectionResult::ServerExit) {
+                m->backoffMs = 10;
+                retries = 0;
+                continue;
+            }
+
             ++retries;
             if (m->maxRetries >= 0 && retries > m->maxRetries) {
                 SPDLOG_INFO("Max retries ({}) exceeded, giving up", m->maxRetries);
@@ -838,6 +844,9 @@ ConnectionResult Player::M::connectAndRun() {
             } else if (header.magic == wire::kFrameEndMagic) {
                 serializer->sendMessage(wire::kFrameReadyMagic);
                 break; // yield to SDL event polling
+            } else if (header.magic == wire::kServerExitMagic) {
+                SPDLOG_INFO("Server shutting down (exit message received)");
+                return ConnectionResult::ServerExit;
             } else {
                 SPDLOG_WARN("Unknown message magic: 0x{:08X}", header.magic);
                 return ConnectionResult::Disconnected;

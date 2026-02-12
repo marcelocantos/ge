@@ -8,9 +8,16 @@ function App() {
   const [stopped, setStopped] = useState(false);
   const ctrlCTriggered = useRef(false);
 
+  const [appName, setAppName] = useState("sq");
+
   useEffect(() => {
-    const port = window.location.port;
-    document.title = port ? `yourworld2 :${port}` : "yourworld2";
+    fetch("/api/info").then(r => r.json()).then(d => {
+      if (d.name) {
+        setAppName(d.name);
+        const port = window.location.port;
+        document.title = port ? `${d.name} :${port}` : d.name;
+      }
+    }).catch(() => {});
   }, []);
 
   const doStop = useCallback(() => {
@@ -45,7 +52,7 @@ function App() {
   return (
     <div className="app">
       <header className="header">
-        <h1 className="title">yourworld2</h1>
+        <h1 className="title">{appName}</h1>
         <button
           className="stop-btn"
           onClick={() => openConfirm(false)}
