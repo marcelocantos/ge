@@ -423,11 +423,16 @@ struct Player::M {
     wgpu::TextureFormat swapChainFormat = wgpu::TextureFormat::BGRA8Unorm;
 
     ~M() {
-        // Release GPU handles before destroying the Dawn instance
+        // Leak the surface handle — its swap chain references a device created
+        // internally by the WireServer (via wire commands), which is already
+        // destroyed by the time ~M() runs. Releasing the surface would trigger
+        // Vulkan SwapChain::PerImage destruction with a dangling device pointer.
+        if (surface) {
+            [[maybe_unused]] auto leaked = surface.MoveToCHandle();
+        }
         device = {};
         queue = {};
         adapter = {};
-        surface = {};
         dawnInstance.reset();
         if (window) {
             SDL_DestroyWindow(window);
