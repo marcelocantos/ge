@@ -24,27 +24,29 @@ int main(int argc, char* argv[]) {
 
     SPDLOG_INFO("Squz Player (Android) starting...");
 
-    std::string host;
-    uint16_t port = kDefaultPort;
+    for (;;) {
+        std::string host;
+        uint16_t port = kDefaultPort;
 
-    if (isEmulator()) {
-        // 10.0.2.2 is the Android emulator's alias for the host's localhost.
-        host = "10.0.2.2";
-        SPDLOG_INFO("Emulator: using {}:{}", host, port);
-    } else {
-        auto scan = sq::scanQRCode();
-        if (scan.host.empty()) {
-            SPDLOG_ERROR("No QR code scanned, exiting");
-            return 1;
+        if (isEmulator()) {
+            host = "10.0.2.2";
+            SPDLOG_INFO("Emulator: using {}:{}", host, port);
+        } else {
+            auto scan = sq::scanQRCode();
+            if (scan.host.empty()) {
+                SPDLOG_INFO("QR scan cancelled, retrying...");
+                continue;
+            }
+            host = std::move(scan.host);
+            if (scan.port) port = scan.port;
         }
-        host = std::move(scan.host);
-        if (scan.port) port = scan.port;
+
+        SPDLOG_INFO("Target: {}:{}", host, port);
+
+        Player player(host, port, kDefaultWidth, kDefaultHeight, false, 0);
+        int result = player.run();
+        if (result != 0) return result;
+
+        SPDLOG_INFO("Disconnected, returning to QR scan...");
     }
-    int width = kDefaultWidth;
-    int height = kDefaultHeight;
-
-    SPDLOG_INFO("Target: {}:{}, dimensions: {}x{}", host, port, width, height);
-
-    Player player(host, port, width, height);
-    return player.run();
 }

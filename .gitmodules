@@ -13,3 +13,6 @@
 [submodule "vendor/github.com/ARM-software/astc-encoder"]
 	path = vendor/github.com/ARM-software/astc-encoder
 	url = https://github.com/ARM-software/astc-encoder.git
+[submodule "vendor/github.com/erincatto/box2d"]
+	path = vendor/github.com/erincatto/box2d
+	url = https://github.com/erincatto/box2d.git

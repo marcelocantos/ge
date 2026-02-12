@@ -13,7 +13,8 @@ sq/INCLUDES = \
 	-Isq/vendor/dawn/include \
 	-Isq/vendor/github.com/libsdl-org/SDL/include \
 	-Isq/vendor/sdl3/include \
-	-Isq/vendor/github.com/nayuki/QR-Code-generator/cpp
+	-Isq/vendor/github.com/nayuki/QR-Code-generator/cpp \
+	-Isq/vendor/github.com/erincatto/box2d/include
 
 # Dawn (WebGPU) libraries
 # Order matters: dawn_proc first (provides switchable wgpu* stubs), then webgpu_dawn (native impl)
@@ -62,6 +63,12 @@ sq/LIB = $(BUILD_DIR)/libsq.a
 sq/TEXTURE_ENCODER_SRC = sq/src/TextureEncoder.cpp
 sq/TEXTURE_ENCODER_OBJ = $(BUILD_DIR)/sq/src/TextureEncoder.o
 
+# Box2D v3 physics library (C code)
+sq/BOX2D_DIR = sq/vendor/github.com/erincatto/box2d
+sq/BOX2D_SRC = $(wildcard $(sq/BOX2D_DIR)/src/*.c)
+sq/BOX2D_OBJ = $(patsubst %.c,$(BUILD_DIR)/%.o,$(sq/BOX2D_SRC))
+sq/BOX2D_CFLAGS = -I$(sq/BOX2D_DIR)/include -I$(sq/BOX2D_DIR)/src -O2 -std=c17
+
 # Triangle library (C code, used by precompute tool)
 sq/TRIANGLE_SRC = sq/vendor/src/triangle.c
 sq/TRIANGLE_OBJ = $(BUILD_DIR)/sq/vendor/triangle.o
@@ -106,6 +113,11 @@ $(sq/LIB): $(sq/OBJ)
 $(BUILD_DIR)/sq/vendor/%.o: sq/vendor/%.cpp
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -MMD -MP -c $< -o $@
+
+# Box2D library
+$(BUILD_DIR)/$(sq/BOX2D_DIR)/src/%.o: $(sq/BOX2D_DIR)/src/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(sq/BOX2D_CFLAGS) -MMD -MP -c $< -o $@
 
 # Triangle library
 $(sq/TRIANGLE_OBJ): $(sq/TRIANGLE_SRC)

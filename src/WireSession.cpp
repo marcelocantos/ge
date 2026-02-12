@@ -789,6 +789,17 @@ void WireSession::run(RunConfig config) {
     // Flush any resource creation commands issued between construction and run()
     flush();
 
+    // Send sensor configuration to player
+    for (int s = 1; s < 7; ++s) {
+        if (config.sensors & (1u << s)) {
+            wire::SensorConfig sc{};
+            sc.sensorType = static_cast<uint8_t>(s);
+            sc.enabled = 1;
+            m->serializer->sendMessage(wire::kSensorConfigMagic, &sc, sizeof(sc));
+            SPDLOG_INFO("Requested sensor type {}", s);
+        }
+    }
+
     DeltaTimer frameTimer;
 
     SPDLOG_INFO("Entering render loop...");

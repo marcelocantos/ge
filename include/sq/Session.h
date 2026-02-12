@@ -34,7 +34,12 @@ public:
         std::function<void(wgpu::TextureView target)> onRender;
         std::function<void(const SDL_Event&)> onEvent;
         std::function<void(int w, int h)> onResize;
+        uint32_t sensors = 0;  // bitmask of requested SDL_SensorType values
     };
+
+    // Sensor request bitmask constants (1 << SDL_SensorType)
+    static constexpr uint32_t kSensorAccelerometer = (1u << 1); // SDL_SENSOR_ACCEL
+    static constexpr uint32_t kSensorGyroscope     = (1u << 2); // SDL_SENSOR_GYRO
 
     // Returns true if the caller should loop (wire: receiver disconnected),
     // false if the session is done (direct: user quit).

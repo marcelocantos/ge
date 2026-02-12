@@ -19,6 +19,7 @@ constexpr uint32_t kFrameReadyMagic = 0x59573247;  // "YW2G" — player → serv
 constexpr uint32_t kDeferredMipMagic = 0x59573248; // "YW2H" — server → player: deferred mip data
 constexpr uint32_t kMipCacheHitMagic = 0x5957324A; // "YW2J" — player → server: cached mip found
 constexpr uint32_t kMipCacheMissMagic = 0x5957324B; // "YW2K" — player → server: cached mip not found
+constexpr uint32_t kSensorConfigMagic = 0x5957324C; // "YW2L" — server → player: sensor config
 
 constexpr uint16_t kProtocolVersion = 2;
 constexpr size_t kMaxMessageSize = 512 * 1024 * 1024;  // 512MB (initial resource uploads can be large)
@@ -85,6 +86,14 @@ struct DeferredMipHeader {
 struct MipCacheResponse {
     uint32_t textureId;
     uint32_t mipLevel;
+};
+
+// Sensor configuration (server → player)
+struct SensorConfig {
+    uint32_t magic = kSensorConfigMagic;
+    uint8_t sensorType;   // SDL_SensorType value (e.g. SDL_SENSOR_ACCEL = 1)
+    uint8_t enabled;      // 1 = enable, 0 = disable
+    uint16_t reserved = 0;
 };
 
 // FNV-1a 64-bit hash (deterministic, used for mip cache probes)

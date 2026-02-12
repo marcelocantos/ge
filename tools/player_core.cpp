@@ -411,6 +411,7 @@ struct Player::M {
     int pixelHeight = 0;
     int backoffMs = 10;
     bool maximized = false;
+    int maxRetries = -1;  // -1 = unlimited
 
     SDL_Window* window = nullptr;
 
@@ -421,19 +422,33 @@ struct Player::M {
     wgpu::Surface surface;
     wgpu::TextureFormat swapChainFormat = wgpu::TextureFormat::BGRA8Unorm;
 
+    ~M() {
+        // Release GPU handles before destroying the Dawn instance
+        device = {};
+        queue = {};
+        adapter = {};
+        surface = {};
+        dawnInstance.reset();
+        if (window) {
+            SDL_DestroyWindow(window);
+            window = nullptr;
+        }
+    }
+
     void initWindow();
     void initGpu();
     ConnectionResult connectAndRun();
 };
 
 Player::Player(std::string host, uint16_t port, int width, int height,
-                   bool maximized)
+                   bool maximized, int maxRetries)
     : m(std::make_unique<M>()) {
     m->host = std::move(host);
     m->port = port;
     m->width = width;
     m->height = height;
     m->maximized = maximized;
+    m->maxRetries = maxRetries;
 }
 
 Player::~Player() = default;
@@ -443,12 +458,19 @@ int Player::run() {
         m->initWindow();
         m->initGpu();
 
+        int retries = 0;
         while (true) {
             auto result = m->connectAndRun();
             if (result == ConnectionResult::Quit)
                 break;
 
-            SPDLOG_INFO("Reconnecting in {}ms...", m->backoffMs);
+            ++retries;
+            if (m->maxRetries >= 0 && retries > m->maxRetries) {
+                SPDLOG_INFO("Max retries ({}) exceeded, giving up", m->maxRetries);
+                break;
+            }
+
+            SPDLOG_INFO("Reconnecting in {}ms... (attempt {})", m->backoffMs, retries);
             SDL_Delay(m->backoffMs);
             m->backoffMs = std::min(m->backoffMs * 2, 2000);
 
@@ -623,6 +645,11 @@ ConnectionResult Player::M::connectAndRun() {
     commandBuffer.reserve(64 * 1024);
     MipTracker mipTracker;
     auto cacheDir = mipCacheDir(host, port);
+    SDL_Sensor* openSensors[7] = {};  // indexed by SDL_SensorType (up to SDL_SENSOR_COUNT)
+    struct SensorGuard {
+        SDL_Sensor** s; int n;
+        ~SensorGuard() { for (int i = 0; i < n; i++) if (s[i]) SDL_CloseSensor(s[i]); }
+    } sensorGuard{openSensors, 7};
 
     while (true) {
         SDL_Event event;
@@ -642,6 +669,7 @@ ConnectionResult Player::M::connectAndRun() {
                 case SDL_EVENT_FINGER_DOWN:
                 case SDL_EVENT_FINGER_MOTION:
                 case SDL_EVENT_FINGER_UP:
+                case SDL_EVENT_SENSOR_UPDATE:
                     try {
                         serializer->sendMessage(wire::kSdlEventMagic, &event, sizeof(event));
                     } catch (const std::exception&) {
@@ -769,6 +797,39 @@ ConnectionResult Player::M::connectAndRun() {
 
                 serializer->Flush();
                 break; // yield so a frame can render with updated quality
+            } else if (header.magic == wire::kSensorConfigMagic) {
+                if (payload.size() >= sizeof(wire::SensorConfig)) {
+                    wire::SensorConfig sc{};
+                    std::memcpy(&sc, payload.data(), sizeof(sc));
+                    if (sc.sensorType > 0 && sc.sensorType < 7) {
+                        if (sc.enabled && !openSensors[sc.sensorType]) {
+                            if (!SDL_WasInit(SDL_INIT_SENSOR)) {
+                                if (!SDL_InitSubSystem(SDL_INIT_SENSOR))
+                                    SPDLOG_WARN("SDL_InitSubSystem(SENSOR) failed: {}", SDL_GetError());
+                            }
+                            int count = 0;
+                            SDL_SensorID* ids = SDL_GetSensors(&count);
+                            SPDLOG_INFO("SDL_GetSensors: {} sensor(s) found", count);
+                            if (ids) {
+                                for (int i = 0; i < count; i++) {
+                                    if (SDL_GetSensorTypeForID(ids[i]) == static_cast<SDL_SensorType>(sc.sensorType)) {
+                                        openSensors[sc.sensorType] = SDL_OpenSensor(ids[i]);
+                                        if (openSensors[sc.sensorType])
+                                            SPDLOG_INFO("Opened sensor type {}", sc.sensorType);
+                                        else
+                                            SPDLOG_WARN("Failed to open sensor type {}: {}", sc.sensorType, SDL_GetError());
+                                        break;
+                                    }
+                                }
+                                SDL_free(ids);
+                            }
+                        } else if (!sc.enabled && openSensors[sc.sensorType]) {
+                            SDL_CloseSensor(openSensors[sc.sensorType]);
+                            openSensors[sc.sensorType] = nullptr;
+                            SPDLOG_INFO("Closed sensor type {}", sc.sensorType);
+                        }
+                    }
+                }
             } else if (header.magic == wire::kFrameEndMagic) {
                 serializer->sendMessage(wire::kFrameReadyMagic);
                 break; // yield to SDL event polling

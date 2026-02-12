@@ -49,6 +49,7 @@ public:
         std::function<void(wgpu::TextureView target)> onRender;
         std::function<void(const SDL_Event&)> onEvent;
         std::function<void(int w, int h)> onResize;
+        uint32_t sensors = 0;  // bitmask of requested SDL_SensorType values
     };
 
     // Run the render loop. Returns when the receiver disconnects.
