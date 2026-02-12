@@ -30,6 +30,22 @@ public:
         };
     }
 
+    // Probe all clients for disconnect (EOF detection) and return the number
+    // of live clients remaining. Dead clients are pruned.
+    size_t checkClients() {
+        std::lock_guard lock(clientsMtx_);
+        auto it = clients_.begin();
+        while (it != clients_.end()) {
+            (*it)->available();  // triggers EOF detection via non-blocking peek
+            if ((*it)->isOpen()) {
+                ++it;
+            } else {
+                it = clients_.erase(it);
+            }
+        }
+        return clients_.size();
+    }
+
 protected:
     void sink_it_(const spdlog::details::log_msg& msg) override {
         // Format timestamp as ISO 8601

@@ -9,6 +9,7 @@ function App() {
   const ctrlCTriggered = useRef(false);
 
   const [appName, setAppName] = useState("sq");
+  const stoppedRef = useRef(false);
 
   useEffect(() => {
     fetch("/api/info").then(r => r.json()).then(d => {
@@ -22,8 +23,19 @@ function App() {
 
   const doStop = useCallback(() => {
     setStopped(true);
+    stoppedRef.current = true;
     setShowConfirm(false);
-    fetch("/api/stop").catch(() => {});
+    fetch("/api/stop", { method: "POST" }).catch(() => {});
+  }, []);
+
+  // Stop the server when the tab is closed. The server also detects the
+  // WebSocket disconnect, but sendBeacon provides a faster signal.
+  useEffect(() => {
+    const onPageHide = () => {
+      if (!stoppedRef.current) navigator.sendBeacon("/api/stop");
+    };
+    window.addEventListener("pagehide", onPageHide);
+    return () => window.removeEventListener("pagehide", onPageHide);
   }, []);
 
   const openConfirm = useCallback((viaCtrlC: boolean) => {

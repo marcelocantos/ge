@@ -35,6 +35,7 @@
 namespace {
 
 std::atomic<bool> g_stopRequested{false};
+std::shared_ptr<DashboardSink> g_dashSink;
 
 // Dawn wire command constants for filtering large texture uploads.
 // Values from WireCmd_autogen.h — must match the Dawn version in sq/vendor/dawn.
@@ -550,11 +551,10 @@ WireSession::WireSession()
     }
 
     // Dashboard: log sink (created once, shared across reconnects)
-    static auto dashSink = [] {
-        auto s = std::make_shared<DashboardSink>();
-        spdlog::default_logger()->sinks().push_back(s);
-        return s;
-    }();
+    if (!g_dashSink) {
+        g_dashSink = std::make_shared<DashboardSink>();
+        spdlog::default_logger()->sinks().push_back(g_dashSink);
+    }
 
     // Register dashboard endpoints
     m->httpServer->get("/api/qr", [this](const HttpRequest&, HttpResponse& res) {
@@ -567,12 +567,12 @@ WireSession::WireSession()
     m->httpServer->get("/api/info", [](const HttpRequest&, HttpResponse& res) {
         res.json(std::string(R"({"name":")") + getprogname() + "\"}");
     });
-    m->httpServer->get("/api/stop", [](const HttpRequest&, HttpResponse& res) {
+    m->httpServer->post("/api/stop", [](const HttpRequest&, HttpResponse& res) {
         SPDLOG_INFO("Stop requested from dashboard");
         res.json(R"({"ok":true})");
         kill(getpid(), SIGINT);
     });
-    m->httpServer->ws("/ws/logs", dashSink->handler());
+    m->httpServer->ws("/ws/logs", g_dashSink->handler());
     m->httpServer->serveStatic("/", "sq/web/dist");
 
     // Start accepting HTTP connections
@@ -591,8 +591,24 @@ void WireSession::connect() {
         dashboardOpened = true;
     }
 
-    // Block until a WebSocket client connects to /ws/wire
-    m->wsConn = m->httpServer->acceptWs("/ws/wire");
+    // Wait for a WebSocket client, periodically checking for dashboard disconnect.
+    bool dashboardEverConnected = false;
+    for (;;) {
+        m->wsConn = m->httpServer->tryAcceptWs("/ws/wire", 2000);
+        if (m->wsConn) break;
+        if (g_stopRequested.load(std::memory_order_relaxed))
+            throw std::runtime_error("Server stopped");
+        if (g_dashSink) {
+            auto n = g_dashSink->checkClients();
+            if (n > 0) {
+                dashboardEverConnected = true;
+            } else if (dashboardEverConnected) {
+                SPDLOG_INFO("Dashboard disconnected, stopping server");
+                kill(getpid(), SIGINT);
+                throw std::runtime_error("Dashboard disconnected");
+            }
+        }
+    }
     SPDLOG_INFO("Player connected via WebSocket");
 
     // Receive DeviceInfo as first binary frame
@@ -829,6 +845,11 @@ void WireSession::run(RunConfig config) {
 
     SPDLOG_INFO("Entering render loop...");
 
+    // Detect dashboard tab close: once a WebSocket client has connected and
+    // then all clients disconnect, treat it as a stop request.
+    bool dashboardEverConnected = false;
+    auto lastDashCheck = std::chrono::steady_clock::now();
+
     // Credit-based double buffering: frameReadyCount starts at 2, so the first
     // two frames send immediately (priming the pipeline). After that, each frame
     // waits for a FrameReady signal from the player before proceeding.
@@ -836,6 +857,22 @@ void WireSession::run(RunConfig config) {
         if (g_stopRequested.load(std::memory_order_relaxed)) {
             sendExitAndReturn();
             return;
+        }
+
+        // Periodically check if dashboard tab was closed
+        auto now = std::chrono::steady_clock::now();
+        if (now - lastDashCheck > std::chrono::seconds(2)) {
+            lastDashCheck = now;
+            if (g_dashSink) {
+                auto n = g_dashSink->checkClients();
+                if (n > 0) {
+                    dashboardEverConnected = true;
+                } else if (dashboardEverConnected) {
+                    SPDLOG_INFO("Dashboard disconnected, stopping server");
+                    sendExitAndReturn();
+                    return;
+                }
+            }
         }
 
         while (m->serializer->frameReadyCount <= 0) {

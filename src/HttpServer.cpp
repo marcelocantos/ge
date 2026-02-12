@@ -150,14 +150,17 @@ public:
         asio::error_code ec;
         size_t n = socket_.available(ec);
         if (ec) { open_ = false; return 0; }
-        if (n == 0) {
-            // Non-blocking peek to detect remote close (EOF/close frame)
-            char buf;
-            auto fd = socket_.native_handle();
-            ssize_t r = ::recv(fd, &buf, 1, MSG_PEEK | MSG_DONTWAIT);
-            if (r == 0) { open_ = false; return 0; }  // EOF
-            if (r > 0) return 1;  // Data arrived between available() and peek
+        // Peek at the socket to detect remote close or WebSocket close frame.
+        char buf;
+        auto fd = socket_.native_handle();
+        ssize_t r = ::recv(fd, &buf, 1, MSG_PEEK | MSG_DONTWAIT);
+        if (r == 0) { open_ = false; return 0; }  // TCP EOF
+        if (r > 0 && (static_cast<uint8_t>(buf) & 0x0F) == 0x08) {
+            // WebSocket close frame (opcode 0x8) — mark connection as dead
+            open_ = false;
+            return 0;
         }
+        if (r > 0 && n == 0) return 1;  // Data arrived between available() and peek
         return n;
     }
 
@@ -302,6 +305,7 @@ struct HttpServer::M {
 
     // Routes
     std::unordered_map<std::string, HttpHandler> getHandlers;
+    std::unordered_map<std::string, HttpHandler> postHandlers;
     std::unordered_map<std::string, WsAcceptHandler> wsHandlers;
     std::string staticPrefix;
     std::string staticDir;
@@ -339,6 +343,10 @@ void HttpServer::get(const std::string& path, HttpHandler handler) {
     m->getHandlers[path] = std::move(handler);
 }
 
+void HttpServer::post(const std::string& path, HttpHandler handler) {
+    m->postHandlers[path] = std::move(handler);
+}
+
 void HttpServer::ws(const std::string& path, WsAcceptHandler handler) {
     m->wsHandlers[path] = std::move(handler);
 }
@@ -354,6 +362,18 @@ std::shared_ptr<WsConnection> HttpServer::acceptWs(const std::string& path) {
         auto it = m->wsQueues.find(path);
         return it != m->wsQueues.end() && !it->second.empty();
     });
+    auto conn = m->wsQueues[path].front();
+    m->wsQueues[path].pop();
+    return conn;
+}
+
+std::shared_ptr<WsConnection> HttpServer::tryAcceptWs(const std::string& path, int timeoutMs) {
+    std::unique_lock lock(m->wsMtx);
+    bool found = m->wsCv.wait_for(lock, std::chrono::milliseconds(timeoutMs), [&] {
+        auto it = m->wsQueues.find(path);
+        return it != m->wsQueues.end() && !it->second.empty();
+    });
+    if (!found) return nullptr;
     auto conn = m->wsQueues[path].front();
     m->wsQueues[path].pop();
     return conn;
@@ -437,6 +457,17 @@ void HttpServer::M::handleConnection(tcp::socket socket) {
     if (req.method == "GET") {
         auto it = getHandlers.find(req.path);
         if (it != getHandlers.end()) {
+            HttpResponse res;
+            it->second(req, res);
+            sendHttpResponse(socket, res);
+            return;
+        }
+    }
+
+    // POST route handler?
+    if (req.method == "POST") {
+        auto it = postHandlers.find(req.path);
+        if (it != postHandlers.end()) {
             HttpResponse res;
             it->second(req, res);
             sendHttpResponse(socket, res);

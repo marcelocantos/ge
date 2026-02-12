@@ -76,6 +76,9 @@ public:
     // Register a GET handler for an exact path.
     void get(const std::string& path, HttpHandler handler);
 
+    // Register a POST handler for an exact path.
+    void post(const std::string& path, HttpHandler handler);
+
     // Register a WebSocket accept handler for an exact path.
     // Called on the server's IO thread when a client upgrades.
     void ws(const std::string& path, WsAcceptHandler handler);
@@ -86,6 +89,10 @@ public:
     // Block until a WebSocket client connects to the given path.
     // Returns the connection (thread-safe, can be called from any thread).
     std::shared_ptr<WsConnection> acceptWs(const std::string& path);
+
+    // Wait up to `timeoutMs` milliseconds for a WebSocket client to connect.
+    // Returns nullptr on timeout.
+    std::shared_ptr<WsConnection> tryAcceptWs(const std::string& path, int timeoutMs);
 
     // Start accepting connections (runs IO on a background thread).
     void start();
