@@ -1,4 +1,5 @@
 build/
+.sqport
 /.claude/*
 !/.claude/skills/
 !/.claude/agents/
