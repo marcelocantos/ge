@@ -20,7 +20,6 @@ constexpr uint32_t kDeferredMipMagic = 0x59573248; // "YW2H" — server → play
 constexpr uint32_t kMipCacheHitMagic = 0x5957324A; // "YW2J" — player → server: cached mip found
 constexpr uint32_t kMipCacheMissMagic = 0x5957324B; // "YW2K" — player → server: cached mip not found
 constexpr uint32_t kSensorConfigMagic = 0x5957324C; // "YW2L" — server → player: sensor config
-constexpr uint32_t kServerExitMagic = 0x59573258;  // "YW2X" — server → player: shutting down
 
 constexpr uint16_t kProtocolVersion = 2;
 constexpr size_t kMaxMessageSize = 512 * 1024 * 1024;  // 512MB (initial resource uploads can be large)

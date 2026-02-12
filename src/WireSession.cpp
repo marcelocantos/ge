@@ -821,9 +821,9 @@ void WireSession::run(RunConfig config) {
     } sigRestore{oldSa};
 
     auto sendExitAndReturn = [&]() {
-        SPDLOG_INFO("Server exit requested, notifying player");
+        SPDLOG_INFO("Server exit requested, closing connection");
         try {
-            m->serializer->sendMessage(wire::kServerExitMagic);
+            m->wsConn->close();
         } catch (...) {}
     };
 

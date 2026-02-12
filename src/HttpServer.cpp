@@ -149,7 +149,16 @@ public:
     size_t available() override {
         asio::error_code ec;
         size_t n = socket_.available(ec);
-        return ec ? 0 : n;
+        if (ec) { open_ = false; return 0; }
+        if (n == 0) {
+            // Non-blocking peek to detect remote close (EOF/close frame)
+            char buf;
+            auto fd = socket_.native_handle();
+            ssize_t r = ::recv(fd, &buf, 1, MSG_PEEK | MSG_DONTWAIT);
+            if (r == 0) { open_ = false; return 0; }  // EOF
+            if (r > 0) return 1;  // Data arrived between available() and peek
+        }
+        return n;
     }
 
     tcp::socket& socket() { return socket_; }
