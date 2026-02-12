@@ -52,9 +52,9 @@ public:
         uint32_t sensors = 0;  // bitmask of requested SDL_SensorType values
     };
 
-    // Run the render loop. Returns when the receiver disconnects.
-    // Ctrl+C terminates the process via the default SIGINT handler.
-    void run(RunConfig config);
+    // Run the render loop. Returns true on player disconnect (reconnectable),
+    // false on server stop (dashboard closed, SIGINT).
+    bool run(RunConfig config);
 
 private:
     struct M;

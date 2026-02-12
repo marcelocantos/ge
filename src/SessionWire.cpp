@@ -17,8 +17,7 @@ int Session::pixelRatio() const { return m->wire.pixelRatio(); }
 void Session::flush() { m->wire.flush(); }
 
 bool Session::run(RunConfig config) {
-    m->wire.run({std::move(config.onUpdate), std::move(config.onRender), std::move(config.onEvent), std::move(config.onResize), config.sensors});
-    return true;  // Wire disconnect → reconnect
+    return m->wire.run({std::move(config.onUpdate), std::move(config.onRender), std::move(config.onEvent), std::move(config.onResize), config.sensors});
 }
 
 } // namespace sq

@@ -795,7 +795,7 @@ void WireSession::flush() {
     m->serializer->Flush();
 }
 
-void WireSession::run(RunConfig config) {
+bool WireSession::run(RunConfig config) {
     if (!m->connected) connect();
     m->onEvent = [this,
                   userEvent = std::move(config.onEvent),
@@ -856,7 +856,7 @@ void WireSession::run(RunConfig config) {
     for (;;) {
         if (g_stopRequested.load(std::memory_order_relaxed)) {
             sendExitAndReturn();
-            return;
+            return false;
         }
 
         // Periodically check if dashboard tab was closed
@@ -870,7 +870,7 @@ void WireSession::run(RunConfig config) {
                 } else if (dashboardEverConnected) {
                     SPDLOG_INFO("Dashboard disconnected, stopping server");
                     sendExitAndReturn();
-                    return;
+                    return false;
                 }
             }
         }
@@ -880,7 +880,7 @@ void WireSession::run(RunConfig config) {
                 m->serializer->processResponses(*m->wireClient, m->onEvent);
             } catch (const std::exception& e) {
                 SPDLOG_WARN("Player disconnected: {}", e.what());
-                return;
+                return true;
             }
             m->instance.ProcessEvents();
 
@@ -902,14 +902,14 @@ void WireSession::run(RunConfig config) {
                         lastMipTime = now;
                     } catch (const std::exception& e) {
                         SPDLOG_WARN("Disconnect during mip streaming: {}", e.what());
-                        return;
+                        return true;
                     }
                 }
             }
 
             if (g_stopRequested.load(std::memory_order_relaxed)) {
                 sendExitAndReturn();
-                return;
+                return false;
             }
             SDL_Delay(1);
         }
@@ -928,7 +928,7 @@ void WireSession::run(RunConfig config) {
             m->serializer->sendFrameEnd();
         } catch (const std::exception& e) {
             SPDLOG_WARN("Player disconnected: {}", e.what());
-            return;
+            return true;
         }
     }
 }
