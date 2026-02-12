@@ -6,6 +6,7 @@
 #include "QRScanner.h"
 #include <SDL3/SDL_main.h>
 #include <spdlog/spdlog.h>
+#include <spdlog/sinks/android_sink.h>
 #include <sys/system_properties.h>
 
 namespace {
@@ -17,6 +18,10 @@ bool isEmulator() {
 } // namespace
 
 int main(int argc, char* argv[]) {
+    auto logger = spdlog::android_logger_mt("squz", "SquzPlayer");
+    spdlog::set_default_logger(logger);
+    spdlog::set_level(spdlog::level::info);
+
     SPDLOG_INFO("Squz Player (Android) starting...");
 
     std::string host;

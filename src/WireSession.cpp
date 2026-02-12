@@ -538,7 +538,7 @@ WireSession::WireSession()
     auto actualPort = m->httpServer->port();
 
     auto lanIp = getLanAddress();
-    m->qrUrl = "http://" + lanIp + ":" + std::to_string(actualPort);
+    m->qrUrl = "squz-remote://" + lanIp + ":" + std::to_string(actualPort);
 
     // Write port file for player auto-discovery
     for (auto* path : {".sqport", "/tmp/.sqport"}) {
@@ -557,6 +557,9 @@ WireSession::WireSession()
     m->httpServer->get("/api/qr", [this](const HttpRequest&, HttpResponse& res) {
         auto png = generateQrPng(m->qrUrl);
         res.png(png.data(), png.size());
+    });
+    m->httpServer->get("/api/url", [this](const HttpRequest&, HttpResponse& res) {
+        res.json("{\"url\":\"" + m->qrUrl + "\"}");
     });
     m->httpServer->get("/api/stop", [](const HttpRequest&, HttpResponse& res) {
         SPDLOG_INFO("Stop requested from dashboard");

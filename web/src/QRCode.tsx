@@ -5,9 +5,10 @@ function QRCode() {
   const [error, setError] = useState(false);
 
   useEffect(() => {
-    // Fetch connection URL from an endpoint, or derive from the QR image.
-    // For now, show the server address.
-    setUrl(`${window.location.protocol}//${window.location.host}`);
+    fetch("/api/url")
+      .then((r) => r.json())
+      .then((data) => setUrl(data.url))
+      .catch(() => setUrl("(unavailable)"));
   }, []);
 
   return (

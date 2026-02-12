@@ -290,6 +290,65 @@ The player retries on disconnect with exponential backoff: 10ms initial, doublin
 
 **Android:** Gradle project in `sq/tools/android/`. Entry point: `main.cpp`.
 
+## Android Player Deployment
+
+### Prerequisites
+
+- Android SDK installed (set `sdk.dir` in `sq/tools/android/local.properties`)
+- Dawn pre-built for Android arm64 (already committed at `sq/vendor/dawn/lib/android-arm64/`)
+- A physical device or emulator connected via `adb`
+
+### Building
+
+```bash
+cd sq/tools/android
+./gradlew assembleDebug
+```
+
+The APK is output to `app/build/outputs/apk/debug/app-debug.apk`.
+
+### Installing
+
+```bash
+adb install -r sq/tools/android/app/build/outputs/apk/debug/app-debug.apk
+```
+
+**Important:** The package name is `com.squz.player` (not `com.squz.remote`). The main activity is `.SqzActivity`.
+
+### Running
+
+1. Start the app server from the project root (the server needs `sq/web/dist/` relative to cwd):
+   ```bash
+   bin/myapp        # Starts wire server, prints QR code
+   ```
+2. Launch the player on the device:
+   ```bash
+   adb shell am start -n com.squz.player/.SqzActivity
+   ```
+3. Point the phone camera at the terminal QR code (encodes `squz-remote://<lan-ip>:<port>`).
+4. The phone connects via WebSocket and renders the app.
+
+**Emulator:** Connects automatically to `10.0.2.2:42069` (host localhost alias), so set `SQ_WIRE_ADDR=42069` when launching the server.
+
+### Debugging
+
+Spdlog output is routed to Android logcat via the `android_sink`. View logs with:
+
+```bash
+adb logcat -s "SquzPlayer"
+```
+
+### Adding Source Files to the Android Build
+
+The Android player's native sources are listed in `sq/tools/android/app/src/main/cpp/CMakeLists.txt`. If a new sq source file is referenced by `player_core.cpp`, add it to the `add_library(main SHARED ...)` block. Current sources:
+
+- `main.cpp` — Android entry point (spdlog android sink setup, QR scan, player launch)
+- `QRScanner_android.cpp` — Google ML Kit barcode scanner via JNI
+- `player_platform_android.cpp` — Vulkan surface creation
+- `${SQ_ROOT}/tools/player_core.cpp` — Shared player logic
+- `${SQ_ROOT}/src/WireTransport.cpp` — Wire transport
+- `${SQ_ROOT}/src/HttpServer.cpp` — HTTP/WebSocket client (`connectWebSocket`)
+
 ## Standalone iOS App (Direct Mode)
 
 Apps can also run directly on iOS without the wire player, rendering natively on-device. This uses `Session` compiled with `SessionDirect.cpp` instead of `SessionWire.cpp` — same API, no networking.
