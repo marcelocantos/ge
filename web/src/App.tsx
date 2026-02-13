@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import QRCode from "./QRCode";
 import LogViewer from "./LogViewer";
+import TweakPanel from "./TweakPanel";
 
 function App() {
   const [connected, setConnected] = useState(false);
@@ -79,6 +80,7 @@ function App() {
       <div className="layout">
         <aside className="sidebar">
           <QRCode />
+          <TweakPanel />
         </aside>
         <main className="main">
           <LogViewer onConnectionChange={setConnected} />

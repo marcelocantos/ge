@@ -318,6 +318,133 @@ body {
   background: #3a3a5a;
 }
 
+/* ---------- Tweak Panel ---------- */
+
+.tweak-panel {
+  margin-top: 16px;
+  width: 100%;
+}
+
+.tweak-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.tweak-title {
+  font-size: 14px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--text-muted);
+}
+
+.tweak-reset-all {
+  font-size: 11px;
+  padding: 2px 8px;
+  border: 1px solid var(--red);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--red);
+  cursor: pointer;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-weight: 600;
+}
+
+.tweak-reset-all:hover {
+  background: var(--red);
+  color: #fff;
+}
+
+.tweak-group {
+  margin-bottom: 10px;
+}
+
+.tweak-group-name {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 4px;
+  padding-left: 2px;
+}
+
+.tweak-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 3px;
+}
+
+.tweak-name {
+  font-size: 11px;
+  color: var(--text-muted);
+  min-width: 80px;
+  flex-shrink: 0;
+  text-align: right;
+  user-select: none;
+}
+
+.tweak-name.tweak-modified {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.tweak-field {
+  flex: 1;
+  position: relative;
+  height: 22px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: ew-resize;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+}
+
+.tweak-fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  height: 100%;
+  background: rgba(79, 195, 247, 0.12);
+  pointer-events: none;
+  transition: width 0.1s ease-out;
+}
+
+.tweak-value {
+  position: relative;
+  z-index: 1;
+  font-size: 11px;
+  font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", "SF Mono", "Menlo", monospace;
+  color: var(--text-primary);
+  padding: 0 6px;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.tweak-input {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  border: none;
+  background: var(--bg-card);
+  color: var(--text-primary);
+  font-size: 11px;
+  font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", "SF Mono", "Menlo", monospace;
+  padding: 0 6px;
+  outline: none;
+}
+
+.sidebar {
+  overflow-y: auto;
+}
+
 /* ---------- Responsive ---------- */
 
 @media (max-width: 700px) {

@@ -541,8 +541,23 @@ WireSession::WireSession()
     // Use actual port (may differ from requested when using port 0)
     auto actualPort = m->httpServer->port();
 
-    auto lanIp = getLanAddress();
-    m->qrUrl = "squz-remote://" + lanIp + ":" + std::to_string(actualPort);
+    // SQ_PUBLISH_ADDR overrides the advertised address in the QR code.
+    // Examples: "localhost:0" (use dynamic port), "localhost:42069" (fixed port).
+    std::string pubHost;
+    uint16_t pubPort = actualPort;
+    if (auto* env = std::getenv("SQ_PUBLISH_ADDR")) {
+        std::string pubAddr = env;
+        auto colon = pubAddr.rfind(':');
+        if (colon != std::string::npos) {
+            pubHost = pubAddr.substr(0, colon);
+            auto p = std::stoi(pubAddr.substr(colon + 1));
+            if (p != 0) pubPort = static_cast<uint16_t>(p);
+        } else {
+            pubHost = pubAddr;
+        }
+    }
+    if (pubHost.empty()) pubHost = getLanAddress();
+    m->qrUrl = "squz-remote://" + pubHost + ":" + std::to_string(pubPort);
 
     // Write port file for player auto-discovery
     for (auto* path : {".sqport", "/tmp/.sqport"}) {

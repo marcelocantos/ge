@@ -61,6 +61,7 @@ bool parseHttpRequest(tcp::socket& socket, HttpRequest& req) {
     req.path = line.substr(sp1 + 1, sp2 - sp1 - 1);
 
     // Headers
+    size_t contentLength = 0;
     while (std::getline(is, line) && line != "\r" && !line.empty()) {
         if (line.back() == '\r') line.pop_back();
         auto colon = line.find(':');
@@ -74,6 +75,23 @@ bool parseHttpRequest(tcp::socket& socket, HttpRequest& req) {
         if (key == "host") req.host = val;
         else if (key == "upgrade") req.upgrade = val;
         else if (key == "sec-websocket-key") req.wsKey = val;
+        else if (key == "content-length") contentLength = std::stoull(val);
+    }
+
+    // Read request body if Content-Length was specified
+    if (contentLength > 0) {
+        req.body.resize(contentLength);
+        // Some body bytes may already be buffered from read_until
+        size_t buffered = buf.size();
+        size_t toCopy = std::min(buffered, contentLength);
+        if (toCopy > 0) {
+            is.read(req.body.data(), toCopy);
+        }
+        if (toCopy < contentLength) {
+            asio::read(socket, asio::buffer(req.body.data() + toCopy,
+                       contentLength - toCopy), ec);
+            if (ec) return false;
+        }
     }
 
     return true;

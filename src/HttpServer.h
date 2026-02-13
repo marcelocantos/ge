@@ -17,6 +17,7 @@ struct HttpRequest {
     std::string host;
     std::string upgrade;
     std::string wsKey;  // Sec-WebSocket-Key
+    std::string body;   // POST request body (read if Content-Length present)
 };
 
 // HTTP response builder.
