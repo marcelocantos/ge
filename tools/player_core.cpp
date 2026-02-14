@@ -646,6 +646,24 @@ ConnectionResult Player::M::connectAndRun() {
     backoffMs = 10;
 
     SPDLOG_INFO("Starting render loop...");
+
+    // On Android, SDL blocks the native thread when the app is backgrounded
+    // (SDL_HINT_ANDROID_BLOCK_ON_PAUSE defaults to true). Lifecycle events are
+    // delivered via event watchers, not queued for SDL_PollEvent. We use a flag
+    // set by an event watcher; after SDL_PollEvent unblocks on resume, we check
+    // it and return to the QR scan screen.
+    bool wasBackgrounded = false;
+    SDL_EventFilter bgWatcher = [](void* ud, SDL_Event* ev) -> bool {
+        if (ev->type == SDL_EVENT_DID_ENTER_BACKGROUND)
+            *static_cast<bool*>(ud) = true;
+        return true;
+    };
+    SDL_AddEventWatch(bgWatcher, &wasBackgrounded);
+    struct WatcherGuard {
+        SDL_EventFilter fn; void* ud;
+        ~WatcherGuard() { SDL_RemoveEventWatch(fn, ud); }
+    } watcherGuard{bgWatcher, &wasBackgrounded};
+
     std::vector<char> commandBuffer;
     commandBuffer.reserve(64 * 1024);
     MipTracker mipTracker;
@@ -683,6 +701,11 @@ ConnectionResult Player::M::connectAndRun() {
                     }
                     break;
             }
+        }
+
+        if (wasBackgrounded) {
+            SPDLOG_INFO("App was backgrounded, returning to QR scan");
+            return ConnectionResult::Disconnected;
         }
 
         if (!wsConn->isOpen()) {
