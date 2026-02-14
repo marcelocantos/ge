@@ -2,6 +2,7 @@
 // Platform-specific entry points: player.cpp (desktop), ios/main.mm (iOS).
 
 #include "Player.h"
+#include "QRScanner.h"
 #include "player_platform.h"
 
 #include <SDL3/SDL.h>
@@ -868,5 +869,23 @@ ConnectionResult Player::M::connectAndRun() {
         }
 
         SDL_Delay(1);
+    }
+}
+
+int playerLoop(std::function<sq::ScanResult()> discover) {
+    for (;;) {
+        auto addr = discover();
+        if (addr.host.empty()) {
+            SPDLOG_INFO("Discovery cancelled, retrying...");
+            continue;
+        }
+        uint16_t port = addr.port ? addr.port : kDefaultPort;
+        SPDLOG_INFO("Target: {}:{}", addr.host, port);
+
+        Player player(addr.host, port, kDefaultWidth, kDefaultHeight, false, 0);
+        int result = player.run();
+        if (result != 0) return result;
+
+        SPDLOG_INFO("Disconnected, returning to discovery...");
     }
 }

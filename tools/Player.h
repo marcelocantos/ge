@@ -1,7 +1,10 @@
 #pragma once
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
+
+namespace sq { struct ScanResult; }
 
 constexpr int kDefaultWidth = 390;
 constexpr int kDefaultHeight = 844;
@@ -19,3 +22,7 @@ private:
     struct M;
     std::unique_ptr<M> m;
 };
+
+// Mobile reconnect loop: calls discover() to get a server address, connects,
+// and loops back to discovery on disconnect. Returns non-zero on fatal error.
+int playerLoop(std::function<sq::ScanResult()> discover);

@@ -12,6 +12,7 @@ set(SOURCES
     ${SQ_ROOT}/tools/player_core.cpp
     ${SQ_ROOT}/tools/player_platform_apple.cpp
     ${SQ_ROOT}/src/WireTransport.cpp
+    ${SQ_ROOT}/src/HttpServer.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/QRScanner.mm
 )
 
@@ -34,13 +35,8 @@ target_include_directories(Player PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
-# Libraries (xcframeworks — universal device + simulator)
-target_link_libraries(Player PRIVATE
-    ${SQ_ROOT}/vendor/dawn/xcframeworks/dawn_proc.xcframework
-    ${SQ_ROOT}/vendor/dawn/xcframeworks/webgpu_dawn.xcframework
-    ${SQ_ROOT}/vendor/dawn/xcframeworks/dawn_wire.xcframework
-    ${SQ_ROOT}/vendor/sdl3/xcframeworks/SDL3.xcframework
-)
+# Libraries (static archives via SDK-conditional search paths)
+target_link_libraries(Player PRIVATE -ldawn_proc -lwebgpu_dawn -ldawn_wire -lSDL3)
 
 # iOS frameworks
 target_link_libraries(Player PRIVATE
@@ -65,6 +61,12 @@ target_link_libraries(Player PRIVATE
     "-lobjc"
 )
 
+# SDK-conditional library search paths (device vs simulator)
+set(DAWN_DEVICE_DIR ${SQ_ROOT}/vendor/dawn/lib/ios-arm64)
+set(DAWN_SIM_DIR    ${SQ_ROOT}/vendor/dawn/lib/ios-arm64-simulator)
+set(SDL_DEVICE_DIR  ${SQ_ROOT}/vendor/sdl3/lib/ios-arm64)
+set(SDL_SIM_DIR     ${SQ_ROOT}/vendor/sdl3/lib/ios-arm64-simulator)
+
 set_target_properties(Player PROPERTIES
     MACOSX_BUNDLE_GUI_IDENTIFIER com.squz.player
     MACOSX_BUNDLE_BUNDLE_VERSION 1
@@ -77,4 +79,6 @@ set_target_properties(Player PROPERTIES
     XCODE_ATTRIBUTE_CODE_SIGN_STYLE "Automatic"
     XCODE_GENERATE_SCHEME TRUE
     XCODE_SCHEME_ENABLE_GPU_API_VALIDATION OFF
+    "XCODE_ATTRIBUTE_LIBRARY_SEARCH_PATHS[sdk=iphoneos*]" "${DAWN_DEVICE_DIR} ${SDL_DEVICE_DIR}"
+    "XCODE_ATTRIBUTE_LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]" "${DAWN_SIM_DIR} ${SDL_SIM_DIR}"
 )
