@@ -103,6 +103,7 @@ void sendHttpResponse(tcp::socket& socket, const HttpResponse& res) {
     oss << "HTTP/1.1 " << res.status << " " << res.statusText << "\r\n"
         << "Content-Type: " << res.contentType << "\r\n"
         << "Content-Length: " << res.body.size() << "\r\n"
+        << "Cache-Control: no-cache\r\n"
         << "Connection: close\r\n"
         << "\r\n";
     auto header = oss.str();
@@ -299,6 +300,13 @@ private:
         }
 
         return true;
+    }
+
+    void setSendTimeout(int ms) override {
+        struct timeval tv;
+        tv.tv_sec = ms / 1000;
+        tv.tv_usec = (ms % 1000) * 1000;
+        setsockopt(socket_.native_handle(), SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
     }
 
     void setNoDelay() {

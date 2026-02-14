@@ -21,6 +21,8 @@ public:
     // Register as a WebSocket handler for /ws/logs on the given HttpServer.
     sq::WsAcceptHandler handler() {
         return [this](std::shared_ptr<sq::WsConnection> conn) {
+            // Cap blocking writes at 2s so a stale client can't block logging
+            conn->setSendTimeout(2000);
             std::lock_guard lock(clientsMtx_);
             // Replay buffered messages to the new client
             for (auto& msg : history_) {
@@ -88,9 +90,11 @@ protected:
             history_.pop_front();
         }
 
-        // Broadcast to connected clients
+        // Broadcast to connected clients (probe for EOF first to avoid
+        // blocking writes on dead connections)
         auto it = clients_.begin();
         while (it != clients_.end()) {
+            (*it)->available();  // non-blocking EOF probe
             if ((*it)->isOpen()) {
                 (*it)->sendText(text);
                 ++it;

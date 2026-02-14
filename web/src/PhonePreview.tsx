@@ -62,8 +62,13 @@ function PhonePreview() {
     scene.add(dirLight);
 
     // --- Phone model ---
-    const phoneGroup = new THREE.Group();
-    scene.add(phoneGroup);
+    // Outer group: orientation (Z rotation in world space)
+    // Inner group: tilt (pitch/roll in phone-local space)
+    // This prevents Euler angle coupling between tilt and orientation.
+    const orientGroup = new THREE.Group();
+    scene.add(orientGroup);
+    const tiltGroup = new THREE.Group();
+    orientGroup.add(tiltGroup);
 
     // Body: extruded rounded rectangle
     const bodyShape = createRoundedRectShape(PHONE_W, PHONE_H, CORNER_R);
@@ -81,7 +86,7 @@ function PhonePreview() {
       roughness: 0.7,
     });
     const bodyMesh = new THREE.Mesh(bodyGeo, bodyMat);
-    phoneGroup.add(bodyMesh);
+    tiltGroup.add(bodyMesh);
 
     // Screen: plane inset on front face with a canvas texture
     const screenCanvas = document.createElement("canvas");
@@ -101,8 +106,8 @@ function PhonePreview() {
     // Body total depth = PHONE_D + 2*bevelThickness (0.25 + 0.08 = 0.33)
     // After center(), front face is at +0.165. Place screen just in front.
     screenMesh.position.z = (PHONE_D + 0.08) / 2 + 0.01;
-    phoneGroup.add(screenMesh);
-    phoneGroup.scale.setScalar(0.85);
+    tiltGroup.add(screenMesh);
+    tiltGroup.scale.setScalar(0.85);
 
     // --- Resize handler ---
     function resize() {
@@ -117,11 +122,14 @@ function PhonePreview() {
     const resizeObserver = new ResizeObserver(resize);
     resizeObserver.observe(container);
 
-    // --- Tilt state ---
-    let targetPitch = 0;
-    let targetRoll = 0;
-    let currentPitch = 0;
-    let currentRoll = 0;
+    // --- Orientation state ---
+    // 0=portrait up, 1=landscape left, 2=portrait down, 3=landscape right
+    let orientation = 0;
+    let targetZRot = 0;
+    let currentZRot = 0;
+
+    // Z rotation for each orientation
+    const Z_ROT = [0, Math.PI / 2, Math.PI, -Math.PI / 2];
 
     // --- Animation loop ---
     let lastTime = performance.now();
@@ -133,13 +141,16 @@ function PhonePreview() {
       const dt = Math.min((now - lastTime) / 1000, 0.1);
       lastTime = now;
 
-      // Exponential damping toward target tilt
+      // Exponential damping toward target orientation
       const factor = 1 - Math.exp(-8 * dt);
-      currentPitch += (targetPitch - currentPitch) * factor;
-      currentRoll += (targetRoll - currentRoll) * factor;
 
-      phoneGroup.rotation.x = currentPitch;
-      phoneGroup.rotation.y = currentRoll;
+      // Shortest-arc interpolation for Z rotation
+      let zDiff = targetZRot - currentZRot;
+      if (zDiff > Math.PI) zDiff -= 2 * Math.PI;
+      if (zDiff < -Math.PI) zDiff += 2 * Math.PI;
+      currentZRot += zDiff * factor;
+
+      orientGroup.rotation.z = currentZRot;
 
       renderer.render(scene, camera);
     }
@@ -171,17 +182,22 @@ function PhonePreview() {
 
       ws.onmessage = (event) => {
         if (typeof event.data === "string") {
-          // JSON text message (accelerometer)
+          // JSON text message — orientation event
           try {
             const msg = JSON.parse(event.data);
-            if (msg.type === "accel") {
-              // Map accelerometer to tilt angles
-              // x: lateral, y: forward/back, z: perpendicular to screen
-              const ax = msg.x as number;
-              const ay = msg.y as number;
-              const az = msg.z as number;
-              targetPitch = Math.atan2(ay, az);
-              targetRoll = Math.atan2(-ax, az);
+            if (msg.type === "orient" && msg.o !== undefined) {
+              const newOri = msg.o as number;
+              if (newOri !== orientation) {
+                orientation = newOri;
+                targetZRot = Z_ROT[orientation];
+                const isLandscape = orientation === 1 || orientation === 3;
+                const column = container?.closest(".preview-column") as HTMLElement | null;
+                if (column) {
+                  column.style.width = isLandscape
+                    ? `${Math.round(400 * PHONE_H / PHONE_W)}px`
+                    : "400px";
+                }
+              }
             }
           } catch {
             // ignore
@@ -190,7 +206,28 @@ function PhonePreview() {
           // Binary message: JPEG frame
           const blob = new Blob([event.data], { type: "image/jpeg" });
           createImageBitmap(blob).then((bmp) => {
-            screenCtx.drawImage(bmp, 0, 0, screenCanvas.width, screenCanvas.height);
+            const isLandscape = orientation === 1 || orientation === 3;
+            screenCtx.clearRect(0, 0, screenCanvas.width, screenCanvas.height);
+            if (isLandscape) {
+              const angle = Z_ROT[orientation];
+              screenCtx.save();
+              screenCtx.translate(screenCanvas.width / 2, screenCanvas.height / 2);
+              screenCtx.rotate(angle);
+              screenCtx.drawImage(bmp,
+                -screenCanvas.height / 2, -screenCanvas.width / 2,
+                screenCanvas.height, screenCanvas.width);
+              screenCtx.restore();
+            } else if (orientation === 2) {
+              screenCtx.save();
+              screenCtx.translate(screenCanvas.width / 2, screenCanvas.height / 2);
+              screenCtx.rotate(Z_ROT[2]);
+              screenCtx.drawImage(bmp,
+                -screenCanvas.width / 2, -screenCanvas.height / 2,
+                screenCanvas.width, screenCanvas.height);
+              screenCtx.restore();
+            } else {
+              screenCtx.drawImage(bmp, 0, 0, screenCanvas.width, screenCanvas.height);
+            }
             screenTexture.needsUpdate = true;
             bmp.close();
           });

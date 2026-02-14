@@ -502,8 +502,12 @@ void Player::M::initWindow() {
 
     SPDLOG_INFO("SDL3 initialized");
 
+    // Allow all orientations on mobile so the player can rotate freely
+    SDL_SetHint(SDL_HINT_ORIENTATIONS, "Portrait LandscapeLeft LandscapeRight PortraitUpsideDown");
+
     SDL_WindowFlags flags = platform::windowFlags();
     if (maximized) flags |= SDL_WINDOW_MAXIMIZED | SDL_WINDOW_RESIZABLE;
+    flags |= SDL_WINDOW_RESIZABLE;
     window = SDL_CreateWindow("Squz Player", width, height, flags);
     if (!window) {
         SDL_Quit();
@@ -694,6 +698,7 @@ ConnectionResult Player::M::connectAndRun() {
                 case SDL_EVENT_FINGER_MOTION:
                 case SDL_EVENT_FINGER_UP:
                 case SDL_EVENT_SENSOR_UPDATE:
+                case SDL_EVENT_DISPLAY_ORIENTATION:
                     try {
                         serializer->sendMessage(wire::kSdlEventMagic, &event, sizeof(event));
                     } catch (const std::exception&) {

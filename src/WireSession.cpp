@@ -23,6 +23,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <csignal>
 #include <cstdlib>
 #include <queue>
@@ -46,6 +47,11 @@ class PreviewBroadcast {
 public:
     sq::WsAcceptHandler handler() {
         return [this](std::shared_ptr<sq::WsConnection> conn) {
+            conn->setSendTimeout(2000);
+            // Send current orientation to new client
+            char buf[64];
+            snprintf(buf, sizeof(buf), R"({"type":"orient","o":%d})", orientation_);
+            conn->sendText(std::string(buf));
             std::lock_guard lock(mtx_);
             clients_.push_back(std::move(conn));
         };
@@ -70,10 +76,47 @@ public:
         }
     }
 
+    // Map SDL_DisplayOrientation to our 4-cardinal scheme:
+    // 0=portrait up, 1=landscape left, 2=portrait down, 3=landscape right
+    void setOrientation(int sdlOrientation) {
+        // SDL: 1=LANDSCAPE (right side up), 2=LANDSCAPE_FLIPPED,
+        //      3=PORTRAIT, 4=PORTRAIT_FLIPPED
+        int mapped;
+        switch (sdlOrientation) {
+            case 1: mapped = 1; break;  // SDL_ORIENTATION_LANDSCAPE → landscape left
+            case 2: mapped = 3; break;  // SDL_ORIENTATION_LANDSCAPE_FLIPPED → landscape right
+            case 3: mapped = 0; break;  // SDL_ORIENTATION_PORTRAIT → portrait up
+            case 4: mapped = 2; break;  // SDL_ORIENTATION_PORTRAIT_FLIPPED → portrait down
+            default: return;            // unknown — ignore
+        }
+        if (mapped == orientation_) return;
+        orientation_ = mapped;
+
+        static constexpr const char* kOrientNames[] = {
+            "portrait", "landscape-left", "portrait-down", "landscape-right"
+        };
+        SPDLOG_INFO("Orientation: {}", kOrientNames[mapped]);
+
+        char buf[64];
+        snprintf(buf, sizeof(buf), R"({"type":"orient","o":%d})", orientation_);
+        std::string text(buf);
+        std::lock_guard lock(mtx_);
+        auto it = clients_.begin();
+        while (it != clients_.end()) {
+            if ((*it)->isOpen()) {
+                (*it)->sendText(text);
+                ++it;
+            } else {
+                it = clients_.erase(it);
+            }
+        }
+    }
+
     void sendAccel(float x, float y, float z) {
-        char buf[128];
+        char buf[160];
         snprintf(buf, sizeof(buf),
-                 R"({"type":"accel","x":%.4f,"y":%.4f,"z":%.4f})", x, y, z);
+                 R"({"type":"accel","x":%.4f,"y":%.4f,"z":%.4f,"o":%d})",
+                 x, y, z, orientation_);
         std::string text(buf);
         std::lock_guard lock(mtx_);
         auto it = clients_.begin();
@@ -97,9 +140,104 @@ private:
 
     std::mutex mtx_;
     std::vector<std::shared_ptr<sq::WsConnection>> clients_;
+    int orientation_ = 0;
 };
 
 std::shared_ptr<PreviewBroadcast> g_previewBroadcast;
+
+// ---------------------------------------------------------------------------
+// Minimal sRGB ICC v2 profile for JPEG embedding (~444 bytes).
+// Matrix/TRC profile with sRGB primaries (Bradford-adapted to D50) and
+// a gamma 2.2 curve (close approximation of the sRGB transfer function).
+// ---------------------------------------------------------------------------
+static const std::vector<uint8_t>& srgbIccProfile() {
+    static const auto prof = [] {
+        constexpr int SZ = 444;
+        std::vector<uint8_t> p(SZ, 0);
+
+        auto w32 = [&](int o, uint32_t v) {
+            p[o]=(v>>24)&0xff; p[o+1]=(v>>16)&0xff;
+            p[o+2]=(v>>8)&0xff; p[o+3]=v&0xff;
+        };
+        auto w16 = [&](int o, uint16_t v) { p[o]=(v>>8)&0xff; p[o+1]=v&0xff; };
+        auto f16 = [&](int o, double v) { w32(o,(uint32_t)(int32_t)lround(v*65536.0)); };
+        auto tag = [&](int o, const char* s) { memcpy(&p[o],s,4); };
+
+        // Header (128 bytes)
+        w32(0, SZ);             // profile size
+        w32(8, 0x02100000);     // version 2.1.0
+        tag(12, "mntr");        // display device
+        tag(16, "RGB ");        // color space
+        tag(20, "XYZ ");        // PCS
+        w16(24, 2024); w16(26, 1); w16(28, 1); // date
+        tag(36, "acsp");        // file signature
+        tag(40, "APPL");        // platform
+        f16(68, 0.9642); f16(72, 1.0); f16(76, 0.8249); // PCS illuminant D50
+
+        // Tag directory (9 tags at offset 128)
+        w32(128, 9);
+        tag(132,"desc"); w32(136,240); w32(140,95);
+        tag(144,"cprt"); w32(148,336); w32(152,12);
+        tag(156,"wtpt"); w32(160,348); w32(164,20);
+        tag(168,"rXYZ"); w32(172,368); w32(176,20);
+        tag(180,"gXYZ"); w32(184,388); w32(188,20);
+        tag(192,"bXYZ"); w32(196,408); w32(200,20);
+        tag(204,"rTRC"); w32(208,428); w32(212,14);
+        tag(216,"gTRC"); w32(220,428); w32(224,14);  // shares TRC data
+        tag(228,"bTRC"); w32(232,428); w32(236,14);  // shares TRC data
+
+        // desc at 240 (textDescriptionType, 95 bytes)
+        tag(240,"desc");
+        w32(248, 5);                    // ASCII count (incl. null)
+        memcpy(&p[252], "sRGB", 5);    // "sRGB\0"
+
+        // cprt at 336 (textType, 12 bytes)
+        tag(336,"text");
+        memcpy(&p[344], "CC0", 4);     // "CC0\0"
+
+        // wtpt at 348 (XYZType) — D50
+        tag(348,"XYZ ");
+        f16(356, 0.9642); f16(360, 1.0); f16(364, 0.8249);
+
+        // rXYZ at 368 — sRGB red primary (Bradford-adapted to D50)
+        tag(368,"XYZ ");
+        f16(376, 0.4361); f16(380, 0.2225); f16(384, 0.0139);
+
+        // gXYZ at 388
+        tag(388,"XYZ ");
+        f16(396, 0.3851); f16(400, 0.7169); f16(404, 0.0971);
+
+        // bXYZ at 408
+        tag(408,"XYZ ");
+        f16(416, 0.1431); f16(420, 0.0606); f16(424, 0.7141);
+
+        // Shared TRC at 428 (curveType, gamma ≈ 2.2, 14 bytes)
+        tag(428,"curv");
+        w32(436, 1);     // count = 1 → gamma mode
+        w16(440, 563);   // u8Fixed8: 2.2 × 256 ≈ 563 (0x0233)
+
+        return p;
+    }();
+    return prof;
+}
+
+// Embed sRGB ICC profile into JPEG as APP2 ICC_PROFILE marker.
+static void embedSrgbProfile(std::vector<uint8_t>& jpg) {
+    const auto& icc = srgbIccProfile();
+    uint16_t len = 2 + 12 + 1 + 1 + (uint16_t)icc.size();
+    std::vector<uint8_t> marker;
+    marker.reserve(2 + len);
+    marker.push_back(0xFF);
+    marker.push_back(0xE2);     // APP2
+    marker.push_back((len >> 8) & 0xFF);
+    marker.push_back(len & 0xFF);
+    const char sig[] = "ICC_PROFILE";
+    marker.insert(marker.end(), sig, sig + 12); // 11 chars + null
+    marker.push_back(1);        // chunk 1
+    marker.push_back(1);        // of 1
+    marker.insert(marker.end(), icc.begin(), icc.end());
+    jpg.insert(jpg.begin() + 2, marker.begin(), marker.end());
+}
 
 // ---------------------------------------------------------------------------
 // PreviewCapture — async readback state machine for thumbnail capture.
@@ -234,6 +372,7 @@ public:
                     out->insert(out->end(), bytes, bytes + size);
                 },
                 &jpg, width_, height_, 3, rgb.data(), 70);
+            embedSrgbProfile(jpg);
 
             state_ = Idle;
             return jpg;
@@ -1032,6 +1171,11 @@ bool WireSession::run(RunConfig config) {
             if (userResize) userResize(e.window.data1, e.window.data2);
         } else {
             if (userEvent) userEvent(e);
+            // Forward display orientation to dashboard preview
+            if (e.type == SDL_EVENT_DISPLAY_ORIENTATION &&
+                g_previewBroadcast) {
+                g_previewBroadcast->setOrientation(e.display.data1);
+            }
             // Forward accelerometer data to preview clients (~20 Hz)
             if (e.type == SDL_EVENT_SENSOR_UPDATE &&
                 g_previewBroadcast && g_previewBroadcast->hasClients()) {
@@ -1082,13 +1226,10 @@ bool WireSession::run(RunConfig config) {
 
     // Preview capture: 4× downscale thumbnail for dashboard phone model
     PreviewCapture previewCapture;
-    {
-        auto device = m->gfx->device();
-        int thumbW = std::max(1, m->gfx->width() / 4);
-        int thumbH = std::max(1, m->gfx->height() / 4);
-        previewCapture.init(device, thumbW, thumbH, m->gfx->swapChainFormat());
-        SPDLOG_INFO("Preview capture: {}x{}", thumbW, thumbH);
-    }
+    int thumbW = std::max(1, m->gfx->width() / 4);
+    int thumbH = std::max(1, m->gfx->height() / 4);
+    previewCapture.init(m->gfx->device(), thumbW, thumbH, m->gfx->swapChainFormat());
+    SPDLOG_INFO("Preview capture: {}x{}", thumbW, thumbH);
     int frameCount = 0;
 
     SPDLOG_INFO("Entering render loop...");
@@ -1122,6 +1263,17 @@ bool WireSession::run(RunConfig config) {
                 }
             }
         }
+
+        // Drain pending responses every iteration (not just when waiting for
+        // credits). This ensures we detect player disconnect promptly even
+        // when frameReadyCount > 0.
+        try {
+            m->serializer->processResponses(*m->wireClient, m->onEvent);
+        } catch (const std::exception& e) {
+            SPDLOG_WARN("Player disconnected: {}", e.what());
+            return true;
+        }
+        m->instance.ProcessEvents();
 
         while (m->serializer->frameReadyCount <= 0) {
             try {
@@ -1174,12 +1326,19 @@ bool WireSession::run(RunConfig config) {
             if (config.onUpdate) config.onUpdate(dt);
             auto frameView = m->gfx->currentFrameView();
             if (frameView && config.onRender) {
-                config.onRender(frameView);
+                config.onRender(frameView, m->gfx->width(), m->gfx->height());
 
                 // Every 6 frames, render a thumbnail for the dashboard preview
                 if (previewCapture.isIdle() && frameCount % 6 == 0 &&
                     g_previewBroadcast && g_previewBroadcast->hasClients()) {
-                    config.onRender(previewCapture.colorView());
+                    int tw = std::max(1, m->gfx->width() / 4);
+                    int th = std::max(1, m->gfx->height() / 4);
+                    if (tw != thumbW || th != thumbH) {
+                        thumbW = tw; thumbH = th;
+                        previewCapture.init(m->gfx->device(), thumbW, thumbH,
+                                            m->gfx->swapChainFormat());
+                    }
+                    config.onRender(previewCapture.colorView(), thumbW, thumbH);
                     previewCapture.beginCapture(
                         m->gfx->device(), m->gfx->queue());
                 }
