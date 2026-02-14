@@ -7,6 +7,7 @@
 
 namespace sq {
 
+class Audio;
 class HttpServer;
 
 // Wire session: creates an HTTP+WebSocket server, waits for a player to
@@ -29,6 +30,9 @@ public:
     // Access the HTTP server for registering endpoints.
     // Available immediately after construction (before connect()).
     HttpServer& http();
+
+    // Access the audio system for loading and playing sounds.
+    Audio& audio();
 
     // Block until a player connects via WebSocket and complete the
     // Dawn wire handshake.  After this, gpu() and pixelRatio() are valid.

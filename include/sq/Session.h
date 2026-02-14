@@ -7,6 +7,7 @@
 
 namespace sq {
 
+class Audio;
 class HttpServer;
 
 // Unified session: wire mode (default) or direct native mode (SQ_DIRECT).
@@ -23,6 +24,7 @@ public:
     Session& operator=(const Session&) = delete;
 
     HttpServer& http();
+    Audio& audio();
     void connect();
     GpuContext& gpu();
     int pixelRatio() const;

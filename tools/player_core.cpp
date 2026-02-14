@@ -2,6 +2,7 @@
 // Platform-specific entry points: player.cpp (desktop), ios/main.mm (iOS).
 
 #include "Player.h"
+#include "AudioPlayer.h"
 #include "QRScanner.h"
 #include "player_platform.h"
 
@@ -669,6 +670,8 @@ ConnectionResult Player::M::connectAndRun() {
         ~WatcherGuard() { SDL_RemoveEventWatch(fn, ud); }
     } watcherGuard{bgWatcher, &wasBackgrounded};
 
+    AudioPlayer audioPlayer;
+
     std::vector<char> commandBuffer;
     commandBuffer.reserve(64 * 1024);
     MipTracker mipTracker;
@@ -863,6 +866,23 @@ ConnectionResult Player::M::connectAndRun() {
                             SPDLOG_INFO("Closed sensor type {}", sc.sensorType);
                         }
                     }
+                }
+            } else if (header.magic == wire::kAudioDataMagic) {
+                if (payload.size() >= sizeof(wire::AudioData)) {
+                    wire::AudioData ad{};
+                    std::memcpy(&ad, payload.data(), sizeof(ad));
+                    const void* audioBytes = payload.data() + sizeof(ad);
+                    size_t audioSize = payload.size() - sizeof(ad);
+                    if (audioSize >= ad.dataLength) {
+                        audioPlayer.loadClip(ad.audioId, ad.format, ad.flags,
+                                             audioBytes, ad.dataLength);
+                    }
+                }
+            } else if (header.magic == wire::kAudioCommandMagic) {
+                if (payload.size() >= sizeof(wire::AudioCommand)) {
+                    wire::AudioCommand ac{};
+                    std::memcpy(&ac, payload.data(), sizeof(ac));
+                    audioPlayer.handleCommand(ac.command, ac.audioId, ac.volume);
                 }
             } else if (header.magic == wire::kFrameEndMagic) {
                 serializer->sendMessage(wire::kFrameReadyMagic);

@@ -1,4 +1,5 @@
 #include <sq/Session.h>
+#include <sq/Audio.h>
 #include <sq/SdlContext.h>
 #include <sq/DeltaTimer.h>
 #include <SDL3/SDL.h>
@@ -9,6 +10,7 @@ namespace sq {
 struct Session::M {
     SdlContext sdl;
     GpuContext gpu;
+    Audio audio;
     int pixelRatio = 1;
 
     M() : sdl("sq", 1280, 720),
@@ -34,17 +36,18 @@ Session::Session() : m(std::make_unique<M>()) {}
 Session::~Session() = default;
 
 GpuContext& Session::gpu() { return m->gpu; }
+Audio& Session::audio() { return m->audio; }
 int Session::pixelRatio() const { return m->pixelRatio; }
 void Session::flush() { /* no-op: Application calls present() directly */ }
 
-bool Session::run(std::function<void(float dt)> onFrame,
-                  std::function<void(const SDL_Event&)> onEvent) {
+bool Session::run(RunConfig config) {
     DeltaTimer timer;
 
     auto resizeWatch = m->sdl.addEventWatch([&](const SDL_Event& e) -> bool {
         if (e.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED) {
             m->gpu.resize({e.window.data1, e.window.data2});
-            onFrame(timer.tick());
+            if (config.onResize) config.onResize(e.window.data1, e.window.data2);
+            if (config.onUpdate) config.onUpdate(timer.tick());
         }
         return true;
     });
@@ -55,10 +58,16 @@ bool Session::run(std::function<void(float dt)> onFrame,
             if (e.type == SDL_EVENT_QUIT) return false;
             if (e.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED)
                 m->gpu.resize({e.window.data1, e.window.data2});
-            if (onEvent) onEvent(e);
+            if (config.onEvent) config.onEvent(e);
         }
 
-        onFrame(timer.tick());
+        if (config.onUpdate) config.onUpdate(timer.tick());
+
+        auto frameView = m->gpu.currentFrameView();
+        if (frameView && config.onRender) {
+            config.onRender(frameView, m->gpu.width(), m->gpu.height());
+            m->gpu.present();
+        }
     }
 }
 

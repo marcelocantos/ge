@@ -2,6 +2,7 @@
 #include <asio.hpp>
 
 #include <sq/WireSession.h>
+#include <sq/Audio.h>
 #include <sq/DeltaTimer.h>
 #include <sq/Protocol.h>
 #include <SDL3/SDL.h>
@@ -897,6 +898,7 @@ struct WireSession::M {
     int pixelRatio = 1;
     std::string qrUrl;
     bool connected = false;
+    Audio audio;
 };
 
 WireSession::WireSession()
@@ -1184,6 +1186,10 @@ int WireSession::pixelRatio() const {
     return m->pixelRatio;
 }
 
+Audio& WireSession::audio() {
+    return m->audio;
+}
+
 HttpServer& WireSession::http() {
     return *m->httpServer;
 }
@@ -1236,6 +1242,27 @@ bool WireSession::run(RunConfig config) {
             m->serializer->sendMessage(wire::kSensorConfigMagic, &sc, sizeof(sc));
             SPDLOG_INFO("Requested sensor type {}", s);
         }
+    }
+
+    // Send audio clip data to player
+    for (int i = 0; i < m->audio.clipCount(); ++i) {
+        size_t dataSize = m->audio.clipDataSize(i);
+        if (dataSize == 0) continue;
+
+        wire::AudioData hdr{};
+        hdr.audioId = static_cast<uint32_t>(i);
+        hdr.format = m->audio.clipFormat(i);
+        hdr.flags = m->audio.clipLoop(i) ? 1u : 0u;
+        hdr.dataLength = static_cast<uint32_t>(dataSize);
+
+        // Send header + raw file data as one message
+        std::vector<char> payload(sizeof(hdr) + dataSize);
+        std::memcpy(payload.data(), &hdr, sizeof(hdr));
+        std::memcpy(payload.data() + sizeof(hdr), m->audio.clipData(i), dataSize);
+        m->serializer->sendMessage(wire::kAudioDataMagic, payload.data(), payload.size());
+
+        SPDLOG_INFO("Sent audio clip {} ({:.1f} KB, fmt={}, loop={})",
+                    i, dataSize / 1024.0, hdr.format, m->audio.clipLoop(i));
     }
 
     DeltaTimer frameTimer;
@@ -1381,6 +1408,13 @@ bool WireSession::run(RunConfig config) {
                 m->gfx->present();
             }
             flush();
+
+            // Send pending audio commands
+            auto cmds = m->audio.drainCommands();
+            for (const auto& cmd : cmds) {
+                m->serializer->sendMessage(wire::kAudioCommandMagic, &cmd, sizeof(cmd));
+            }
+
             m->serializer->sendFrameEnd();
             frameCount++;
         } catch (const std::exception& e) {

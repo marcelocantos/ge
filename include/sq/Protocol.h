@@ -20,6 +20,8 @@ constexpr uint32_t kDeferredMipMagic = 0x59573248; // "YW2H" — server → play
 constexpr uint32_t kMipCacheHitMagic = 0x5957324A; // "YW2J" — player → server: cached mip found
 constexpr uint32_t kMipCacheMissMagic = 0x5957324B; // "YW2K" — player → server: cached mip not found
 constexpr uint32_t kSensorConfigMagic = 0x5957324C; // "YW2L" — server → player: sensor config
+constexpr uint32_t kAudioDataMagic = 0x59573241;    // "YW2A" — server → player: audio asset data
+constexpr uint32_t kAudioCommandMagic = 0x59573242;  // "YW2B" — server → player: audio play/stop/volume
 
 constexpr uint16_t kProtocolVersion = 2;
 constexpr size_t kMaxMessageSize = 512 * 1024 * 1024;  // 512MB (initial resource uploads can be large)
@@ -105,5 +107,21 @@ inline uint64_t fnv1a64(const char* data, size_t size) {
     }
     return hash;
 }
+
+// Audio data header (server → player, followed by raw file bytes)
+struct AudioData {
+    uint32_t audioId;     // 0-based clip index
+    uint32_t format;      // 0 = WAV, 1 = MP3
+    uint32_t flags;       // bit 0 = loop
+    uint32_t dataLength;  // byte count of audio file data following this header
+};
+
+// Audio playback command (server → player)
+struct AudioCommand {
+    uint32_t command;     // 0 = play, 1 = stop, 2 = setVolume
+    uint32_t audioId;
+    float volume;         // 0.0 – 1.0
+    uint32_t reserved = 0;
+};
 
 } // namespace wire

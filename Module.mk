@@ -47,6 +47,7 @@ sq/SRC = \
 	sq/src/FileIO.cpp \
 	sq/src/TextRenderer.cpp \
 	sq/src/CaptureTarget.cpp \
+	sq/src/Audio.cpp \
 	sq/src/WireTransport.cpp \
 	sq/src/WireSession.cpp \
 	sq/src/HttpServer.cpp \
@@ -75,7 +76,7 @@ sq/TRIANGLE_OBJ = $(BUILD_DIR)/sq/vendor/triangle.o
 sq/TRIANGLE_CFLAGS = -O2 -Isq/vendor/include -DTRILIBRARY -DREAL=double -DANSI_DECLARATORS -DNO_TIMER
 
 # Player tool (standalone binary)
-sq/PLAYER_SRC = sq/tools/player.cpp sq/tools/player_core.cpp sq/tools/player_platform_apple.cpp
+sq/PLAYER_SRC = sq/tools/player.cpp sq/tools/player_core.cpp sq/tools/player_platform_apple.cpp sq/tools/AudioPlayer.cpp
 sq/PLAYER_OBJ = $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(sq/PLAYER_SRC))
 sq/PLAYER = bin/player
 

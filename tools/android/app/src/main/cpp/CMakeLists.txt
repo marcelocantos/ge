@@ -16,6 +16,7 @@ add_library(main SHARED
     ${CMAKE_CURRENT_SOURCE_DIR}/QRScanner_android.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/player_platform_android.cpp
     ${SQ_ROOT}/tools/player_core.cpp
+    ${SQ_ROOT}/tools/AudioPlayer.cpp
     ${SQ_ROOT}/src/WireTransport.cpp
     ${SQ_ROOT}/src/HttpServer.cpp
 )

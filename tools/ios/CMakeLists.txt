@@ -11,6 +11,7 @@ set(SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/main.mm
     ${SQ_ROOT}/tools/player_core.cpp
     ${SQ_ROOT}/tools/player_platform_apple.cpp
+    ${SQ_ROOT}/tools/AudioPlayer.cpp
     ${SQ_ROOT}/src/WireTransport.cpp
     ${SQ_ROOT}/src/HttpServer.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/QRScanner.mm

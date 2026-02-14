@@ -1,4 +1,5 @@
 #include <sq/Session.h>
+#include <sq/Audio.h>
 #include <sq/WireSession.h>
 
 namespace sq {
@@ -11,6 +12,7 @@ Session::Session() : m(std::make_unique<M>()) {}
 Session::~Session() = default;
 
 HttpServer& Session::http() { return m->wire.http(); }
+Audio& Session::audio() { return m->wire.audio(); }
 void Session::connect() { m->wire.connect(); }
 GpuContext& Session::gpu() { return m->wire.gpu(); }
 int Session::pixelRatio() const { return m->wire.pixelRatio(); }
