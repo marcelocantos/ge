@@ -30,12 +30,218 @@
 #include <string>
 #include <sys/socket.h>
 #include <unordered_map>
+#include <optional>
 #include <vector>
 
 namespace {
 
 std::atomic<bool> g_stopRequested{false};
 std::shared_ptr<DashboardSink> g_dashSink;
+
+// ---------------------------------------------------------------------------
+// PreviewBroadcast — WebSocket broadcaster for live phone preview.
+// Binary messages carry JPEG frame data; text messages carry JSON accelerometer.
+// ---------------------------------------------------------------------------
+class PreviewBroadcast {
+public:
+    sq::WsAcceptHandler handler() {
+        return [this](std::shared_ptr<sq::WsConnection> conn) {
+            std::lock_guard lock(mtx_);
+            clients_.push_back(std::move(conn));
+        };
+    }
+
+    bool hasClients() {
+        std::lock_guard lock(mtx_);
+        pruneClients();
+        return !clients_.empty();
+    }
+
+    void sendFrame(const void* data, size_t len) {
+        std::lock_guard lock(mtx_);
+        auto it = clients_.begin();
+        while (it != clients_.end()) {
+            if ((*it)->isOpen()) {
+                (*it)->sendBinary(data, len);
+                ++it;
+            } else {
+                it = clients_.erase(it);
+            }
+        }
+    }
+
+    void sendAccel(float x, float y, float z) {
+        char buf[128];
+        snprintf(buf, sizeof(buf),
+                 R"({"type":"accel","x":%.4f,"y":%.4f,"z":%.4f})", x, y, z);
+        std::string text(buf);
+        std::lock_guard lock(mtx_);
+        auto it = clients_.begin();
+        while (it != clients_.end()) {
+            if ((*it)->isOpen()) {
+                (*it)->sendText(text);
+                ++it;
+            } else {
+                it = clients_.erase(it);
+            }
+        }
+    }
+
+private:
+    void pruneClients() {
+        clients_.erase(
+            std::remove_if(clients_.begin(), clients_.end(),
+                [](auto& c) { return !c->isOpen(); }),
+            clients_.end());
+    }
+
+    std::mutex mtx_;
+    std::vector<std::shared_ptr<sq::WsConnection>> clients_;
+};
+
+std::shared_ptr<PreviewBroadcast> g_previewBroadcast;
+
+// ---------------------------------------------------------------------------
+// PreviewCapture — async readback state machine for thumbnail capture.
+// Renders to a small offscreen texture, copies to a staging buffer, and
+// JPEG-encodes the result. Progress is driven by the existing
+// processResponses/ProcessEvents calls in the render loop.
+// ---------------------------------------------------------------------------
+class PreviewCapture {
+    enum State { Idle, CopySubmitted, MappingRequested };
+
+    State state_ = Idle;
+    wgpu::Texture texture_;
+    wgpu::TextureView textureView_;
+    wgpu::Buffer stagingBuffer_;
+    wgpu::TextureFormat format_ = wgpu::TextureFormat::RGBA8Unorm;
+    uint32_t alignedBytesPerRow_ = 0;
+    int width_ = 0;
+    int height_ = 0;
+    bool initialized_ = false;
+    bool workDone_ = false;
+
+public:
+    void init(wgpu::Device device, int w, int h, wgpu::TextureFormat fmt) {
+        width_ = w;
+        height_ = h;
+        format_ = fmt;
+
+        wgpu::TextureDescriptor texDesc{
+            .usage = wgpu::TextureUsage::RenderAttachment |
+                     wgpu::TextureUsage::CopySrc,
+            .dimension = wgpu::TextureDimension::e2D,
+            .size = {(uint32_t)w, (uint32_t)h, 1},
+            .format = fmt,
+            .mipLevelCount = 1,
+            .sampleCount = 1,
+        };
+        texture_ = device.CreateTexture(&texDesc);
+        textureView_ = texture_.CreateView();
+
+        uint32_t bytesPerRow = w * 4;
+        alignedBytesPerRow_ = (bytesPerRow + 255) & ~255;
+
+        wgpu::BufferDescriptor bufDesc{
+            .usage = wgpu::BufferUsage::CopyDst | wgpu::BufferUsage::MapRead,
+            .size = (size_t)alignedBytesPerRow_ * h,
+        };
+        stagingBuffer_ = device.CreateBuffer(&bufDesc);
+        initialized_ = true;
+    }
+
+    bool isIdle() const { return state_ == Idle; }
+    bool isInitialized() const { return initialized_; }
+    wgpu::TextureView colorView() const { return textureView_; }
+
+    void beginCapture(wgpu::Device device, wgpu::Queue queue) {
+        workDone_ = false;
+
+        wgpu::CommandEncoder encoder = device.CreateCommandEncoder();
+        wgpu::TexelCopyTextureInfo src{
+            .texture = texture_,
+            .mipLevel = 0,
+            .origin = {0, 0, 0},
+        };
+        wgpu::TexelCopyBufferInfo dst{
+            .layout = {
+                .offset = 0,
+                .bytesPerRow = alignedBytesPerRow_,
+                .rowsPerImage = (uint32_t)height_,
+            },
+            .buffer = stagingBuffer_,
+        };
+        wgpu::Extent3D extent{(uint32_t)width_, (uint32_t)height_, 1};
+        encoder.CopyTextureToBuffer(&src, &dst, &extent);
+
+        wgpu::CommandBuffer commands = encoder.Finish();
+        queue.Submit(1, &commands);
+
+        queue.OnSubmittedWorkDone(
+            wgpu::CallbackMode::AllowSpontaneous,
+            [this](wgpu::QueueWorkDoneStatus, const char*) {
+                workDone_ = true;
+            });
+
+        state_ = CopySubmitted;
+    }
+
+    // Call after processResponses/ProcessEvents. Returns JPEG data if ready.
+    std::optional<std::vector<uint8_t>> poll() {
+        if (state_ == CopySubmitted && workDone_) {
+            size_t bufSize = (size_t)alignedBytesPerRow_ * height_;
+            stagingBuffer_.MapAsync(
+                wgpu::MapMode::Read, 0, bufSize,
+                wgpu::CallbackMode::AllowSpontaneous,
+                [](wgpu::MapAsyncStatus, wgpu::StringView) {});
+            state_ = MappingRequested;
+        }
+
+        if (state_ == MappingRequested &&
+            stagingBuffer_.GetMapState() == wgpu::BufferMapState::Mapped) {
+            size_t bufSize = (size_t)alignedBytesPerRow_ * height_;
+            const uint8_t* mapped = static_cast<const uint8_t*>(
+                stagingBuffer_.GetConstMappedRange(0, bufSize));
+
+            bool isBGRA = (format_ == wgpu::TextureFormat::BGRA8Unorm);
+
+            // Convert to RGB for JPEG encoding
+            std::vector<uint8_t> rgb(width_ * height_ * 3);
+            for (int y = 0; y < height_; y++) {
+                const uint8_t* row = mapped + y * alignedBytesPerRow_;
+                for (int x = 0; x < width_; x++) {
+                    int si = x * 4;
+                    int di = (y * width_ + x) * 3;
+                    if (isBGRA) {
+                        rgb[di + 0] = row[si + 2];
+                        rgb[di + 1] = row[si + 1];
+                        rgb[di + 2] = row[si + 0];
+                    } else {
+                        rgb[di + 0] = row[si + 0];
+                        rgb[di + 1] = row[si + 1];
+                        rgb[di + 2] = row[si + 2];
+                    }
+                }
+            }
+
+            stagingBuffer_.Unmap();
+
+            std::vector<uint8_t> jpg;
+            stbi_write_jpg_to_func(
+                [](void* ctx, void* data, int size) {
+                    auto* out = static_cast<std::vector<uint8_t>*>(ctx);
+                    auto* bytes = static_cast<const uint8_t*>(data);
+                    out->insert(out->end(), bytes, bytes + size);
+                },
+                &jpg, width_, height_, 3, rgb.data(), 70);
+
+            state_ = Idle;
+            return jpg;
+        }
+
+        return std::nullopt;
+    }
+};
 
 // Dawn wire command constants for filtering large texture uploads.
 // Values from WireCmd_autogen.h — must match the Dawn version in sq/vendor/dawn.
@@ -570,6 +776,9 @@ WireSession::WireSession()
         g_dashSink = std::make_shared<DashboardSink>();
         spdlog::default_logger()->sinks().push_back(g_dashSink);
     }
+    if (!g_previewBroadcast) {
+        g_previewBroadcast = std::make_shared<PreviewBroadcast>();
+    }
 
     // Register dashboard endpoints
     m->httpServer->get("/api/qr", [this](const HttpRequest&, HttpResponse& res) {
@@ -588,6 +797,7 @@ WireSession::WireSession()
         kill(getpid(), SIGINT);
     });
     m->httpServer->ws("/ws/logs", g_dashSink->handler());
+    m->httpServer->ws("/ws/preview", g_previewBroadcast->handler());
     m->httpServer->serveStatic("/", "sq/web/dist");
 
     // Start accepting HTTP connections
@@ -812,14 +1022,26 @@ void WireSession::flush() {
 
 bool WireSession::run(RunConfig config) {
     if (!m->connected) connect();
+    auto lastAccelSend = std::chrono::steady_clock::now();
     m->onEvent = [this,
                   userEvent = std::move(config.onEvent),
-                  userResize = std::move(config.onResize)](const SDL_Event& e) {
+                  userResize = std::move(config.onResize),
+                  lastAccelSend](const SDL_Event& e) mutable {
         if (e.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED) {
             m->gfx->resize({e.window.data1, e.window.data2});
             if (userResize) userResize(e.window.data1, e.window.data2);
         } else {
             if (userEvent) userEvent(e);
+            // Forward accelerometer data to preview clients (~20 Hz)
+            if (e.type == SDL_EVENT_SENSOR_UPDATE &&
+                g_previewBroadcast && g_previewBroadcast->hasClients()) {
+                auto now = std::chrono::steady_clock::now();
+                if (now - lastAccelSend > std::chrono::milliseconds(50)) {
+                    lastAccelSend = now;
+                    g_previewBroadcast->sendAccel(
+                        e.sensor.data[0], e.sensor.data[1], e.sensor.data[2]);
+                }
+            }
         }
     };
 
@@ -857,6 +1079,17 @@ bool WireSession::run(RunConfig config) {
             m->wsConn->close();
         } catch (...) {}
     };
+
+    // Preview capture: 4× downscale thumbnail for dashboard phone model
+    PreviewCapture previewCapture;
+    {
+        auto device = m->gfx->device();
+        int thumbW = std::max(1, m->gfx->width() / 4);
+        int thumbH = std::max(1, m->gfx->height() / 4);
+        previewCapture.init(device, thumbW, thumbH, m->gfx->swapChainFormat());
+        SPDLOG_INFO("Preview capture: {}x{}", thumbW, thumbH);
+    }
+    int frameCount = 0;
 
     SPDLOG_INFO("Entering render loop...");
 
@@ -933,14 +1166,29 @@ bool WireSession::run(RunConfig config) {
         float dt = frameTimer.tick();
 
         try {
+            // Check if a previous async capture completed
+            if (auto jpg = previewCapture.poll()) {
+                g_previewBroadcast->sendFrame(jpg->data(), jpg->size());
+            }
+
             if (config.onUpdate) config.onUpdate(dt);
             auto frameView = m->gfx->currentFrameView();
             if (frameView && config.onRender) {
                 config.onRender(frameView);
+
+                // Every 6 frames, render a thumbnail for the dashboard preview
+                if (previewCapture.isIdle() && frameCount % 6 == 0 &&
+                    g_previewBroadcast && g_previewBroadcast->hasClients()) {
+                    config.onRender(previewCapture.colorView());
+                    previewCapture.beginCapture(
+                        m->gfx->device(), m->gfx->queue());
+                }
+
                 m->gfx->present();
             }
             flush();
             m->serializer->sendFrameEnd();
+            frameCount++;
         } catch (const std::exception& e) {
             SPDLOG_WARN("Player disconnected: {}", e.what());
             return true;

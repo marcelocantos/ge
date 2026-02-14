@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import QRCode from "./QRCode";
 import LogViewer from "./LogViewer";
 import TweakPanel from "./TweakPanel";
+import PhonePreview from "./PhonePreview";
 
 function App() {
   const [connected, setConnected] = useState(false);
@@ -80,6 +81,7 @@ function App() {
       <div className="layout">
         <aside className="sidebar">
           <QRCode />
+          <PhonePreview />
           <TweakPanel />
         </aside>
         <main className="main">

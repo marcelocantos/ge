@@ -344,6 +344,21 @@ body {
   background: #3a3a5a;
 }
 
+/* ---------- Phone Preview ---------- */
+
+.phone-preview {
+  margin-top: 16px;
+  width: 100%;
+  aspect-ratio: 3 / 4;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.phone-preview canvas {
+  width: 100% !important;
+  height: 100% !important;
+}
+
 /* ---------- Tweak Panel ---------- */
 
 .tweak-panel {
