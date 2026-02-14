@@ -81,12 +81,14 @@ function App() {
       <div className="layout">
         <aside className="sidebar">
           <QRCode />
-          <PhonePreview />
           <TweakPanel />
         </aside>
         <main className="main">
           <LogViewer onConnectionChange={setConnected} />
         </main>
+        <aside className="preview-column">
+          <PhonePreview />
+        </aside>
       </div>
 
       {showConfirm && (

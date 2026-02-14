@@ -344,14 +344,21 @@ body {
   background: #3a3a5a;
 }
 
-/* ---------- Phone Preview ---------- */
+/* ---------- Phone Preview Column ---------- */
+
+.preview-column {
+  width: 400px;
+  flex-shrink: 0;
+  border-left: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
 
 .phone-preview {
-  margin-top: 16px;
   width: 100%;
-  aspect-ratio: 3 / 4;
-  border-radius: 8px;
-  overflow: hidden;
+  height: 100%;
 }
 
 .phone-preview canvas {

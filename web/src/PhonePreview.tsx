@@ -102,6 +102,7 @@ function PhonePreview() {
     // After center(), front face is at +0.165. Place screen just in front.
     screenMesh.position.z = (PHONE_D + 0.08) / 2 + 0.01;
     phoneGroup.add(screenMesh);
+    phoneGroup.scale.setScalar(0.85);
 
     // --- Resize handler ---
     function resize() {
@@ -138,7 +139,7 @@ function PhonePreview() {
       currentRoll += (targetRoll - currentRoll) * factor;
 
       phoneGroup.rotation.x = currentPitch;
-      phoneGroup.rotation.z = currentRoll;
+      phoneGroup.rotation.y = currentRoll;
 
       renderer.render(scene, camera);
     }
