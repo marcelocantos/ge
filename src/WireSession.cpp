@@ -48,13 +48,43 @@ public:
     sq::WsAcceptHandler handler() {
         return [this](std::shared_ptr<sq::WsConnection> conn) {
             conn->setSendTimeout(2000);
-            // Send current orientation to new client
-            char buf[64];
+            // Send current device info and orientation to new client
+            char buf[128];
+            if (deviceW_ > 0 && deviceH_ > 0) {
+                snprintf(buf, sizeof(buf),
+                    R"({"type":"device","w":%d,"h":%d,"pr":%d})",
+                    deviceW_, deviceH_, pixelRatio_);
+                conn->sendText(std::string(buf));
+            }
             snprintf(buf, sizeof(buf), R"({"type":"orient","o":%d})", orientation_);
             conn->sendText(std::string(buf));
             std::lock_guard lock(mtx_);
             clients_.push_back(std::move(conn));
         };
+    }
+
+    void setDeviceSize(int w, int h, int pixelRatio) {
+        deviceW_ = w;
+        deviceH_ = h;
+        pixelRatio_ = pixelRatio;
+        // Infer initial orientation from dimensions (precise orientation
+        // events will override once SDL_EVENT_DISPLAY_ORIENTATION fires).
+        orientation_ = (w > h) ? 1 : 0;
+        // Broadcast to existing clients
+        char buf[128];
+        snprintf(buf, sizeof(buf),
+            R"({"type":"device","w":%d,"h":%d,"pr":%d})", w, h, pixelRatio);
+        std::string text(buf);
+        char obuf[64];
+        snprintf(obuf, sizeof(obuf), R"({"type":"orient","o":%d})", orientation_);
+        std::string otext(obuf);
+        std::lock_guard lock(mtx_);
+        for (auto& c : clients_) {
+            if (c->isOpen()) {
+                c->sendText(text);
+                c->sendText(otext);
+            }
+        }
     }
 
     bool hasClients() {
@@ -141,6 +171,7 @@ private:
     std::mutex mtx_;
     std::vector<std::shared_ptr<sq::WsConnection>> clients_;
     int orientation_ = 0;
+    int deviceW_ = 0, deviceH_ = 0, pixelRatio_ = 1;
 };
 
 std::shared_ptr<PreviewBroadcast> g_previewBroadcast;
@@ -995,6 +1026,10 @@ void WireSession::connect() {
     SPDLOG_INFO("Player: {}x{} @ {}x, format={}",
                 deviceInfo.width, deviceInfo.height,
                 deviceInfo.pixelRatio, deviceInfo.preferredFormat);
+    if (g_previewBroadcast) {
+        g_previewBroadcast->setDeviceSize(
+            deviceInfo.width, deviceInfo.height, (int)deviceInfo.pixelRatio);
+    }
     m->pixelRatio = std::max(1, (int)deviceInfo.pixelRatio);
 
     // Create wire client
