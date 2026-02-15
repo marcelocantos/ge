@@ -528,6 +528,9 @@ struct Player::M {
             SDL_DestroyWindow(window);
             window = nullptr;
         }
+        // Balance the SDL_Init(SDL_INIT_VIDEO) in initWindow() so that the
+        // subsystem ref count doesn't accumulate across playerLoop iterations.
+        SDL_QuitSubSystem(SDL_INIT_VIDEO);
     }
 
     // Destroy the surface (releasing its swapchain's VkSurfaceKHR via the
@@ -779,7 +782,11 @@ ConnectionResult Player::M::connectAndRun() {
     SDL_Sensor* openSensors[7] = {};  // indexed by SDL_SensorType (up to SDL_SENSOR_COUNT)
     struct SensorGuard {
         SDL_Sensor** s; int n;
-        ~SensorGuard() { for (int i = 0; i < n; i++) if (s[i]) SDL_CloseSensor(s[i]); }
+        ~SensorGuard() {
+            for (int i = 0; i < n; i++) if (s[i]) SDL_CloseSensor(s[i]);
+            if (SDL_WasInit(SDL_INIT_SENSOR))
+                SDL_QuitSubSystem(SDL_INIT_SENSOR);
+        }
     } sensorGuard{openSensors, 7};
 
     // All render loop exits set this and break out of the outer loop.

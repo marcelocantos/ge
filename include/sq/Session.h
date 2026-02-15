@@ -23,7 +23,7 @@ public:
     Session(const Session&) = delete;
     Session& operator=(const Session&) = delete;
 
-    HttpServer& http();
+    HttpServer* http();
     Audio& audio();
     void connect();
     GpuContext& gpu();
