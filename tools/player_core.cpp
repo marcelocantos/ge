@@ -66,6 +66,20 @@ constexpr size_t kBindGroupEntryTextureViewOffset = 36;
 
 // RenderPassEncoderSetBindGroupTransfer offsets
 constexpr size_t kSetBindGroupGroupOffset = 20;  // group ObjectId
+
+// UnregisterObject command layout (wire-aligned to 24 bytes):
+//   CmdHeader (8) + WireCmd (4) + ObjectType (4) + ObjectId (4) + pad (4)
+// The struct inherits from CmdHeader (uint64_t) so alignment is 8, and
+// sizeof(UnregisterObjectTransfer) = 24 (20 bytes data, 4 bytes padding).
+// Values from WireCmd_autogen.h / ObjectType_autogen.h — Dawn commit 4764cd21.
+constexpr uint32_t kWireCmdUnregisterObject = 149;
+constexpr size_t kUnregisterObjectCmdSize = 24;      // wire-aligned sizeof
+constexpr size_t kUnregisterObjectTypeOffset = 12;   // ObjectType after CmdHeader + WireCmd
+constexpr size_t kUnregisterObjectIdOffset = 16;     // ObjectId after ObjectType
+
+// ObjectType enum values (from ObjectType_autogen.h)
+constexpr uint32_t kObjectTypeDevice = 6;
+constexpr uint32_t kObjectTypeSurface = 17;
 } // namespace wire_obs
 
 // Tracking state for deferred mip delivery.
@@ -155,6 +169,82 @@ std::vector<char> loadMipFromCache(const fs::path& dir, uint64_t hash) {
     std::vector<char> tail(static_cast<size_t>(size));
     if (!f.read(tail.data(), size)) return {};
     return tail;
+}
+
+// Build a synthetic UnregisterObject wire command for a single object.
+std::array<char, wire_obs::kUnregisterObjectCmdSize>
+buildUnregisterObjectCmd(uint32_t objectType, uint32_t objectId) {
+    using namespace wire_obs;
+    std::array<char, kUnregisterObjectCmdSize> buf{};
+    uint64_t cmdSize = kUnregisterObjectCmdSize;
+    uint32_t wireCmd = kWireCmdUnregisterObject;
+    std::memcpy(buf.data(), &cmdSize, sizeof(cmdSize));
+    std::memcpy(buf.data() + kCmdHeaderSize, &wireCmd, sizeof(wireCmd));
+    std::memcpy(buf.data() + kUnregisterObjectTypeOffset, &objectType, sizeof(objectType));
+    std::memcpy(buf.data() + kUnregisterObjectIdOffset, &objectId, sizeof(objectId));
+    return buf;
+}
+
+// Filter out UnregisterObject(Device) commands from a wire command buffer.
+// The server's WireClient destructor sends UnregisterObject for all objects.
+// If the Device is unregistered, its FencedDeleter is nulled while the
+// surface's swapchain still holds UniqueVkHandle references — causing a
+// crash on Vulkan (Android) when the surface is recycled.
+// Returns the filtered buffer. If no Device UnregisterObjects are found,
+// returns an empty vector (caller should use the original buffer).
+std::vector<char> filterDeviceUnregister(const char* data, size_t size) {
+    using namespace wire_obs;
+
+    // Quick scan: is there any UnregisterObject(Device) in this buffer?
+    bool found = false;
+    size_t pos = 0;
+    while (pos + kMinCmdBytes <= size) {
+        uint64_t cmdSize;
+        std::memcpy(&cmdSize, data + pos, sizeof(cmdSize));
+        if (cmdSize < kMinCmdBytes || pos + cmdSize > size) break;
+
+        if (cmdSize == kUnregisterObjectCmdSize) {
+            uint32_t objectType;
+            std::memcpy(&objectType, data + pos + kUnregisterObjectTypeOffset,
+                        sizeof(objectType));
+            if (objectType == kObjectTypeDevice) {
+                found = true;
+                break;
+            }
+        }
+        pos += static_cast<size_t>(cmdSize);
+    }
+
+    if (!found) return {};  // nothing to filter
+
+    // Rebuild the buffer without UnregisterObject(Device) commands.
+    std::vector<char> filtered;
+    filtered.reserve(size);
+    pos = 0;
+    while (pos + kMinCmdBytes <= size) {
+        uint64_t cmdSize;
+        std::memcpy(&cmdSize, data + pos, sizeof(cmdSize));
+        if (cmdSize < kMinCmdBytes || pos + cmdSize > size) break;
+
+        bool skip = false;
+        if (cmdSize == kUnregisterObjectCmdSize) {
+            uint32_t objectType;
+            std::memcpy(&objectType, data + pos + kUnregisterObjectTypeOffset,
+                        sizeof(objectType));
+            if (objectType == kObjectTypeDevice) {
+                SPDLOG_INFO("Filtered UnregisterObject(Device) — keeping device "
+                            "alive for surface recycling");
+                skip = true;
+            }
+        }
+
+        if (!skip) {
+            filtered.insert(filtered.end(), data + pos,
+                            data + pos + static_cast<size_t>(cmdSize));
+        }
+        pos += static_cast<size_t>(cmdSize);
+    }
+    return filtered;
 }
 
 void MipTracker::scanCommands(const char* data, size_t size) {
@@ -425,13 +515,11 @@ struct Player::M {
     wgpu::TextureFormat swapChainFormat = wgpu::TextureFormat::BGRA8Unorm;
 
     ~M() {
-        // Leak the surface handle — its swap chain references a device created
-        // internally by the WireServer (via wire commands), which is already
-        // destroyed by the time ~M() runs. Releasing the surface would trigger
-        // Vulkan SwapChain::PerImage destruction with a dangling device pointer.
-        if (surface) {
-            [[maybe_unused]] auto leaked = surface.MoveToCHandle();
-        }
+        // Surface cleanup happens in connectAndRun() while the wire device is
+        // still alive (see recycleSurface). By the time ~M() runs the surface
+        // is either already clean or was never configured, so a normal release
+        // is safe.
+        surface = {};
         device = {};
         queue = {};
         adapter = {};
@@ -440,6 +528,17 @@ struct Player::M {
             SDL_DestroyWindow(window);
             window = nullptr;
         }
+    }
+
+    // Destroy the surface (releasing its swapchain's VkSurfaceKHR via the
+    // wire-created device's FencedDeleter) and recreate it from the same
+    // window.  MUST be called while the WireServer is still alive so the
+    // native device can flush the deletion.
+    void recycleSurface() {
+        surface.Unconfigure();
+        surface = {};  // destructor → DetachFromSurface → queues VkSurfaceKHR deletion
+        surface = wgpu::Surface::Acquire(
+            platform::createSurface(dawnInstance->Get(), window));
     }
 
     void initWindow();
@@ -671,6 +770,7 @@ ConnectionResult Player::M::connectAndRun() {
     } watcherGuard{bgWatcher, &wasBackgrounded};
 
     AudioPlayer audioPlayer;
+    bool firstFrameLogged = false;
 
     std::vector<char> commandBuffer;
     commandBuffer.reserve(64 * 1024);
@@ -682,15 +782,27 @@ ConnectionResult Player::M::connectAndRun() {
         ~SensorGuard() { for (int i = 0; i < n; i++) if (s[i]) SDL_CloseSensor(s[i]); }
     } sensorGuard{openSensors, 7};
 
-    while (true) {
+    // All render loop exits set this and break out of the outer loop.
+    // We must call recycleSurface() while the wireServer is still alive
+    // (so the wire-created device can flush VkSurfaceKHR deletion).
+    ConnectionResult exitResult = ConnectionResult::Disconnected;
+    bool exitLoop = false;
+    bool serverSentCleanup = false;  // set when we process UnregisterObject commands
+
+    while (!exitLoop) {
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
             switch (event.type) {
                 case SDL_EVENT_QUIT:
-                    return ConnectionResult::Quit;
+                    exitResult = ConnectionResult::Quit;
+                    exitLoop = true;
+                    break;
                 case SDL_EVENT_KEY_DOWN:
-                    if (event.key.key == SDLK_Q)
-                        return ConnectionResult::Quit;
+                    if (event.key.key == SDLK_Q) {
+                        exitResult = ConnectionResult::Quit;
+                        exitLoop = true;
+                        break;
+                    }
                     [[fallthrough]];
                 case SDL_EVENT_KEY_UP:
                 case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
@@ -706,20 +818,22 @@ ConnectionResult Player::M::connectAndRun() {
                         serializer->sendMessage(wire::kSdlEventMagic, &event, sizeof(event));
                     } catch (const std::exception&) {
                         SPDLOG_WARN("Connection lost (event send)");
-                        return ConnectionResult::Disconnected;
+                        exitLoop = true;
                     }
                     break;
             }
+            if (exitLoop) break;
         }
+        if (exitLoop) break;
 
         if (wasBackgrounded) {
             SPDLOG_INFO("App was backgrounded, returning to QR scan");
-            return ConnectionResult::Disconnected;
+            break;
         }
 
         if (!wsConn->isOpen()) {
             SPDLOG_WARN("Connection closed by server");
-            return ConnectionResult::Disconnected;
+            break;
         }
 
         while (wsConn->available() > 0) {
@@ -727,32 +841,47 @@ ConnectionResult Player::M::connectAndRun() {
             std::vector<char> payload;
             if (!serializer->recvMessage(header, payload)) {
                 SPDLOG_WARN("Connection lost (message read)");
-                return ConnectionResult::Disconnected;
+                exitLoop = true;
+                break;
             }
 
             if (header.magic == wire::kWireCommandMagic) {
                 if (header.length > wire::kMaxMessageSize) {
                     SPDLOG_WARN("Message too large: {} bytes", header.length);
-                    return ConnectionResult::Disconnected;
+                    exitLoop = true;
+                    break;
                 }
 
+                // Filter out UnregisterObject(Device) to keep the device
+                // alive for surface recycling on Vulkan (Android).
+                auto filtered = filterDeviceUnregister(
+                    payload.data(), payload.size());
+                if (!filtered.empty()) serverSentCleanup = true;
+                char* cmdData = filtered.empty()
+                    ? payload.data() : filtered.data();
+                size_t cmdSize = filtered.empty()
+                    ? payload.size() : filtered.size();
+
                 // Track texture views and bind groups for deferred mip delivery
-                mipTracker.scanCommands(payload.data(), payload.size());
+                mipTracker.scanCommands(cmdData, cmdSize);
 
                 // Rewrite SetBindGroup commands to use fabricated bind groups
-                mipTracker.rewriteSetBindGroups(payload.data(), payload.size());
+                mipTracker.rewriteSetBindGroups(cmdData, cmdSize);
 
-                const volatile char* result = wireServer->HandleCommands(
-                    payload.data(), payload.size());
-                if (result == nullptr) {
-                    SPDLOG_ERROR("WireServer failed to handle commands");
+                if (cmdSize > 0) {
+                    const volatile char* cmdResult =
+                        wireServer->HandleCommands(cmdData, cmdSize);
+                    if (cmdResult == nullptr) {
+                        SPDLOG_ERROR("WireServer failed to handle commands");
+                    }
                 }
 
                 serializer->Flush();
             } else if (header.magic == wire::kDeferredMipMagic) {
                 if (payload.size() < sizeof(wire::DeferredMipHeader)) {
                     SPDLOG_WARN("Deferred mip message too small");
-                    return ConnectionResult::Disconnected;
+                    exitLoop = true;
+                    break;
                 }
 
                 wire::DeferredMipHeader dh{};
@@ -762,7 +891,8 @@ ConnectionResult Player::M::connectAndRun() {
 
                 if (mipDataSize < dh.commandSize) {
                     SPDLOG_WARN("Deferred mip data truncated");
-                    return ConnectionResult::Disconnected;
+                    exitLoop = true;
+                    break;
                 }
 
                 commandBuffer.assign(mipData, mipData + dh.commandSize);
@@ -787,9 +917,9 @@ ConnectionResult Player::M::connectAndRun() {
                             std::memcpy(fullCmd.data() + wire::kMipHeadSize,
                                         cachedTail.data(), cachedTail.size());
 
-                            const volatile char* result = wireServer->HandleCommands(
+                            const volatile char* cmdResult = wireServer->HandleCommands(
                                 fullCmd.data(), fullCmd.size());
-                            if (result == nullptr) {
+                            if (cmdResult == nullptr) {
                                 SPDLOG_WARN("Cached mip rejected: tex={} level={}, sending MISS",
                                             dh.textureId, dh.mipLevel);
                                 std::error_code fsec;
@@ -813,9 +943,9 @@ ConnectionResult Player::M::connectAndRun() {
                     }
                 } else {
                     // Full data: commandBuffer = head[128] + tail[]
-                    const volatile char* result = wireServer->HandleCommands(
+                    const volatile char* cmdResult = wireServer->HandleCommands(
                         commandBuffer.data(), commandBuffer.size());
-                    if (result == nullptr) {
+                    if (cmdResult == nullptr) {
                         SPDLOG_ERROR("Deferred mip HandleCommands failed: tex={} level={}",
                                     dh.textureId, dh.mipLevel);
                     } else {
@@ -885,16 +1015,75 @@ ConnectionResult Player::M::connectAndRun() {
                     audioPlayer.handleCommand(ac.command, ac.audioId, ac.volume);
                 }
             } else if (header.magic == wire::kFrameEndMagic) {
+                if (!firstFrameLogged) {
+                    SPDLOG_INFO("First frame rendered — streaming video");
+                    firstFrameLogged = true;
+                }
                 serializer->sendMessage(wire::kFrameReadyMagic);
                 break; // yield to SDL event polling
             } else {
                 SPDLOG_WARN("Unknown message magic: 0x{:08X}", header.magic);
-                return ConnectionResult::Disconnected;
+                exitLoop = true;
+                break;
             }
         }
 
         SDL_Delay(1);
     }
+
+    // The surface's Vulkan swapchain holds a VkSurfaceKHR whose cleanup
+    // requires the wire-created device's FencedDeleter.  Dawn's WireServer
+    // destructor (DestroyAllObjects) releases devices BEFORE surfaces, so
+    // if the surface still has a configured swapchain when the WireServer
+    // destructs, DetachFromSurface will dereference a null FencedDeleter.
+    //
+    // Clean shutdown (serverSentCleanup=true):
+    //   Our filter removed UnregisterObject(Device) but let
+    //   UnregisterObject(Surface) through, so the WireServer no longer
+    //   holds an InjectSurface ref.  recycleSurface() drops the sole
+    //   remaining ref → ~Surface → DetachFromSurface with device alive.
+    //
+    // Abrupt disconnect (serverSentCleanup=false):
+    //   No cleanup commands received.  The WireServer still holds the
+    //   InjectSurface AddRef.  We can't safely let DestroyAllObjects
+    //   run (it would release the device first, then crash on the
+    //   surface).  Instead, manually drop the InjectSurface ref so
+    //   recycleSurface fully destroys the surface while the device is
+    //   alive, then leak the WireServer to prevent DestroyAllObjects.
+    if (!serverSentCleanup) {
+        // Abrupt disconnect: the WireServer still holds the InjectSurface
+        // AddRef on our surface.  Dawn's DestroyAllObjects releases devices
+        // BEFORE surfaces — if the surface's swapchain still exists when
+        // the device dies, DetachFromSurface will crash (null FencedDeleter).
+        //
+        // Fix: feed a synthetic UnregisterObject(Surface) to the WireServer.
+        // This removes the surface from KnownObjects and drops the
+        // InjectSurface ref, so our recycleSurface drops the sole remaining
+        // ref → ~Surface → DetachFromSurface with the device still alive.
+        SPDLOG_INFO("Abrupt disconnect — sending synthetic UnregisterObject(Surface, id={})",
+                    surfaceHandle.id);
+        auto cmd = buildUnregisterObjectCmd(
+            wire_obs::kObjectTypeSurface, surfaceHandle.id);
+        auto* result = wireServer->HandleCommands(cmd.data(), cmd.size());
+        if (result) {
+            SPDLOG_INFO("Synthetic UnregisterObject(Surface) accepted");
+        } else {
+            SPDLOG_ERROR("Synthetic UnregisterObject(Surface) REJECTED by HandleCommands");
+        }
+    }
+
+    // In both cases (clean and abrupt), the surface is now at refcount 1
+    // (our wgpu::Surface) and removed from WireServer's KnownObjects.
+    // The device is alive (we filtered UnregisterObject(Device) in the clean
+    // case; in the abrupt case it was never unregistered).  recycleSurface
+    // destroys the old surface (DetachFromSurface safe) and creates a new one.
+    recycleSurface();
+
+    // Flush the device's FencedDeleter so the VkSurfaceKHR is actually freed
+    // before the new surface tries to use the same ANativeWindow.
+    dawn::native::InstanceProcessEvents(dawnInstance->Get());
+
+    return exitResult;
 }
 
 int playerLoop(std::function<sq::ScanResult()> discover) {

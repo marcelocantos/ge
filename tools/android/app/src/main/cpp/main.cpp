@@ -15,6 +15,25 @@ bool isEmulator() {
     __system_property_get("ro.kernel.qemu", value);
     return value[0] == '1';
 }
+
+// Check debug.squz.address system property for direct connection (skips QR).
+// Set via: adb shell setprop debug.squz.address "192.168.1.100:42069"
+// Or just: adb shell setprop debug.squz.address "192.168.1.100" (uses default port)
+// Clear:  adb shell setprop debug.squz.address ""
+sq::ScanResult directAddress() {
+    char value[PROP_VALUE_MAX] = {};
+    __system_property_get("debug.squz.address", value);
+    if (value[0] == '\0') return {};
+
+    std::string addr(value);
+    // Parse host:port
+    auto colon = addr.rfind(':');
+    if (colon != std::string::npos) {
+        uint16_t port = static_cast<uint16_t>(std::stoi(addr.substr(colon + 1)));
+        return {addr.substr(0, colon), port};
+    }
+    return {addr, kDefaultPort};
+}
 } // namespace
 
 int main(int argc, char* argv[]) {
@@ -25,6 +44,12 @@ int main(int argc, char* argv[]) {
     SPDLOG_INFO("Squz Player (Android) starting...");
 
     return playerLoop([] {
+        // Priority: debug property > emulator detection > QR scan
+        auto direct = directAddress();
+        if (!direct.host.empty()) {
+            SPDLOG_INFO("Direct connection via debug.squz.address: {}:{}", direct.host, direct.port);
+            return direct;
+        }
         if (isEmulator()) return sq::ScanResult{"10.0.2.2", kDefaultPort};
         return sq::scanQRCode();
     });
