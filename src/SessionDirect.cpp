@@ -35,6 +35,12 @@ struct Session::M {
 Session::Session() : m(std::make_unique<M>()) {}
 Session::~Session() = default;
 
+HttpServer& Session::http() {
+    static_assert(sizeof(HttpServer*) > 0, "HttpServer not available in direct mode");
+    SPDLOG_ERROR("http() not available in direct mode");
+    std::abort();
+}
+void Session::connect() { /* no-op in direct mode */ }
 GpuContext& Session::gpu() { return m->gpu; }
 Audio& Session::audio() { return m->audio; }
 int Session::pixelRatio() const { return m->pixelRatio; }
@@ -45,9 +51,17 @@ bool Session::run(RunConfig config) {
 
     auto resizeWatch = m->sdl.addEventWatch([&](const SDL_Event& e) -> bool {
         if (e.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED) {
-            m->gpu.resize({e.window.data1, e.window.data2});
-            if (config.onResize) config.onResize(e.window.data1, e.window.data2);
+            int w = e.window.data1, h = e.window.data2;
+            m->gpu.resize({w, h});
+            if (config.onResize) config.onResize(w, h);
             if (config.onUpdate) config.onUpdate(timer.tick());
+            if (config.onRender) {
+                auto view = m->gpu.currentFrameView();
+                if (view) {
+                    config.onRender(view, w, h);
+                    m->gpu.present();
+                }
+            }
         }
         return true;
     });
@@ -56,17 +70,21 @@ bool Session::run(RunConfig config) {
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
             if (e.type == SDL_EVENT_QUIT) return false;
-            if (e.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED)
-                m->gpu.resize({e.window.data1, e.window.data2});
+            if (e.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED) {
+                int w = e.window.data1, h = e.window.data2;
+                m->gpu.resize({w, h});
+                if (config.onResize) config.onResize(w, h);
+            }
             if (config.onEvent) config.onEvent(e);
         }
 
         if (config.onUpdate) config.onUpdate(timer.tick());
-
-        auto frameView = m->gpu.currentFrameView();
-        if (frameView && config.onRender) {
-            config.onRender(frameView, m->gpu.width(), m->gpu.height());
-            m->gpu.present();
+        if (config.onRender) {
+            auto view = m->gpu.currentFrameView();
+            if (view) {
+                config.onRender(view, m->gpu.width(), m->gpu.height());
+                m->gpu.present();
+            }
         }
     }
 }
