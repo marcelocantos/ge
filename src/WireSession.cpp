@@ -12,6 +12,7 @@
 #include <webgpu/webgpu_cpp.h>
 
 #include "DaemonSink.h"
+#include <sq/Tweak.h>
 #include "DashboardSink.h"
 #include "HttpServer.h"
 #include "WebSocketSerializer.h"
@@ -909,6 +910,7 @@ struct WireSession::M {
     uint16_t daemonPort = 42069;
     std::shared_ptr<WsConnection> sidebandConn;  // sideband WS to sqd
     std::shared_ptr<DaemonSink> daemonSink;
+    uint64_t lastTweakGen = 0;
 };
 
 WireSession::WireSession()
@@ -953,6 +955,14 @@ WireSession::WireSession()
         // Install daemon log sink (forwards to sideband)
         m->daemonSink = std::make_shared<DaemonSink>(m->sidebandConn);
         spdlog::default_logger()->sinks().push_back(m->daemonSink);
+
+        // Send initial tweak state to daemon for caching
+        {
+            std::string tweakMsg = R"({"type":"tweaks","data":)" + tweak::toJson() + "}";
+            m->sidebandConn->sendText(tweakMsg);
+            m->lastTweakGen = tweak::generation().load(std::memory_order_relaxed);
+            SPDLOG_INFO("Sent initial tweak state ({} tweaks)", tweak::registry().size());
+        }
 
         // Still create preview broadcast (we'll send frames over sideband)
         if (!g_previewBroadcast) {
@@ -1404,6 +1414,60 @@ bool WireSession::run(RunConfig config) {
                         return false;
                     }
                 }
+            }
+        }
+
+        // Poll sideband for tweak messages (daemon mode only)
+        if (m->daemonMode && m->sidebandConn && m->sidebandConn->isOpen()) {
+            while (m->sidebandConn->available() > 0) {
+                std::vector<char> sbData;
+                if (!m->sidebandConn->recvBinary(sbData)) break;
+                std::string msg(sbData.begin(), sbData.end());
+                if (msg.find("\"tweak_set\"") != std::string::npos) {
+                    auto dataPos = msg.find("\"data\"");
+                    if (dataPos != std::string::npos) {
+                        auto bracePos = msg.find('{', dataPos + 6);
+                        if (bracePos != std::string::npos) {
+                            std::string data = msg.substr(bracePos);
+                            int depth = 0;
+                            for (size_t i = 0; i < data.size(); i++) {
+                                if (data[i] == '{') depth++;
+                                else if (data[i] == '}') {
+                                    depth--;
+                                    if (depth == 0) { data = data.substr(0, i + 1); break; }
+                                }
+                            }
+                            if (tweak::parseAndApply(data)) {
+                                SPDLOG_INFO("Sideband tweak_set applied");
+                            }
+                        }
+                    }
+                } else if (msg.find("\"tweak_reset\"") != std::string::npos) {
+                    auto dataPos = msg.find("\"data\"");
+                    if (dataPos != std::string::npos) {
+                        auto bracePos = msg.find('{', dataPos + 6);
+                        if (bracePos != std::string::npos) {
+                            std::string data = msg.substr(bracePos);
+                            int depth = 0;
+                            for (size_t i = 0; i < data.size(); i++) {
+                                if (data[i] == '{') depth++;
+                                else if (data[i] == '}') {
+                                    depth--;
+                                    if (depth == 0) { data = data.substr(0, i + 1); break; }
+                                }
+                            }
+                            tweak::parseAndReset(data);
+                            SPDLOG_INFO("Sideband tweak_reset applied");
+                        }
+                    }
+                }
+            }
+            // Send updated tweak state if generation changed
+            auto gen = tweak::generation().load(std::memory_order_relaxed);
+            if (gen != m->lastTweakGen) {
+                m->lastTweakGen = gen;
+                std::string tweakMsg = R"({"type":"tweaks","data":)" + tweak::toJson() + "}";
+                try { m->sidebandConn->sendText(tweakMsg); } catch (...) {}
             }
         }
 
