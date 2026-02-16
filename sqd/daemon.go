@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os/exec"
 	"sync"
 	"time"
 
@@ -57,9 +58,10 @@ type Daemon struct {
 	tweakState  json.RawMessage // cached tweak JSON from server
 
 	// Network
-	lanIP string
-	qrURL string
-	port  int
+	lanIP      string
+	qrURL      string
+	port       int
+	openedDash bool // true after first browser open
 }
 
 // wsClient wraps a dashboard WebSocket connection.
@@ -99,6 +101,14 @@ func (d *Daemon) SetServer(sc *ServerConn) {
 
 	d.server = sc
 	slog.Info("Server registered", "name", sc.Name, "pid", sc.PID)
+
+	if !d.openedDash {
+		d.openedDash = true
+		go func() {
+			url := fmt.Sprintf("http://localhost:%d", d.port)
+			_ = exec.Command("open", url).Run()
+		}()
+	}
 
 	d.tryBridgeLocked()
 }

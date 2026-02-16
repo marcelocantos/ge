@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
-	"os/exec"
 	"os/signal"
 	"syscall"
 
@@ -48,14 +47,6 @@ func main() {
 		defer mdns.Shutdown()
 		slog.Info("mDNS registered", "service", "_squz._tcp", "port", *port)
 	}
-
-	// Open dashboard in browser
-	go func() {
-		url := fmt.Sprintf("http://localhost:%d", *port)
-		if err := exec.Command("open", url).Run(); err != nil {
-			slog.Warn("Failed to open browser", "err", err)
-		}
-	}()
 
 	// Handle signals
 	sigCh := make(chan os.Signal, 1)
