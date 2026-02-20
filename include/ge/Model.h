@@ -1,10 +1,10 @@
 #pragma once
 
-#include <sq/Mesh.h>
-#include <sq/Texture.h>
+#include <ge/Mesh.h>
+#include <ge/Texture.h>
 #include <string>
 
-namespace sq {
+namespace ge {
 
 // Associates a Mesh with a Texture for rendering
 // Owns the Mesh, references shared Texture
@@ -26,4 +26,4 @@ private:
     const Texture* texture_ = nullptr;
 };
 
-} // namespace sq
+} // namespace ge

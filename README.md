@@ -1,4 +1,4 @@
-# sq
+# ge
 
 Rendering and asset engine for Dawn (WebGPU) + SDL3 applications. Provides RAII resource management, manifest-driven asset loading, and animation utilities.
 
@@ -15,13 +15,13 @@ Dependencies live in `vendor/` as git submodules or vendored sources.
 
 ## Integration
 
-sq is consumed as a git submodule. The parent project includes `Module.mk` from its own Makefile:
+ge is consumed as a git submodule. The parent project includes `Module.mk` from its own Makefile:
 
 ```makefile
-include sq/Module.mk
+include ge/Module.mk
 ```
 
-This exports variables (`sq/LIB`, `sq/OBJ`, `sq/FRAMEWORK_LIBS`, etc.) and pattern rules for compiling engine sources, test sources, and shaders. There is no standalone build.
+This exports variables (`ge/LIB`, `ge/OBJ`, `ge/FRAMEWORK_LIBS`, etc.) and pattern rules for compiling engine sources, test sources, and shaders. There is no standalone build.
 
 ## Structure
 
@@ -48,7 +48,7 @@ Module.mk       Build rules and exported variables
 |--------|-------------|
 | `WgpuResource.h` | Move-only RAII wrapper for WebGPU handles (`BufferHandle`, `TextureHandle`, `SamplerHandle`, etc.) |
 | `CaptureTarget.h` | Offscreen framebuffer with RGBA8 color texture for readback |
-| `ShaderUtil.h` | `sq::loadProgram()` — load compiled vertex + fragment shaders |
+| `ShaderUtil.h` | `ge::loadProgram()` — load compiled vertex + fragment shaders |
 
 ### Assets
 
@@ -57,9 +57,9 @@ Module.mk       Build rules and exported variables
 | `Mesh.h` | Vertex/index buffer pair with binary stream loader |
 | `Texture.h` | GPU texture loaded from image files via SDL3_image |
 | `Model.h` | Mesh + texture binding |
-| `ModelFormat.h` | `sq::MeshVertex` — vertex layout (pos3f + uv2f) |
+| `ModelFormat.h` | `ge::MeshVertex` — vertex layout (pos3f + uv2f) |
 | `ManifestSchema.h` | JSON-serializable manifest types, templated on app metadata |
-| `ManifestLoader.h` | `sq::loadManifest<Meta>()` — loads manifest + mesh pack + textures |
+| `ManifestLoader.h` | `ge::loadManifest<Meta>()` — loads manifest + mesh pack + textures |
 
 ### Animation
 

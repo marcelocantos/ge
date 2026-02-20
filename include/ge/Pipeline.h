@@ -1,12 +1,12 @@
 #pragma once
 
 #include <webgpu/webgpu_cpp.h>
-#include <sq/WgpuResource.h>
+#include <ge/WgpuResource.h>
 #include <memory>
 #include <string_view>
 #include <vector>
 
-namespace sq {
+namespace ge {
 
 // Vertex attribute description
 struct VertexAttribute {
@@ -73,4 +73,4 @@ private:
     Pipeline(std::unique_ptr<M> impl);
 };
 
-} // namespace sq
+} // namespace ge

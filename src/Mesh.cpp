@@ -1,13 +1,13 @@
-#include <sq/Mesh.h>
-#include <sq/WgpuResource.h>
-#include <sq/ModelFormat.h>
+#include <ge/Mesh.h>
+#include <ge/WgpuResource.h>
+#include <ge/ModelFormat.h>
 #include <spdlog/spdlog.h>
 #include <istream>
 #include <stdexcept>
 #include <vector>
 #include <cstring>
 
-namespace sq {
+namespace ge {
 
 struct Mesh::M {
     WgpuBuffer vertexBuffer;
@@ -104,4 +104,4 @@ Mesh Mesh::fromStream(wgpu::Device device, std::istream& in, const std::string& 
     return Mesh(std::move(impl));
 }
 
-} // namespace sq
+} // namespace ge

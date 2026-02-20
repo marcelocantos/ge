@@ -13,7 +13,7 @@
 #include <dawn/wire/WireServer.h>
 #include <webgpu/webgpu_cpp.h>
 
-#include <sq/Protocol.h>
+#include <ge/Protocol.h>
 
 // Engine headers for WebSocket
 #include "../src/HttpServer.h"
@@ -121,7 +121,7 @@ namespace fs = std::filesystem;
 fs::path mipCacheDir(const std::string& host, uint16_t port) {
     const char* home = std::getenv("HOME");
     if (!home) home = "/tmp";
-    return fs::path(home) / ".cache" / "sq" / "mips"
+    return fs::path(home) / ".cache" / "ge" / "mips"
         / (host + "_" + std::to_string(port));
 }
 
@@ -579,7 +579,7 @@ void Player::M::initGpu() {
 ConnectionResult Player::M::connectAndRun() {
     SPDLOG_INFO("Connecting to {}:{}...", host, port);
 
-    auto wsConn = sq::connectWebSocket(host, port, "/ws/wire");
+    auto wsConn = ge::connectWebSocket(host, port, "/ws/wire");
     if (!wsConn) {
         SPDLOG_WARN("WebSocket connection failed");
         return ConnectionResult::Disconnected;
@@ -599,7 +599,7 @@ ConnectionResult Player::M::connectAndRun() {
     deviceInfo.preferredFormat = static_cast<uint32_t>(swapChainFormat);
 
     // Create serializer for sending responses back to the server
-    auto serializer = std::make_unique<sq::WebSocketSerializer>(
+    auto serializer = std::make_unique<ge::WebSocketSerializer>(
         wsConn, wire::kWireResponseMagic);
 
     // Send DeviceInfo as a protocol message
@@ -897,7 +897,7 @@ ConnectionResult Player::M::connectAndRun() {
     }
 }
 
-int playerLoop(std::function<sq::ScanResult()> discover) {
+int playerLoop(std::function<ge::ScanResult()> discover) {
     for (;;) {
         auto addr = discover();
         if (addr.host.empty()) {

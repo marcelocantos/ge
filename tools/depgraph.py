@@ -4,7 +4,7 @@
 Usage: depgraph.py [--format svg|png|dot] [--output FILE] [DIRS...]
 
 Parses #include directives from .cpp/.h files and outputs a graphviz graph.
-By default, scans src/ and sq/src/ sq/include/ directories.
+By default, scans src/ and ge/src/ ge/include/ directories.
 """
 
 import argparse
@@ -95,7 +95,7 @@ def scan_directory(root: Path) -> dict[str, set[str]]:
 def simplify_name(path: str) -> str:
     """Simplify path for display."""
     # Remove common prefixes
-    for prefix in ['sq/include/sq/', 'sq/src/', 'sq/include/', 'src/', 'include/']:
+    for prefix in ['ge/include/ge/', 'ge/src/', 'ge/include/', 'src/', 'include/']:
         if path.startswith(prefix):
             return path[len(prefix):]
     return path
@@ -124,8 +124,8 @@ def generate_dot(deps: dict[str, set[str]], title: str = "Include Dependencies")
         escaped = simple.replace('"', '\\"')
 
         # Color by category
-        if 'sq/' in node or node.startswith('sq/'):
-            color = '#e6f3ff'  # Light blue for sq/
+        if 'ge/' in node or node.startswith('ge/'):
+            color = '#e6f3ff'  # Light blue for ge/
         elif node.endswith('.cpp') or node.endswith('.c'):
             color = '#ffe6e6'  # Light red for source
         elif 'Internal' in node:
@@ -149,8 +149,8 @@ def generate_dot(deps: dict[str, set[str]], title: str = "Include Dependencies")
 
 def main():
     parser = argparse.ArgumentParser(description='Generate include dependency graph')
-    parser.add_argument('dirs', nargs='*', default=['src', 'sq/src', 'sq/include'],
-                        help='Directories to scan (default: src sq/src sq/include)')
+    parser.add_argument('dirs', nargs='*', default=['src', 'ge/src', 'ge/include'],
+                        help='Directories to scan (default: src ge/src ge/include)')
     parser.add_argument('--format', '-f', choices=['dot', 'svg', 'png'], default='svg',
                         help='Output format (default: svg)')
     parser.add_argument('--output', '-o', default='deps',

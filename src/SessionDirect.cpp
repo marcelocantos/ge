@@ -1,11 +1,11 @@
-#include <sq/Session.h>
-#include <sq/Audio.h>
-#include <sq/SdlContext.h>
-#include <sq/DeltaTimer.h>
+#include <ge/Session.h>
+#include <ge/Audio.h>
+#include <ge/SdlContext.h>
+#include <ge/DeltaTimer.h>
 #include <SDL3/SDL.h>
 #include <spdlog/spdlog.h>
 
-namespace sq {
+namespace ge {
 
 struct Session::M {
     SdlContext sdl;
@@ -13,7 +13,7 @@ struct Session::M {
     Audio audio;
     int pixelRatio = 1;
 
-    M() : sdl("sq", 1280, 720),
+    M() : sdl("ge", 1280, 720),
           gpu(sdl.nativeSurface(),
               getPixelSize(sdl.window()).first,
               getPixelSize(sdl.window()).second) {
@@ -71,4 +71,4 @@ bool Session::run(RunConfig config) {
     }
 }
 
-} // namespace sq
+} // namespace ge

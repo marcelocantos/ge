@@ -25,7 +25,7 @@ int main(int argc, char* argv[]) {
     SPDLOG_INFO("Squz Player (Android) starting...");
 
     return playerLoop([] {
-        if (isEmulator()) return sq::ScanResult{"10.0.2.2", kDefaultPort};
-        return sq::scanQRCode();
+        if (isEmulator()) return ge::ScanResult{"10.0.2.2", kDefaultPort};
+        return ge::scanQRCode();
     });
 }

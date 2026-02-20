@@ -22,7 +22,7 @@ You only need to re-run `build-deps.sh` if you update the Dawn version (the comm
 ### Common
 
 - macOS with Xcode Command Line Tools
-- The `sq` submodule initialised: `git submodule update --init`
+- The `ge` submodule initialised: `git submodule update --init`
 
 ### iOS
 
@@ -53,24 +53,24 @@ Run `make run` in another terminal to start the server. The desktop player conne
 
 ### Build dependencies (one-time)
 
-Skip this if the prebuilt libraries already exist at `sq/vendor/dawn/lib/ios-arm64/`.
+Skip this if the prebuilt libraries already exist at `ge/vendor/dawn/lib/ios-arm64/`.
 
 ```bash
-cd sq/tools/ios
+cd ge/tools/ios
 bash build-deps.sh      # Cross-compiles Dawn and SDL3 for iOS (~20 min)
 ```
 
 ### Generate Xcode project
 
 ```bash
-make sq/ios
+make ge/ios
 ```
 
-This runs CMake to generate `sq/tools/ios/build/xcode/Player.xcodeproj`.
+This runs CMake to generate `ge/tools/ios/build/xcode/Player.xcodeproj`.
 
 ### Build and run
 
-1. Open `sq/tools/ios/build/xcode/Player.xcodeproj` in Xcode
+1. Open `ge/tools/ios/build/xcode/Player.xcodeproj` in Xcode
 2. Select your iOS device as the build target
 3. Set the development team in Signing & Capabilities (your Apple ID)
 4. Build and run (Cmd+R)
@@ -81,10 +81,10 @@ The app opens a camera viewfinder for QR scanning.
 
 ### Build dependencies (one-time)
 
-Skip this if the prebuilt libraries already exist at `sq/vendor/dawn/lib/android-arm64/`.
+Skip this if the prebuilt libraries already exist at `ge/vendor/dawn/lib/android-arm64/`.
 
 ```bash
-cd sq/tools/android
+cd ge/tools/android
 bash build-deps.sh      # Cross-compiles Dawn for Android arm64 (~20 min)
 ```
 
@@ -92,7 +92,7 @@ The script auto-detects the NDK from `~/Library/Android/sdk/ndk/`. Set `ANDROID_
 
 ### Configure local SDK path
 
-Create `sq/tools/android/local.properties` (git-ignored) with your SDK path:
+Create `ge/tools/android/local.properties` (git-ignored) with your SDK path:
 
 ```
 sdk.dir=/Users/YOUR_USERNAME/Library/Android/sdk
@@ -101,14 +101,14 @@ sdk.dir=/Users/YOUR_USERNAME/Library/Android/sdk
 ### Build and install
 
 ```bash
-make sq/android         # Build APK
-adb install sq/tools/android/app/build/outputs/apk/debug/app-debug.apk
+make ge/android         # Build APK
+adb install ge/tools/android/app/build/outputs/apk/debug/app-debug.apk
 ```
 
 Or build and install in one step:
 
 ```bash
-cd sq/tools/android
+cd ge/tools/android
 ./gradlew installDebug
 ```
 
@@ -135,7 +135,7 @@ Both devices must be on the same Wi-Fi network. The QR code encodes `squz-remote
 
 ### Android: "SDK location not found"
 
-Create `sq/tools/android/local.properties` with `sdk.dir=<path to your Android SDK>`.
+Create `ge/tools/android/local.properties` with `sdk.dir=<path to your Android SDK>`.
 
 ### Android: QR scanner doesn't open
 
@@ -146,5 +146,5 @@ Google Code Scanner requires Google Play Services. It won't work on emulators or
 The script clones Dawn into a local build directory on first run. If it fails partway through, delete the build directory and retry:
 
 ```bash
-rm -rf sq/tools/ios/build    # or sq/tools/android/build
+rm -rf ge/tools/ios/build    # or ge/tools/android/build
 ```

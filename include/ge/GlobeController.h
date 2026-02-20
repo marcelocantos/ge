@@ -1,9 +1,9 @@
 #pragma once
 
-#include <sq/DampedRotation.h>
+#include <ge/DampedRotation.h>
 #include <SDL3/SDL_events.h>
 
-namespace sq {
+namespace ge {
 
 // Manages a spinnable globe: drag-to-rotate with inertia.
 // Handles mouse and finger input, input source arbitration,
@@ -111,4 +111,4 @@ private:
     float accumX_ = 0, accumY_ = 0;
 };
 
-} // namespace sq
+} // namespace ge

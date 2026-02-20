@@ -6,7 +6,7 @@
 #include <webgpu/webgpu.h>
 #include <memory>
 
-namespace sq {
+namespace ge {
 
 // In-process wire transport connecting WireClient to WireServer via memory buffers.
 // Commands flow: App → WireClient → clientToServer buffer → WireServer → native GPU
@@ -50,4 +50,4 @@ private:
     std::unique_ptr<M> m;
 };
 
-} // namespace sq
+} // namespace ge

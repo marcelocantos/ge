@@ -1,10 +1,10 @@
-#include <sq/ManifestLoader.h>
-#include <sq/FileIO.h>
-#include <sq/ModelFormat.h>
+#include <ge/ManifestLoader.h>
+#include <ge/FileIO.h>
+#include <ge/ModelFormat.h>
 #include <cstring>
 #include <stdexcept>
 
-namespace sq::detail {
+namespace ge::detail {
 
 constexpr size_t kMeshNameSize = 32;
 
@@ -14,7 +14,7 @@ std::unordered_map<std::string, Mesh> loadMeshPack(wgpu::Device device, const st
     try {
         std::unordered_map<std::string, Mesh> meshes;
 
-        auto f = sq::openFile(path, true);
+        auto f = ge::openFile(path, true);
         if (!f || !*f) {
             throw std::runtime_error("file not found");
         }
@@ -37,4 +37,4 @@ std::unordered_map<std::string, Mesh> loadMeshPack(wgpu::Device device, const st
     }
 }
 
-} // namespace sq::detail
+} // namespace ge::detail

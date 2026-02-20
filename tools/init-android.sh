@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 #
-# Generate an Android direct-mode project for an sq game.
+# Generate an Android direct-mode project for an ge game.
 #
 # Usage:
-#   sq/tools/init-android.sh <package> <app-name>
+#   ge/tools/init-android.sh <package> <app-name>
 #
 # Example:
-#   sq/tools/init-android.sh com.squz.mygame "My Game"
+#   ge/tools/init-android.sh com.squz.mygame "My Game"
 #
 # Creates android/ at the project root with a complete Gradle project
 # that builds a standalone APK (direct rendering via Vulkan/Dawn).

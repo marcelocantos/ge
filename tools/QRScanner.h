@@ -2,7 +2,7 @@
 #include <cstdint>
 #include <string>
 
-namespace sq {
+namespace ge {
 
 struct ScanResult {
     std::string host;
@@ -13,4 +13,4 @@ struct ScanResult {
 // Returns the parsed host and port. Blocks until a valid code is scanned.
 ScanResult scanQRCode();
 
-} // namespace sq
+} // namespace ge

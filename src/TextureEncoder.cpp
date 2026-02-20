@@ -1,5 +1,5 @@
-#include <sq/TextureEncoder.h>
-#include <sq/SqTexFormat.h>
+#include <ge/TextureEncoder.h>
+#include <ge/GeTexFormat.h>
 #include <astcenc.h>
 #include <ProcessRGB.hpp>
 #include <stb_image_write.h>
@@ -12,7 +12,7 @@
 #include <string>
 #include <vector>
 
-namespace sq {
+namespace ge {
 
 namespace {
 
@@ -137,14 +137,14 @@ bool endsWith(const std::string& s, const std::string& suffix) {
            s.compare(s.size() - suffix.size(), suffix.size(), suffix) == 0;
 }
 
-void writeSqtex(const char* path, SqTexEncoding encoding,
+void writeSqtex(const char* path, GeTexEncoding encoding,
                 const uint8_t* pixels, int w, int h) {
     int levels = mipCount(w, h);
     auto encodingName = [&] {
         switch (encoding) {
-            case SqTexEncoding::Astc4x4:   return "ASTC 4x4";
-            case SqTexEncoding::Etc2Rgba8: return "ETC2 RGBA8";
-            case SqTexEncoding::Png:       return "PNG";
+            case GeTexEncoding::Astc4x4:   return "ASTC 4x4";
+            case GeTexEncoding::Etc2Rgba8: return "ETC2 RGBA8";
+            case GeTexEncoding::Png:       return "PNG";
         }
         return "unknown";
     }();
@@ -158,9 +158,9 @@ void writeSqtex(const char* path, SqTexEncoding encoding,
     int mw = w, mh = h;
 
     for (int level = 0; level < levels; ++level) {
-        if (encoding == SqTexEncoding::Astc4x4) {
+        if (encoding == GeTexEncoding::Astc4x4) {
             levelData.push_back(astcEncode(current.data(), mw, mh));
-        } else if (encoding == SqTexEncoding::Etc2Rgba8) {
+        } else if (encoding == GeTexEncoding::Etc2Rgba8) {
             levelData.push_back(etc2Encode(current.data(), mw, mh));
         } else {
             levelData.push_back(pngEncode(current.data(), mw, mh));
@@ -181,8 +181,8 @@ void writeSqtex(const char* path, SqTexEncoding encoding,
         throw std::runtime_error(std::string("Failed to open ") + path + " for writing");
     }
 
-    SqTexHeader hdr{};
-    std::memcpy(hdr.magic, kSqTexMagic, 4);
+    GeTexHeader hdr{};
+    std::memcpy(hdr.magic, kGeTexMagic, 4);
     hdr.encoding = static_cast<uint16_t>(encoding);
     hdr.mipCount = static_cast<uint16_t>(levels);
     hdr.width = static_cast<uint32_t>(w);
@@ -259,12 +259,12 @@ void writeSinglePng(const char* path, const uint8_t* pixels, int w, int h) {
 void textureToFile(const char* path, const uint8_t* pixels, int width, int height) {
     std::string p(path);
 
-    if (endsWith(p, ".astc.sqtex")) {
-        writeSqtex(path, SqTexEncoding::Astc4x4, pixels, width, height);
-    } else if (endsWith(p, ".etc2.sqtex")) {
-        writeSqtex(path, SqTexEncoding::Etc2Rgba8, pixels, width, height);
-    } else if (endsWith(p, ".png.sqtex")) {
-        writeSqtex(path, SqTexEncoding::Png, pixels, width, height);
+    if (endsWith(p, ".astc.getex")) {
+        writeSqtex(path, GeTexEncoding::Astc4x4, pixels, width, height);
+    } else if (endsWith(p, ".etc2.getex")) {
+        writeSqtex(path, GeTexEncoding::Etc2Rgba8, pixels, width, height);
+    } else if (endsWith(p, ".png.getex")) {
+        writeSqtex(path, GeTexEncoding::Png, pixels, width, height);
     } else if (endsWith(p, ".astc")) {
         writeSingleAstc(path, pixels, width, height);
     } else if (endsWith(p, ".png")) {
@@ -275,4 +275,4 @@ void textureToFile(const char* path, const uint8_t* pixels, int width, int heigh
     }
 }
 
-} // namespace sq
+} // namespace ge

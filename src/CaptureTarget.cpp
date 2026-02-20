@@ -1,8 +1,8 @@
-#include <sq/CaptureTarget.h>
+#include <ge/CaptureTarget.h>
 #include <stdexcept>
 #include <cstring>
 
-namespace sq {
+namespace ge {
 
 CaptureTarget::CaptureTarget(wgpu::Device device, int width, int height,
                              wgpu::TextureFormat format)
@@ -125,4 +125,4 @@ std::vector<uint8_t> CaptureTarget::readPixels(wgpu::Device device, wgpu::Queue 
     return pixels;
 }
 
-} // namespace sq
+} // namespace ge

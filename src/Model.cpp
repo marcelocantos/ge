@@ -1,8 +1,8 @@
-#include <sq/Model.h>
+#include <ge/Model.h>
 
-namespace sq {
+namespace ge {
 
 Model::Model(Mesh mesh, const Texture* texture)
     : mesh_(std::move(mesh)), texture_(texture) {}
 
-} // namespace sq
+} // namespace ge

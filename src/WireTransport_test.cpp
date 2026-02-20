@@ -1,5 +1,5 @@
 #include <doctest.h>
-#include <sq/WireTransport.h>
+#include <ge/WireTransport.h>
 #include <dawn/native/DawnNative.h>
 #include <spdlog/spdlog.h>
 
@@ -8,7 +8,7 @@ TEST_CASE("WireTransport initialization") {
     DawnProcTable nativeProcs = dawn::native::GetProcs();
 
     // Create wire transport
-    sq::WireTransport transport;
+    ge::WireTransport transport;
     transport.initialize(nativeProcs);
 
     // Check that wire procs are returned
@@ -32,7 +32,7 @@ TEST_CASE("WireTransport instance injection" * doctest::skip(true)) {
     REQUIRE(nativeInstance != nullptr);
 
     // Create wire transport
-    sq::WireTransport transport;
+    ge::WireTransport transport;
     transport.initialize(nativeProcs);
 
     // Inject native instance into wire

@@ -1,11 +1,11 @@
 #pragma once
 
 #include <webgpu/webgpu_cpp.h>
-#include <sq/ManifestSchema.h>
-#include <sq/FileIO.h>
-#include <sq/Mesh.h>
-#include <sq/Resource.h>
-#include <sq/Texture.h>
+#include <ge/ManifestSchema.h>
+#include <ge/FileIO.h>
+#include <ge/Mesh.h>
+#include <ge/Resource.h>
+#include <ge/Texture.h>
 #include <filesystem>
 #include <memory>
 #include <spdlog/spdlog.h>
@@ -14,7 +14,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace sq {
+namespace ge {
 
 namespace detail {
 // Load all named meshes from a binary mesh pack into a map.
@@ -47,7 +47,7 @@ std::unique_ptr<Manifest<Meta>> loadManifest(wgpu::Device device, wgpu::Queue qu
     try {
         SPDLOG_INFO("Loading manifest: {}", path);
 
-        auto f = sq::openFile(path);
+        auto f = ge::openFile(path);
         if (!f || !*f) {
             throw std::runtime_error("file not found");
         }
@@ -116,4 +116,4 @@ std::unique_ptr<Manifest<Meta>> loadManifest(wgpu::Device device, wgpu::Queue qu
     }
 }
 
-} // namespace sq
+} // namespace ge

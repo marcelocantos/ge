@@ -1,10 +1,10 @@
-#include <sq/FileIO.h>
+#include <ge/FileIO.h>
 #include <SDL3/SDL_iostream.h>
 #include <spdlog/spdlog.h>
 #include <streambuf>
 #include <vector>
 
-namespace sq {
+namespace ge {
 namespace {
 
 // std::streambuf backed by an SDL_IOStream.
@@ -95,4 +95,4 @@ std::unique_ptr<std::istream> openFile(const std::string& path, bool binary) {
     return std::make_unique<SdlIStream>(io);
 }
 
-} // namespace sq
+} // namespace ge

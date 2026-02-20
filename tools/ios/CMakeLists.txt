@@ -3,36 +3,36 @@ project(Player LANGUAGES CXX OBJCXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_XCODE_LINK_BUILD_PHASE_MODE KNOWN_LOCATION)
 
-set(SQ_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../..)
+set(GE_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../..)
 set(DEPS_BUILD ${CMAKE_CURRENT_SOURCE_DIR}/build)
 
 # Sources — iOS entry point + shared player + wire transport + QR scanner
 set(SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/main.mm
-    ${SQ_ROOT}/tools/player_core.cpp
-    ${SQ_ROOT}/tools/player_platform_apple.cpp
-    ${SQ_ROOT}/tools/AudioPlayer.cpp
-    ${SQ_ROOT}/src/WireTransport.cpp
-    ${SQ_ROOT}/src/HttpServer.cpp
+    ${GE_ROOT}/tools/player_core.cpp
+    ${GE_ROOT}/tools/player_platform_apple.cpp
+    ${GE_ROOT}/tools/AudioPlayer.cpp
+    ${GE_ROOT}/src/WireTransport.cpp
+    ${GE_ROOT}/src/HttpServer.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/QRScanner.mm
 )
 
 add_executable(Player MACOSX_BUNDLE ${SOURCES})
 
 # player_platform_apple.cpp uses ObjC (CAMetalLayer) — compile as ObjC++
-set_source_files_properties(${SQ_ROOT}/tools/player_platform_apple.cpp PROPERTIES LANGUAGE OBJCXX)
+set_source_files_properties(${GE_ROOT}/tools/player_platform_apple.cpp PROPERTIES LANGUAGE OBJCXX)
 
-target_compile_definitions(Player PRIVATE ASIO_STANDALONE SQ_IOS)
+target_compile_definitions(Player PRIVATE ASIO_STANDALONE GE_IOS)
 
 # Headers (engine + header-only vendors + iOS-specific)
 target_include_directories(Player PRIVATE
-    ${SQ_ROOT}/include
-    ${SQ_ROOT}/vendor/include
-    ${SQ_ROOT}/vendor/github.com/gabime/spdlog/include
-    ${SQ_ROOT}/vendor/dawn/include
-    ${SQ_ROOT}/vendor/github.com/chriskohlhoff/asio/include
-    ${SQ_ROOT}/vendor/github.com/libsdl-org/SDL/include
-    ${SQ_ROOT}/tools
+    ${GE_ROOT}/include
+    ${GE_ROOT}/vendor/include
+    ${GE_ROOT}/vendor/github.com/gabime/spdlog/include
+    ${GE_ROOT}/vendor/dawn/include
+    ${GE_ROOT}/vendor/github.com/chriskohlhoff/asio/include
+    ${GE_ROOT}/vendor/github.com/libsdl-org/SDL/include
+    ${GE_ROOT}/tools
     ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
@@ -63,10 +63,10 @@ target_link_libraries(Player PRIVATE
 )
 
 # SDK-conditional library search paths (device vs simulator)
-set(DAWN_DEVICE_DIR ${SQ_ROOT}/vendor/dawn/lib/ios-arm64)
-set(DAWN_SIM_DIR    ${SQ_ROOT}/vendor/dawn/lib/ios-arm64-simulator)
-set(SDL_DEVICE_DIR  ${SQ_ROOT}/vendor/sdl3/lib/ios-arm64)
-set(SDL_SIM_DIR     ${SQ_ROOT}/vendor/sdl3/lib/ios-arm64-simulator)
+set(DAWN_DEVICE_DIR ${GE_ROOT}/vendor/dawn/lib/ios-arm64)
+set(DAWN_SIM_DIR    ${GE_ROOT}/vendor/dawn/lib/ios-arm64-simulator)
+set(SDL_DEVICE_DIR  ${GE_ROOT}/vendor/sdl3/lib/ios-arm64)
+set(SDL_SIM_DIR     ${GE_ROOT}/vendor/sdl3/lib/ios-arm64-simulator)
 
 set_target_properties(Player PROPERTIES
     MACOSX_BUNDLE_GUI_IDENTIFIER com.squz.player

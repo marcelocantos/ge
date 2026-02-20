@@ -1,9 +1,9 @@
 #include <doctest.h>
-#include <sq/GpuContext.h>
-#include <sq/Pipeline.h>
-#include <sq/BindGroup.h>
-#include <sq/CaptureTarget.h>
-#include <sq/WireTransport.h>
+#include <ge/GpuContext.h>
+#include <ge/Pipeline.h>
+#include <ge/BindGroup.h>
+#include <ge/CaptureTarget.h>
+#include <ge/WireTransport.h>
 #include <dawn/dawn_proc.h>
 #include <dawn/native/DawnNative.h>
 #include <SDL3/SDL.h>
@@ -23,8 +23,8 @@ public:
 
     SDL_Window* window = nullptr;
     SDL_MetalView metalView = nullptr;
-    std::unique_ptr<sq::GpuContext> ctx;
-    std::unique_ptr<sq::CaptureTarget> capture;
+    std::unique_ptr<ge::GpuContext> ctx;
+    std::unique_ptr<ge::CaptureTarget> capture;
 
     void init() {
         if (!SDL_Init(SDL_INIT_VIDEO)) {
@@ -45,8 +45,8 @@ public:
         }
 
         void* metalLayer = SDL_Metal_GetLayer(metalView);
-        ctx = std::make_unique<sq::GpuContext>(metalLayer, WIDTH, HEIGHT);
-        capture = std::make_unique<sq::CaptureTarget>(ctx->device(), WIDTH, HEIGHT);
+        ctx = std::make_unique<ge::GpuContext>(metalLayer, WIDTH, HEIGHT);
+        capture = std::make_unique<ge::CaptureTarget>(ctx->device(), WIDTH, HEIGHT);
 
         SPDLOG_INFO("WebGPU test fixture initialized");
     }
@@ -153,29 +153,29 @@ TEST_CASE("fragment shader uniform passing" * doctest::skip(true)) {
     wgpu::Queue queue = fix.ctx->queue();
 
     // Load test shader
-    std::string shaderSource = loadShaderSource("sq/shaders/test.wgsl");
+    std::string shaderSource = loadShaderSource("ge/shaders/test.wgsl");
 
     // Create pipeline
-    std::vector<sq::VertexAttribute> attrs = {
+    std::vector<ge::VertexAttribute> attrs = {
         {wgpu::VertexFormat::Float32x3, 0, 0},
     };
 
-    sq::PipelineDesc pipelineDesc{};
+    ge::PipelineDesc pipelineDesc{};
     pipelineDesc.wgslSource = shaderSource;
     pipelineDesc.attributes = attrs;
     pipelineDesc.vertexStride = sizeof(float) * 3;
     pipelineDesc.colorFormat = fix.capture->format();
 
-    sq::Pipeline pipeline = sq::Pipeline::create(device, pipelineDesc);
+    ge::Pipeline pipeline = ge::Pipeline::create(device, pipelineDesc);
     REQUIRE(pipeline.isValid());
 
     // Create uniform buffer with green color
-    sq::UniformBuffer uniformBuffer = sq::UniformBuffer::create(device, 16);
+    ge::UniformBuffer uniformBuffer = ge::UniformBuffer::create(device, 16);
     float green[4] = {0.0f, 1.0f, 0.0f, 1.0f};
     uniformBuffer.write(queue, green, 16);
 
     // Create bind group
-    wgpu::BindGroup bindGroup = sq::BindGroupBuilder(device)
+    wgpu::BindGroup bindGroup = ge::BindGroupBuilder(device)
         .buffer(0, uniformBuffer)
         .build(pipeline.bindGroupLayout(0));
 
@@ -252,7 +252,7 @@ TEST_CASE("dawnProcSetProcs with wire procs") {
     DawnProcTable nativeProcs = dawn::native::GetProcs();
 
     // Create wire transport
-    sq::WireTransport transport;
+    ge::WireTransport transport;
     transport.initialize(nativeProcs);
 
     // Set wire procs globally - all wgpu* calls now go through wire
@@ -286,8 +286,8 @@ TEST_CASE("dawnProcSetProcs GpuContext with native procs") {
     void* metalLayer = SDL_Metal_GetLayer(metalView);
 
     // GpuContext should work with native procs set
-    std::unique_ptr<sq::GpuContext> ctx;
-    REQUIRE_NOTHROW(ctx = std::make_unique<sq::GpuContext>(metalLayer, 64, 64));
+    std::unique_ptr<ge::GpuContext> ctx;
+    REQUIRE_NOTHROW(ctx = std::make_unique<ge::GpuContext>(metalLayer, 64, 64));
 
     CHECK(ctx->device() != nullptr);
     CHECK(ctx->queue() != nullptr);

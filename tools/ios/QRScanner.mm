@@ -133,7 +133,7 @@
 // C++ entry point
 // ---------------------------------------------------------------------------
 
-namespace sq {
+namespace ge {
 
 ScanResult scanQRCode() {
     @autoreleasepool {
@@ -216,4 +216,4 @@ ScanResult scanQRCode() {
     }
 }
 
-} // namespace sq
+} // namespace ge

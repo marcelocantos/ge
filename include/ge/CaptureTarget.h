@@ -1,11 +1,11 @@
 #pragma once
 
 #include <webgpu/webgpu_cpp.h>
-#include <sq/WgpuResource.h>
+#include <ge/WgpuResource.h>
 #include <vector>
 #include <cstdint>
 
-namespace sq {
+namespace ge {
 
 // Offscreen render target for capturing rendered frames (useful for testing)
 class CaptureTarget {
@@ -32,4 +32,4 @@ private:
     int height_ = 0;
 };
 
-} // namespace sq
+} // namespace ge

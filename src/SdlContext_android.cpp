@@ -1,4 +1,4 @@
-#include <sq/SdlContext.h>
+#include <ge/SdlContext.h>
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_properties.h>
 #include <spdlog/spdlog.h>

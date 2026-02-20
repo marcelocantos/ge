@@ -1,6 +1,6 @@
-#include <sq/Audio.h>
-#include <sq/Protocol.h>
-#include <sq/FileIO.h>
+#include <ge/Audio.h>
+#include <ge/Protocol.h>
+#include <ge/FileIO.h>
 #include <spdlog/spdlog.h>
 
 #include <cstring>
@@ -8,7 +8,7 @@
 #include <string>
 #include <vector>
 
-namespace sq {
+namespace ge {
 
 struct Audio::M {
     struct Clip {
@@ -25,7 +25,7 @@ Audio::Audio() : m(std::make_unique<M>()) {}
 Audio::~Audio() = default;
 
 int Audio::load(const char* path, LoadOptions opts) {
-    auto f = sq::openFile(path, true);
+    auto f = ge::openFile(path, true);
     if (!f || !*f) {
         SPDLOG_ERROR("Audio: Failed to open {}", path);
         return -1;
@@ -105,4 +105,4 @@ std::vector<wire::AudioCommand> Audio::drainCommands() {
     return std::move(m->pendingCommands);
 }
 
-} // namespace sq
+} // namespace ge

@@ -1,5 +1,5 @@
-#include <sq/GpuContext.h>
-#include <sq/WireTransport.h>
+#include <ge/GpuContext.h>
+#include <ge/WireTransport.h>
 #include "NativeSurface.h"
 #include <dawn/native/DawnNative.h>
 #include <dawn/dawn_proc.h>
@@ -8,7 +8,7 @@
 #include <stdexcept>
 #include <vector>
 
-namespace sq {
+namespace ge {
 
 struct GpuContext::M {
     std::unique_ptr<dawn::native::Instance> dawnInstance;
@@ -244,4 +244,4 @@ int GpuContext::height() const {
     return m->height;
 }
 
-} // namespace sq
+} // namespace ge

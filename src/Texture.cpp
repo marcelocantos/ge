@@ -1,8 +1,8 @@
-#include <sq/Texture.h>
-#include <sq/FileIO.h>
-#include <sq/Resource.h>
-#include <sq/SqTexFormat.h>
-#include <sq/WgpuResource.h>
+#include <ge/Texture.h>
+#include <ge/FileIO.h>
+#include <ge/Resource.h>
+#include <ge/GeTexFormat.h>
+#include <ge/WgpuResource.h>
 #include <SDL3_image/SDL_image.h>
 #include <spdlog/spdlog.h>
 #include <algorithm>
@@ -13,13 +13,13 @@
 #include <string>
 #include <vector>
 
-#ifdef SQ_HAS_TRANSCODER
+#ifdef GE_HAS_TRANSCODER
 #include <SDL3/SDL_filesystem.h>
 #include <astcenc.h>
 #include <ProcessRGB.hpp>
 #endif
 
-namespace sq {
+namespace ge {
 
 struct Texture::M {
     WgpuTexture texture;
@@ -51,13 +51,13 @@ namespace {
 
 constexpr uint8_t kAstcMagic[4] = {0x13, 0xAB, 0xA1, 0x5C};
 
-wgpu::TextureFormat gpuFormat(SqTexEncoding e) {
+wgpu::TextureFormat gpuFormat(GeTexEncoding e) {
     switch (e) {
-        case SqTexEncoding::Astc4x4:   return wgpu::TextureFormat::ASTC4x4Unorm;
-        case SqTexEncoding::Etc2Rgba8: return wgpu::TextureFormat::ETC2RGBA8Unorm;
-        case SqTexEncoding::Png:       return wgpu::TextureFormat::RGBA8Unorm;
+        case GeTexEncoding::Astc4x4:   return wgpu::TextureFormat::ASTC4x4Unorm;
+        case GeTexEncoding::Etc2Rgba8: return wgpu::TextureFormat::ETC2RGBA8Unorm;
+        case GeTexEncoding::Png:       return wgpu::TextureFormat::RGBA8Unorm;
     }
-    throw std::runtime_error("Unknown SqTexEncoding");
+    throw std::runtime_error("Unknown GeTexEncoding");
 }
 
 // ASTC file header: 4-byte magic, 3 bytes block_x/y/z, 3x3 bytes dim_x/y/z (24-bit LE)
@@ -97,21 +97,21 @@ wgpu::Sampler createSampler(wgpu::Device device, uint32_t mipCount) {
     return device.CreateSampler(&desc);
 }
 
-#ifdef SQ_HAS_TRANSCODER
+#ifdef GE_HAS_TRANSCODER
 
-// Transcode an ASTC sqtex file to ETC2, writing the result to cachePath.
-// srcPath is the logical asset path (resolved via sq::openFile).
+// Transcode an ASTC getex file to ETC2, writing the result to cachePath.
+// srcPath is the logical asset path (resolved via ge::openFile).
 // Returns true on success.
 bool transcodeAstcToEtc2(const char* srcPath, const char* cachePath) {
-    auto src = sq::openFile(srcPath, true);
+    auto src = ge::openFile(srcPath, true);
     if (!src || !*src) return false;
 
-    SqTexHeader hdr{};
+    GeTexHeader hdr{};
     src->read(reinterpret_cast<char*>(&hdr), sizeof(hdr));
-    if (!*src || std::memcmp(hdr.magic, kSqTexMagic, 4) != 0) return false;
+    if (!*src || std::memcmp(hdr.magic, kGeTexMagic, 4) != 0) return false;
 
-    auto encoding = static_cast<SqTexEncoding>(hdr.encoding);
-    if (encoding != SqTexEncoding::Astc4x4) return false;
+    auto encoding = static_cast<GeTexEncoding>(hdr.encoding);
+    if (encoding != GeTexEncoding::Astc4x4) return false;
 
     uint32_t w = hdr.width, h = hdr.height, mipCount = hdr.mipCount;
 
@@ -202,14 +202,14 @@ bool transcodeAstcToEtc2(const char* srcPath, const char* cachePath) {
 
     astcenc_context_free(ctx);
 
-    // Write cached ETC2 sqtex file
+    // Write cached ETC2 getex file
     std::filesystem::create_directories(std::filesystem::path(cachePath).parent_path());
     std::ofstream out(cachePath, std::ios::binary);
     if (!out) return false;
 
-    SqTexHeader outHdr{};
-    std::memcpy(outHdr.magic, kSqTexMagic, 4);
-    outHdr.encoding = static_cast<uint16_t>(SqTexEncoding::Etc2Rgba8);
+    GeTexHeader outHdr{};
+    std::memcpy(outHdr.magic, kGeTexMagic, 4);
+    outHdr.encoding = static_cast<uint16_t>(GeTexEncoding::Etc2Rgba8);
     outHdr.mipCount = static_cast<uint16_t>(mipCount);
     outHdr.width = w;
     outHdr.height = h;
@@ -240,27 +240,27 @@ std::string transcodeCachePath(const char* srcPath) {
     SDL_free(prefPath);
 
     auto filename = std::filesystem::path(srcPath).filename().string();
-    // Replace .astc.sqtex with .etc2.sqtex
-    auto pos = filename.rfind(".astc.sqtex");
+    // Replace .astc.getex with .etc2.getex
+    auto pos = filename.rfind(".astc.getex");
     if (pos != std::string::npos) {
-        filename.replace(pos, 11, ".etc2.sqtex");
+        filename.replace(pos, 11, ".etc2.getex");
     }
     return cacheDir + filename;
 }
 
-#endif // SQ_HAS_TRANSCODER
+#endif // GE_HAS_TRANSCODER
 
 TextureResult loadSqtex(wgpu::Device device, wgpu::Queue queue,
                          std::istream& file, const char* path) {
     // Magic already consumed; read rest of header
-    SqTexHeader hdr{};
-    std::memcpy(hdr.magic, kSqTexMagic, 4);
+    GeTexHeader hdr{};
+    std::memcpy(hdr.magic, kGeTexMagic, 4);
     file.read(reinterpret_cast<char*>(&hdr) + 4, sizeof(hdr) - 4);
     if (!file) {
-        throw std::runtime_error(std::string("Truncated sqtex header in ") + path);
+        throw std::runtime_error(std::string("Truncated getex header in ") + path);
     }
 
-    auto encoding = static_cast<SqTexEncoding>(hdr.encoding);
+    auto encoding = static_cast<GeTexEncoding>(hdr.encoding);
     auto format = gpuFormat(encoding);
     uint32_t w = hdr.width;
     uint32_t h = hdr.height;
@@ -268,13 +268,13 @@ TextureResult loadSqtex(wgpu::Device device, wgpu::Queue queue,
 
     auto encodingName = [&] {
         switch (encoding) {
-            case SqTexEncoding::Astc4x4:   return "ASTC 4x4";
-            case SqTexEncoding::Etc2Rgba8: return "ETC2 RGBA8";
-            case SqTexEncoding::Png:       return "PNG";
+            case GeTexEncoding::Astc4x4:   return "ASTC 4x4";
+            case GeTexEncoding::Etc2Rgba8: return "ETC2 RGBA8";
+            case GeTexEncoding::Png:       return "PNG";
         }
         return "unknown";
     }();
-    SPDLOG_INFO("sqtex: {}x{}, {} mip levels, {} from {}",
+    SPDLOG_INFO("getex: {}x{}, {} mip levels, {} from {}",
                 w, h, mipCount, encodingName, path);
 
     // Read level size table
@@ -318,7 +318,7 @@ TextureResult loadSqtex(wgpu::Device device, wgpu::Queue queue,
             .aspect = wgpu::TextureAspect::All,
         };
 
-        if (encoding == SqTexEncoding::Astc4x4 || encoding == SqTexEncoding::Etc2Rgba8) {
+        if (encoding == GeTexEncoding::Astc4x4 || encoding == GeTexEncoding::Etc2Rgba8) {
             // For compressed textures, extent must be block-aligned (physical mip size)
             // Both ASTC 4x4 and ETC2 EAC RGBA8 use 16 bytes per 4x4 block
             uint32_t blocksX = (mw + 3) / 4;
@@ -582,7 +582,7 @@ TextureResult loadSdlImage(wgpu::Device device, wgpu::Queue queue, const char* p
 
 Texture Texture::fromFile(wgpu::Device device, wgpu::Queue queue, const char* path) {
     // Detect format by magic header (first 4 bytes)
-    auto file = sq::openFile(path, true);
+    auto file = ge::openFile(path, true);
     if (!file || !*file) {
         throw std::runtime_error(std::string("Failed to open texture ") + path);
     }
@@ -594,16 +594,16 @@ Texture Texture::fromFile(wgpu::Device device, wgpu::Queue queue, const char* pa
     }
 
     TextureResult r;
-    if (std::memcmp(magic, kSqTexMagic, 4) == 0) {
-#ifdef SQ_HAS_TRANSCODER
-        // Check if this is an ASTC sqtex on a device without ASTC support
+    if (std::memcmp(magic, kGeTexMagic, 4) == 0) {
+#ifdef GE_HAS_TRANSCODER
+        // Check if this is an ASTC getex on a device without ASTC support
         if (!device.HasFeature(wgpu::FeatureName::TextureCompressionASTC)) {
             // Peek at the encoding field (bytes 4-5 of the header)
             uint16_t enc = 0;
             file->read(reinterpret_cast<char*>(&enc), sizeof(enc));
             file->seekg(4); // rewind to after magic
 
-            if (static_cast<SqTexEncoding>(enc) == SqTexEncoding::Astc4x4) {
+            if (static_cast<GeTexEncoding>(enc) == GeTexEncoding::Astc4x4) {
                 file.reset();
                 auto cachePath = transcodeCachePath(path);
 
@@ -612,7 +612,7 @@ Texture Texture::fromFile(wgpu::Device device, wgpu::Queue queue, const char* pa
                 if (cached) {
                     uint8_t cachedMagic[4]{};
                     cached.read(reinterpret_cast<char*>(cachedMagic), 4);
-                    if (cached && std::memcmp(cachedMagic, kSqTexMagic, 4) == 0) {
+                    if (cached && std::memcmp(cachedMagic, kGeTexMagic, 4) == 0) {
                         SPDLOG_INFO("Loading cached ETC2 texture: {}", cachePath);
                         r = loadSqtex(device, queue, cached, cachePath.c_str());
                         goto done;
@@ -646,7 +646,7 @@ Texture Texture::fromFile(wgpu::Device device, wgpu::Queue queue, const char* pa
         r = loadSdlImage(device, queue, path);
     }
 
-#ifdef SQ_HAS_TRANSCODER
+#ifdef GE_HAS_TRANSCODER
 done:
 #endif
     auto impl = std::make_unique<M>();
@@ -658,4 +658,4 @@ done:
     return Texture(std::move(impl));
 }
 
-} // namespace sq
+} // namespace ge
