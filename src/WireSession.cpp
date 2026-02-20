@@ -415,7 +415,7 @@ public:
 };
 
 // Dawn wire command constants for filtering large texture uploads.
-// Values from WireCmd_autogen.h — must match the Dawn version in sq/vendor/dawn.
+// Values from WireCmd_autogen.h — must match the Dawn version in ge/vendor/dawn.
 namespace wire_filter {
 constexpr size_t kCmdHeaderSize = 8;   // CmdHeader: uint64_t commandSize
 constexpr size_t kWireCmdSize = 4;     // WireCmd: uint32_t
