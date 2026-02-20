@@ -27,6 +27,7 @@
 #include <stb_image_write.h>
 #pragma clang diagnostic pop
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -36,6 +37,7 @@
 #include <stdexcept>
 #include <string>
 #include <sys/socket.h>
+#include <thread>
 #include <unordered_map>
 #include <optional>
 #include <vector>
@@ -939,12 +941,24 @@ WireSession::WireSession()
         SPDLOG_INFO("Daemon mode: connecting to sqd at {}:{}...",
                     m->daemonHost, m->daemonPort);
 
-        m->sidebandConn = connectWebSocket(
-            m->daemonHost, m->daemonPort, "/ws/server");
-        if (!m->sidebandConn) {
-            throw std::runtime_error(
-                "Failed to connect to sqd at " + m->daemonHost + ":" +
-                std::to_string(m->daemonPort) + " — is sqd running?");
+        // Retry sideband connection (sqd may be cleaning up after previous session)
+        for (int attempt = 1; ; ++attempt) {
+            m->sidebandConn = connectWebSocket(
+                m->daemonHost, m->daemonPort, "/ws/server");
+            if (m->sidebandConn) break;
+            if (attempt >= 10) {
+                throw std::runtime_error(
+                    "Failed to connect to sqd at " + m->daemonHost + ":" +
+                    std::to_string(m->daemonPort) + " — is sqd running?");
+            }
+            SPDLOG_WARN("Sideband connect failed, retrying in 500ms... (attempt {})", attempt);
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        }
+
+        // Write port file so bare `bin/player` finds sqd
+        for (auto* path : {".geport", "/tmp/.geport"}) {
+            std::ofstream pf(path);
+            if (pf) pf << m->daemonPort;
         }
 
         // Send hello
@@ -1256,7 +1270,16 @@ void WireSession::connect() {
     m->connected = true;
 }
 
-WireSession::~WireSession() = default;
+WireSession::~WireSession() {
+    // Remove daemon log sink from spdlog before sideband connection is destroyed
+    if (m->daemonSink) {
+        auto& sinks = spdlog::default_logger()->sinks();
+        sinks.erase(
+            std::remove(sinks.begin(), sinks.end(), m->daemonSink),
+            sinks.end());
+        m->daemonSink.reset();
+    }
+}
 
 GpuContext& WireSession::gpu() {
     if (!m->connected) connect();
@@ -1474,9 +1497,13 @@ bool WireSession::run(RunConfig config) {
             }
         }
 
-        // Drain pending responses every iteration (not just when waiting for
-        // credits). This ensures we detect player disconnect promptly even
-        // when frameReadyCount > 0.
+        // Detect player disconnect promptly (available() marks connection
+        // closed on TCP EOF, but processResponses won't throw if there's
+        // simply no data to read).
+        if (!m->serializer->connection().isOpen()) {
+            SPDLOG_WARN("Player disconnected (connection closed)");
+            return true;
+        }
         try {
             m->serializer->processResponses(*m->wireClient, m->onEvent);
         } catch (const std::exception& e) {
@@ -1486,6 +1513,10 @@ bool WireSession::run(RunConfig config) {
         m->instance.ProcessEvents();
 
         while (m->serializer->frameReadyCount <= 0) {
+            if (!m->serializer->connection().isOpen()) {
+                SPDLOG_WARN("Player disconnected (connection closed)");
+                return true;
+            }
             try {
                 m->serializer->processResponses(*m->wireClient, m->onEvent);
             } catch (const std::exception& e) {

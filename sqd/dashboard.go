@@ -141,15 +141,15 @@ func (d *Daemon) registerDashboard(mux *http.ServeMux) {
 	mux.HandleFunc("/ws/server", d.handleServer)
 	mux.HandleFunc("/ws/server/wire", d.handleServerWire)
 
-	// Static files: serve sq/web/dist
+	// Static files: serve ge/web/dist
 	d.registerStaticFiles(mux)
 }
 
-// registerStaticFiles serves the dashboard SPA from sq/web/dist.
+// registerStaticFiles serves the dashboard SPA from ge/web/dist.
 func (d *Daemon) registerStaticFiles(mux *http.ServeMux) {
 	// Try to find the web dist directory relative to the binary or cwd
 	candidates := []string{
-		"sq/web/dist",
+		"ge/web/dist",
 		filepath.Join(filepath.Dir(os.Args[0]), "..", "sq", "web", "dist"),
 	}
 

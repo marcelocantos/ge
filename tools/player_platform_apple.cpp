@@ -7,6 +7,8 @@
 #include <QuartzCore/CAMetalLayer.h>
 #if TARGET_OS_IPHONE
 #include <UIKit/UIKit.h>
+#else
+#include <AppKit/NSApplication.h>
 #endif
 #include <spdlog/spdlog.h>
 #include <stdexcept>
@@ -17,6 +19,13 @@ SDL_MetalView g_metalView = nullptr;
 } // namespace
 
 namespace platform {
+
+void activateApp() {
+#if !TARGET_OS_IPHONE
+    [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
+    [NSApp activateIgnoringOtherApps:YES];
+#endif
+}
 
 SDL_WindowFlags windowFlags() {
     return SDL_WINDOW_METAL | SDL_WINDOW_HIGH_PIXEL_DENSITY;
