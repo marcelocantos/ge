@@ -27,9 +27,9 @@ public:
     WireSession(const WireSession&) = delete;
     WireSession& operator=(const WireSession&) = delete;
 
-    // Access the HTTP server for registering endpoints.
-    // Available immediately after construction (before connect()).
-    HttpServer& http();
+    // Access the HTTP server for registering endpoints (standalone mode).
+    // Returns nullptr in daemon mode. Available before connect().
+    HttpServer* http();
 
     // Access the audio system for loading and playing sounds.
     Audio& audio();

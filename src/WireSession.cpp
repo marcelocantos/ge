@@ -11,6 +11,8 @@
 #include <dawn/wire/WireClient.h>
 #include <webgpu/webgpu_cpp.h>
 
+#include "DaemonSink.h"
+#include <ge/Tweak.h>
 #include "DashboardSink.h"
 #include "HttpServer.h"
 #include "WebSocketSerializer.h"
@@ -163,6 +165,8 @@ public:
             }
         }
     }
+
+    int orientation() const { return orientation_; }
 
 private:
     void pruneClients() {
@@ -891,7 +895,7 @@ std::vector<char> generateQrPng(const std::string& url) {
 namespace ge {
 
 struct WireSession::M {
-    std::unique_ptr<HttpServer> httpServer;
+    std::unique_ptr<HttpServer> httpServer;  // standalone mode only
     std::shared_ptr<WsConnection> wsConn;
     std::unique_ptr<WsServerSerializer> serializer;
     std::unique_ptr<dawn::wire::WireClient> wireClient;
@@ -902,114 +906,189 @@ struct WireSession::M {
     std::string qrUrl;
     bool connected = false;
     Audio audio;
+
+    // Daemon mode
+    bool daemonMode = false;
+    std::string daemonHost = "localhost";
+    uint16_t daemonPort = 42069;
+    std::shared_ptr<WsConnection> sidebandConn;  // sideband WS to sqd
+    std::shared_ptr<DaemonSink> daemonSink;
+    uint64_t lastTweakGen = 0;
 };
 
 WireSession::WireSession()
     : m(std::make_unique<M>())
 {
-    auto addr = resolveListenAddr();
-
-    // Parse address (default: port 0 = OS-assigned)
-    std::string address = "0.0.0.0";
-    uint16_t port = 0;
-    parseListenAddr(addr, address, port);
-
-    SPDLOG_INFO("Starting wire server on {}:{}...", address, port);
-
-    // Create HTTP server (port 0 → OS picks a free port)
-    m->httpServer = std::make_unique<HttpServer>(port);
-
-    // Use actual port (may differ from requested when using port 0)
-    auto actualPort = m->httpServer->port();
-
-    // GE_PUBLISH_ADDR overrides the advertised address in the QR code.
-    // Examples: "localhost:0" (use dynamic port), "localhost:42069" (fixed port).
-    std::string pubHost;
-    uint16_t pubPort = actualPort;
-    if (auto* env = std::getenv("GE_PUBLISH_ADDR")) {
-        std::string pubAddr = env;
-        auto colon = pubAddr.rfind(':');
+    // Check for daemon mode: GE_DAEMON=1 or GE_DAEMON_ADDR=host:port
+    if (auto* env = std::getenv("GE_DAEMON_ADDR")) {
+        m->daemonMode = true;
+        std::string addr(env);
+        auto colon = addr.rfind(':');
         if (colon != std::string::npos) {
-            pubHost = pubAddr.substr(0, colon);
-            auto p = std::stoi(pubAddr.substr(colon + 1));
-            if (p != 0) pubPort = static_cast<uint16_t>(p);
+            m->daemonHost = addr.substr(0, colon);
+            m->daemonPort = static_cast<uint16_t>(std::stoi(addr.substr(colon + 1)));
         } else {
-            pubHost = pubAddr;
+            m->daemonHost = addr;
         }
-    }
-    if (pubHost.empty()) pubHost = getLanAddress();
-    m->qrUrl = "squz-remote://" + pubHost + ":" + std::to_string(pubPort);
-
-    // Write port file for player auto-discovery
-    for (auto* path : {".geport", "/tmp/.geport"}) {
-        std::ofstream pf(path);
-        if (pf) pf << actualPort;
+    } else if (auto* env = std::getenv("GE_DAEMON")) {
+        if (std::string(env) == "1") m->daemonMode = true;
     }
 
-    // Dashboard: log sink (created once, shared across reconnects)
-    if (!g_dashSink) {
-        g_dashSink = std::make_shared<DashboardSink>();
-        spdlog::default_logger()->sinks().push_back(g_dashSink);
-    }
-    if (!g_previewBroadcast) {
-        g_previewBroadcast = std::make_shared<PreviewBroadcast>();
-    }
+    if (m->daemonMode) {
+        // Daemon mode: connect to sqd, no local HTTP server
+        SPDLOG_INFO("Daemon mode: connecting to sqd at {}:{}...",
+                    m->daemonHost, m->daemonPort);
 
-    // Register dashboard endpoints
-    m->httpServer->get("/api/qr", [this](const HttpRequest&, HttpResponse& res) {
-        auto png = generateQrPng(m->qrUrl);
-        res.png(png.data(), png.size());
-    });
-    m->httpServer->get("/api/url", [this](const HttpRequest&, HttpResponse& res) {
-        res.json("{\"url\":\"" + m->qrUrl + "\"}");
-    });
-    m->httpServer->get("/api/info", [](const HttpRequest&, HttpResponse& res) {
-        res.json(std::string(R"({"name":")") + getprogname() + "\"}");
-    });
-    m->httpServer->post("/api/stop", [](const HttpRequest&, HttpResponse& res) {
-        SPDLOG_INFO("Stop requested from dashboard");
-        res.json(R"({"ok":true})");
-        kill(getpid(), SIGINT);
-    });
-    m->httpServer->ws("/ws/logs", g_dashSink->handler());
-    m->httpServer->ws("/ws/preview", g_previewBroadcast->handler());
-    m->httpServer->serveStatic("/", "ge/web/dist");
+        m->sidebandConn = connectWebSocket(
+            m->daemonHost, m->daemonPort, "/ws/server");
+        if (!m->sidebandConn) {
+            throw std::runtime_error(
+                "Failed to connect to sqd at " + m->daemonHost + ":" +
+                std::to_string(m->daemonPort) + " — is sqd running?");
+        }
 
-    // Start accepting HTTP connections
-    m->httpServer->start();
+        // Send hello
+        char hello[256];
+        snprintf(hello, sizeof(hello),
+                 R"({"type":"hello","name":"%s","pid":%d})",
+                 getprogname(), getpid());
+        m->sidebandConn->sendText(std::string(hello));
+        SPDLOG_INFO("Registered with sqd as '{}' (pid {})", getprogname(), getpid());
+
+        // Install daemon log sink (forwards to sideband)
+        m->daemonSink = std::make_shared<DaemonSink>(m->sidebandConn);
+        spdlog::default_logger()->sinks().push_back(m->daemonSink);
+
+        // Send initial tweak state to daemon for caching
+        {
+            std::string tweakMsg = R"({"type":"tweaks","data":)" + tweak::toJson() + "}";
+            m->sidebandConn->sendText(tweakMsg);
+            m->lastTweakGen = tweak::generation().load(std::memory_order_relaxed);
+            SPDLOG_INFO("Sent initial tweak state ({} tweaks)", tweak::registry().size());
+        }
+
+        // Still create preview broadcast (we'll send frames over sideband)
+        if (!g_previewBroadcast) {
+            g_previewBroadcast = std::make_shared<PreviewBroadcast>();
+        }
+    } else {
+        // Standalone mode: create HTTP server, QR code, dashboard
+        auto addr = resolveListenAddr();
+
+        // Parse address (default: port 0 = OS-assigned)
+        std::string address = "0.0.0.0";
+        uint16_t port = 0;
+        parseListenAddr(addr, address, port);
+
+        SPDLOG_INFO("Starting wire server on {}:{}...", address, port);
+
+        // Create HTTP server (port 0 → OS picks a free port)
+        m->httpServer = std::make_unique<HttpServer>(port);
+
+        // Use actual port (may differ from requested when using port 0)
+        auto actualPort = m->httpServer->port();
+
+        // GE_PUBLISH_ADDR overrides the advertised address in the QR code.
+        std::string pubHost;
+        uint16_t pubPort = actualPort;
+        if (auto* env = std::getenv("GE_PUBLISH_ADDR")) {
+            std::string pubAddr = env;
+            auto colon = pubAddr.rfind(':');
+            if (colon != std::string::npos) {
+                pubHost = pubAddr.substr(0, colon);
+                auto p = std::stoi(pubAddr.substr(colon + 1));
+                if (p != 0) pubPort = static_cast<uint16_t>(p);
+            } else {
+                pubHost = pubAddr;
+            }
+        }
+        if (pubHost.empty()) pubHost = getLanAddress();
+        m->qrUrl = "squz-remote://" + pubHost + ":" + std::to_string(pubPort);
+
+        // Write port file for player auto-discovery
+        for (auto* path : {".geport", "/tmp/.geport"}) {
+            std::ofstream pf(path);
+            if (pf) pf << actualPort;
+        }
+
+        // Dashboard: log sink (created once, shared across reconnects)
+        if (!g_dashSink) {
+            g_dashSink = std::make_shared<DashboardSink>();
+            spdlog::default_logger()->sinks().push_back(g_dashSink);
+        }
+        if (!g_previewBroadcast) {
+            g_previewBroadcast = std::make_shared<PreviewBroadcast>();
+        }
+
+        // Register dashboard endpoints
+        m->httpServer->get("/api/qr", [this](const HttpRequest&, HttpResponse& res) {
+            auto png = generateQrPng(m->qrUrl);
+            res.png(png.data(), png.size());
+        });
+        m->httpServer->get("/api/url", [this](const HttpRequest&, HttpResponse& res) {
+            res.json("{\"url\":\"" + m->qrUrl + "\"}");
+        });
+        m->httpServer->get("/api/info", [](const HttpRequest&, HttpResponse& res) {
+            res.json(std::string(R"({"name":")") + getprogname() + "\"}");
+        });
+        m->httpServer->post("/api/stop", [](const HttpRequest&, HttpResponse& res) {
+            SPDLOG_INFO("Stop requested from dashboard");
+            res.json(R"({"ok":true})");
+            kill(getpid(), SIGINT);
+        });
+        m->httpServer->ws("/ws/logs", g_dashSink->handler());
+        m->httpServer->ws("/ws/preview", g_previewBroadcast->handler());
+        m->httpServer->serveStatic("/", "ge/web/dist");
+
+        // Start accepting HTTP connections
+        m->httpServer->start();
+    }
 }
 
 void WireSession::connect() {
-    SPDLOG_INFO("Waiting for player connection...");
-    static bool dashboardOpened = false;
-    if (!dashboardOpened) {
-        printQrCode(m->qrUrl);
-        auto localUrl = "http://localhost:" + std::to_string(m->httpServer->port());
-        std::string cmd = "open " + localUrl;
-        if (std::system(cmd.c_str()) != 0)
-            SPDLOG_WARN("Failed to open browser");
-        dashboardOpened = true;
-    }
+    if (m->daemonMode) {
+        // Daemon mode: connect wire WS to sqd, wait for DeviceInfo
+        SPDLOG_INFO("Connecting wire to sqd...");
 
-    // Wait for a WebSocket client, periodically checking for dashboard disconnect.
-    bool dashboardEverConnected = false;
-    for (;;) {
-        m->wsConn = m->httpServer->tryAcceptWs("/ws/wire", 2000);
-        if (m->wsConn) break;
-        if (g_stopRequested.load(std::memory_order_relaxed))
-            throw std::runtime_error("Server stopped");
-        if (g_dashSink) {
-            auto n = g_dashSink->checkClients();
-            if (n > 0) {
-                dashboardEverConnected = true;
-            } else if (dashboardEverConnected) {
-                SPDLOG_INFO("Dashboard disconnected, stopping server");
-                kill(getpid(), SIGINT);
-                throw std::runtime_error("Dashboard disconnected");
+        m->wsConn = connectWebSocket(
+            m->daemonHost, m->daemonPort, "/ws/server/wire");
+        if (!m->wsConn) {
+            throw std::runtime_error("Failed to connect wire WS to sqd");
+        }
+        SPDLOG_INFO("Wire connected to sqd, waiting for player...");
+    } else {
+        // Standalone mode: wait for player WebSocket connection
+        SPDLOG_INFO("Waiting for player connection...");
+        static bool dashboardOpened = false;
+        if (!dashboardOpened) {
+            printQrCode(m->qrUrl);
+            auto localUrl = "http://localhost:" + std::to_string(m->httpServer->port());
+            std::string cmd = "open " + localUrl;
+            if (std::system(cmd.c_str()) != 0)
+                SPDLOG_WARN("Failed to open browser");
+            dashboardOpened = true;
+        }
+
+        // Wait for a WebSocket client, periodically checking for dashboard disconnect.
+        bool dashboardEverConnected = false;
+        for (;;) {
+            m->wsConn = m->httpServer->tryAcceptWs("/ws/wire", 2000);
+            if (m->wsConn) break;
+            if (g_stopRequested.load(std::memory_order_relaxed))
+                throw std::runtime_error("Server stopped");
+            if (g_dashSink) {
+                auto n = g_dashSink->checkClients();
+                if (n > 0) {
+                    dashboardEverConnected = true;
+                } else if (dashboardEverConnected) {
+                    SPDLOG_INFO("Dashboard disconnected, stopping server");
+                    kill(getpid(), SIGINT);
+                    throw std::runtime_error("Dashboard disconnected");
+                }
             }
         }
+        SPDLOG_INFO("Player connected via WebSocket");
     }
-    SPDLOG_INFO("Player connected via WebSocket");
 
     // Receive DeviceInfo as first binary frame
     wire::MessageHeader devHdr{};
@@ -1193,8 +1272,8 @@ Audio& WireSession::audio() {
     return m->audio;
 }
 
-HttpServer& WireSession::http() {
-    return *m->httpServer;
+HttpServer* WireSession::http() {
+    return m->httpServer.get();  // nullptr in daemon mode
 }
 
 void WireSession::flush() {
@@ -1221,13 +1300,23 @@ bool WireSession::run(RunConfig config) {
                 g_previewBroadcast->setOrientation(e.display.data1);
             }
             // Forward accelerometer data to preview clients (~20 Hz)
-            if (e.type == SDL_EVENT_SENSOR_UPDATE &&
-                g_previewBroadcast && g_previewBroadcast->hasClients()) {
+            if (e.type == SDL_EVENT_SENSOR_UPDATE) {
                 auto now = std::chrono::steady_clock::now();
                 if (now - lastAccelSend > std::chrono::milliseconds(50)) {
                     lastAccelSend = now;
-                    g_previewBroadcast->sendAccel(
-                        e.sensor.data[0], e.sensor.data[1], e.sensor.data[2]);
+                    if (m->daemonMode && m->sidebandConn && m->sidebandConn->isOpen()) {
+                        // Daemon mode: send accel as sideband JSON
+                        char buf[160];
+                        snprintf(buf, sizeof(buf),
+                            R"({"type":"accel","data":{"x":%.4f,"y":%.4f,"z":%.4f,"o":%d}})",
+                            e.sensor.data[0], e.sensor.data[1], e.sensor.data[2],
+                            g_previewBroadcast ? g_previewBroadcast->orientation() : 0);
+                        try { m->sidebandConn->sendText(std::string(buf)); } catch (...) {}
+                    }
+                    if (g_previewBroadcast && g_previewBroadcast->hasClients()) {
+                        g_previewBroadcast->sendAccel(
+                            e.sensor.data[0], e.sensor.data[1], e.sensor.data[2]);
+                    }
                 }
             }
         }
@@ -1313,19 +1402,75 @@ bool WireSession::run(RunConfig config) {
             return false;
         }
 
-        // Periodically check if dashboard tab was closed
-        auto now = std::chrono::steady_clock::now();
-        if (now - lastDashCheck > std::chrono::seconds(2)) {
-            lastDashCheck = now;
-            if (g_dashSink) {
-                auto n = g_dashSink->checkClients();
-                if (n > 0) {
-                    dashboardEverConnected = true;
-                } else if (dashboardEverConnected) {
-                    SPDLOG_INFO("Dashboard disconnected, stopping server");
-                    sendExitAndReturn();
-                    return false;
+        // Periodically check if dashboard tab was closed (standalone mode only)
+        if (!m->daemonMode) {
+            auto now = std::chrono::steady_clock::now();
+            if (now - lastDashCheck > std::chrono::seconds(2)) {
+                lastDashCheck = now;
+                if (g_dashSink) {
+                    auto n = g_dashSink->checkClients();
+                    if (n > 0) {
+                        dashboardEverConnected = true;
+                    } else if (dashboardEverConnected) {
+                        SPDLOG_INFO("Dashboard disconnected, stopping server");
+                        sendExitAndReturn();
+                        return false;
+                    }
                 }
+            }
+        }
+
+        // Poll sideband for tweak messages (daemon mode only)
+        if (m->daemonMode && m->sidebandConn && m->sidebandConn->isOpen()) {
+            while (m->sidebandConn->available() > 0) {
+                std::vector<char> sbData;
+                if (!m->sidebandConn->recvBinary(sbData)) break;
+                std::string msg(sbData.begin(), sbData.end());
+                if (msg.find("\"tweak_set\"") != std::string::npos) {
+                    auto dataPos = msg.find("\"data\"");
+                    if (dataPos != std::string::npos) {
+                        auto bracePos = msg.find('{', dataPos + 6);
+                        if (bracePos != std::string::npos) {
+                            std::string data = msg.substr(bracePos);
+                            int depth = 0;
+                            for (size_t i = 0; i < data.size(); i++) {
+                                if (data[i] == '{') depth++;
+                                else if (data[i] == '}') {
+                                    depth--;
+                                    if (depth == 0) { data = data.substr(0, i + 1); break; }
+                                }
+                            }
+                            if (tweak::parseAndApply(data)) {
+                                SPDLOG_INFO("Sideband tweak_set applied");
+                            }
+                        }
+                    }
+                } else if (msg.find("\"tweak_reset\"") != std::string::npos) {
+                    auto dataPos = msg.find("\"data\"");
+                    if (dataPos != std::string::npos) {
+                        auto bracePos = msg.find('{', dataPos + 6);
+                        if (bracePos != std::string::npos) {
+                            std::string data = msg.substr(bracePos);
+                            int depth = 0;
+                            for (size_t i = 0; i < data.size(); i++) {
+                                if (data[i] == '{') depth++;
+                                else if (data[i] == '}') {
+                                    depth--;
+                                    if (depth == 0) { data = data.substr(0, i + 1); break; }
+                                }
+                            }
+                            tweak::parseAndReset(data);
+                            SPDLOG_INFO("Sideband tweak_reset applied");
+                        }
+                    }
+                }
+            }
+            // Send updated tweak state if generation changed
+            auto gen = tweak::generation().load(std::memory_order_relaxed);
+            if (gen != m->lastTweakGen) {
+                m->lastTweakGen = gen;
+                std::string tweakMsg = R"({"type":"tweaks","data":)" + tweak::toJson() + "}";
+                try { m->sidebandConn->sendText(tweakMsg); } catch (...) {}
             }
         }
 
@@ -1385,7 +1530,12 @@ bool WireSession::run(RunConfig config) {
         try {
             // Check if a previous async capture completed
             if (auto jpg = previewCapture.poll()) {
-                g_previewBroadcast->sendFrame(jpg->data(), jpg->size());
+                if (m->daemonMode && m->sidebandConn && m->sidebandConn->isOpen()) {
+                    // Daemon mode: send JPEG as binary sideband frame
+                    try { m->sidebandConn->sendBinary(jpg->data(), jpg->size()); } catch (...) {}
+                } else if (g_previewBroadcast) {
+                    g_previewBroadcast->sendFrame(jpg->data(), jpg->size());
+                }
             }
 
             if (config.onUpdate) config.onUpdate(dt);
@@ -1394,8 +1544,10 @@ bool WireSession::run(RunConfig config) {
                 config.onRender(frameView, m->gfx->width(), m->gfx->height());
 
                 // Every 6 frames, render a thumbnail for the dashboard preview
-                if (previewCapture.isIdle() && frameCount % 6 == 0 &&
-                    g_previewBroadcast && g_previewBroadcast->hasClients()) {
+                bool wantPreview = m->daemonMode
+                    ? (m->sidebandConn && m->sidebandConn->isOpen())
+                    : (g_previewBroadcast && g_previewBroadcast->hasClients());
+                if (previewCapture.isIdle() && frameCount % 6 == 0 && wantPreview) {
                     int tw = std::max(1, m->gfx->width() / 4);
                     int th = std::max(1, m->gfx->height() / 4);
                     if (tw != thumbW || th != thumbH) {

@@ -1,0 +1,39 @@
+project_name: sqd
+
+before:
+  hooks:
+    - mkdir -p sqd/web/dist/assets
+    - cp -r web/dist/. sqd/web/dist/
+
+builds:
+  - main: .
+    dir: sqd
+    binary: sqd
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - format_overrides:
+      - goos: darwin
+        format: zip
+
+brews:
+  - repository:
+      owner: squz
+      name: homebrew-tap
+    homepage: https://github.com/squz/sq
+    description: Squz development daemon — serves the dashboard and bridges game servers to mobile players
+    license: MIT
+    service: |
+      run [opt_bin/"sqd"]
+      keep_alive true
+      log_path var/"log/sqd.log"
+      error_log_path var/"log/sqd.log"
