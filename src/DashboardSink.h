@@ -4,7 +4,7 @@
 // New clients receive a replay of recent messages on connect.
 #pragma once
 
-#include "../sq/src/HttpServer.h"
+#include "HttpServer.h"
 #include <spdlog/sinks/base_sink.h>
 #include <spdlog/details/synchronous_factory.h>
 
@@ -19,8 +19,8 @@
 class DashboardSink : public spdlog::sinks::base_sink<std::mutex> {
 public:
     // Register as a WebSocket handler for /ws/logs on the given HttpServer.
-    sq::WsAcceptHandler handler() {
-        return [this](std::shared_ptr<sq::WsConnection> conn) {
+    ge::WsAcceptHandler handler() {
+        return [this](std::shared_ptr<ge::WsConnection> conn) {
             // Cap blocking writes at 2s so a stale client can't block logging
             conn->setSendTimeout(2000);
             std::lock_guard lock(clientsMtx_);
@@ -109,6 +109,6 @@ protected:
 private:
     static constexpr size_t kMaxHistory = 1000;
     std::mutex clientsMtx_;
-    std::vector<std::shared_ptr<sq::WsConnection>> clients_;
+    std::vector<std::shared_ptr<ge::WsConnection>> clients_;
     std::deque<std::string> history_;
 };

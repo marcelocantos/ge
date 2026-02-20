@@ -10,7 +10,7 @@ function App() {
   const [stopped, setStopped] = useState(false);
   const ctrlCTriggered = useRef(false);
 
-  const [appName, setAppName] = useState("sq");
+  const [appName, setAppName] = useState("ge");
   const stoppedRef = useRef(false);
 
   useEffect(() => {

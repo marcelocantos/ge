@@ -17,7 +17,7 @@
 
 using asio::ip::tcp;
 
-namespace sq {
+namespace ge {
 
 namespace {
 
@@ -599,4 +599,4 @@ std::shared_ptr<WsConnection> connectWebSocket(
     }
 }
 
-} // namespace sq
+} // namespace ge

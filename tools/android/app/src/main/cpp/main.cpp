@@ -20,7 +20,7 @@ bool isEmulator() {
 // Set via: adb shell setprop debug.squz.address "192.168.1.100:42069"
 // Or just: adb shell setprop debug.squz.address "192.168.1.100" (uses default port)
 // Clear:  adb shell setprop debug.squz.address ""
-sq::ScanResult directAddress() {
+ge::ScanResult directAddress() {
     char value[PROP_VALUE_MAX] = {};
     __system_property_get("debug.squz.address", value);
     if (value[0] == '\0') return {};
@@ -50,7 +50,7 @@ int main(int argc, char* argv[]) {
             SPDLOG_INFO("Direct connection via debug.squz.address: {}:{}", direct.host, direct.port);
             return direct;
         }
-        if (isEmulator()) return sq::ScanResult{"10.0.2.2", kDefaultPort};
-        return sq::scanQRCode();
+        if (isEmulator()) return ge::ScanResult{"10.0.2.2", kDefaultPort};
+        return ge::scanQRCode();
     });
 }

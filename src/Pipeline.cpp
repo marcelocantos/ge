@@ -1,11 +1,11 @@
-#include <sq/Pipeline.h>
-#include <sq/FileIO.h>
-#include <sq/ModelFormat.h>
+#include <ge/Pipeline.h>
+#include <ge/FileIO.h>
+#include <ge/ModelFormat.h>
 #include <spdlog/spdlog.h>
 #include <sstream>
 #include <stdexcept>
 
-namespace sq {
+namespace ge {
 
 struct Pipeline::M {
     WgpuRenderPipeline pipeline;
@@ -181,7 +181,7 @@ Pipeline Pipeline::create(wgpu::Device device, const PipelineDesc& desc) {
 }
 
 Pipeline Pipeline::load(wgpu::Device device, const char* wgslPath, const PipelineDesc& baseDesc) {
-    auto file = sq::openFile(wgslPath);
+    auto file = ge::openFile(wgslPath);
     if (!file || !*file) {
         throw std::runtime_error(std::string("Failed to open shader file: ") + wgslPath);
     }
@@ -204,4 +204,4 @@ std::vector<VertexAttribute> meshVertexAttributes() {
     };
 }
 
-} // namespace sq
+} // namespace ge

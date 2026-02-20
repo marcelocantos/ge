@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 #
-# Generate an iOS direct-mode project for an sq game.
+# Generate an iOS direct-mode project for an ge game.
 #
 # Usage:
-#   sq/tools/init-ios.sh <bundle-id> <app-name> [dev-team]
+#   ge/tools/init-ios.sh <bundle-id> <app-name> [dev-team]
 #
 # Example:
-#   sq/tools/init-ios.sh com.squz.mygame "My Game" SWA3H3N7TW
+#   ge/tools/init-ios.sh com.squz.mygame "My Game" SWA3H3N7TW
 #
 # Creates ios/ at the project root with CMakeLists.txt and Info.plist.
 # Generate the Xcode project with: make ios

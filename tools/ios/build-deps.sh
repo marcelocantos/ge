@@ -3,7 +3,7 @@
 # When both device and simulator are built, creates xcframeworks.
 # Run once (or after updating library versions).
 #
-# Usage: cd sq/tools/ios && bash build-deps.sh [--device|--simulator|--all]
+# Usage: cd ge/tools/ios && bash build-deps.sh [--device|--simulator|--all]
 #   --device      Build for iOS device only (default)
 #   --simulator   Build for iOS Simulator only
 #   --all         Build for both device and simulator (creates xcframeworks)
@@ -125,7 +125,7 @@ build_sdl() {
 
     if [ ! -e "$SDL_SRC/.git" ]; then
         echo "ERROR: SDL submodule not initialised. Run:"
-        echo "  cd sq && git submodule update --init vendor/github.com/libsdl-org/SDL"
+        echo "  cd ge && git submodule update --init vendor/github.com/libsdl-org/SDL"
         exit 1
     fi
 

@@ -1,4 +1,4 @@
-#include <sq/WireTransport.h>
+#include <ge/WireTransport.h>
 #include <dawn/dawn_proc_table.h>
 #include <spdlog/spdlog.h>
 #include <cstring>
@@ -12,7 +12,7 @@ CommandHandler::CommandHandler() = default;
 CommandHandler::~CommandHandler() = default;
 }  // namespace dawn::wire
 
-namespace sq {
+namespace ge {
 
 // Memory-based command serializer for in-process wire transport
 class MemorySerializer : public dawn::wire::CommandSerializer {
@@ -187,4 +187,4 @@ dawn::wire::WireServer& WireTransport::server() {
     return *m->wireServer;
 }
 
-} // namespace sq
+} // namespace ge

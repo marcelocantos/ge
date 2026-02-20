@@ -3,7 +3,7 @@
 #include <webgpu/webgpu_cpp.h>
 #include <memory>
 
-namespace sq {
+namespace ge {
 
 class GpuContext;
 
@@ -12,7 +12,7 @@ class GpuContext;
 // construction time using SDL3_ttf, then renders text as textured quads.
 //
 // Usage:
-//   sq::TextRenderer text(ctx);
+//   ge::TextRenderer text(ctx);
 //   // Inside a render pass that already has a view-projection uniform at group(0):
 //   text.drawText(pass, viewBindGroup, "Hello", 1.0f, 2.0f, 0.35f);
 //   text.flush(pass);   // upload and draw the batched quads
@@ -51,4 +51,4 @@ private:
     std::unique_ptr<M> m;
 };
 
-} // namespace sq
+} // namespace ge

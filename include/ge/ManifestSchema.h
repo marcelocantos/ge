@@ -13,7 +13,7 @@
 #include <string>
 #include <vector>
 
-namespace sq {
+namespace ge {
 
 // A mesh reference within a model: mesh name + texture key.
 struct MeshRef {
@@ -70,4 +70,4 @@ void from_json(const nlohmann::json& j, ManifestDoc<Meta>& d) {
     j.at("models").get_to(d.models);
 }
 
-} // namespace sq
+} // namespace ge

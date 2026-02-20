@@ -1,7 +1,7 @@
-#include <sq/BindGroup.h>
+#include <ge/BindGroup.h>
 #include <stdexcept>
 
-namespace sq {
+namespace ge {
 
 // UniformBuffer implementation
 struct UniformBuffer::M {
@@ -138,4 +138,4 @@ wgpu::BindGroupLayout createTextureLayout(wgpu::Device device, uint32_t samplerB
     return createBindGroupLayout(device, {samplerEntry, textureEntry});
 }
 
-} // namespace sq
+} // namespace ge

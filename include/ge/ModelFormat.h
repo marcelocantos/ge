@@ -1,8 +1,8 @@
 #pragma once
 
-// sq model binary format — vertex layout.
+// ge model binary format — vertex layout.
 
-namespace sq {
+namespace ge {
 
 struct MeshVertex {
     float x, y, z;
@@ -11,4 +11,4 @@ struct MeshVertex {
 
 static_assert(sizeof(MeshVertex) == 20, "MeshVertex must be 20 bytes");
 
-} // namespace sq
+} // namespace ge

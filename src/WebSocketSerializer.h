@@ -5,13 +5,13 @@
 #pragma once
 
 #include "HttpServer.h"
-#include <sq/Protocol.h>
+#include <ge/Protocol.h>
 #include <dawn/wire/Wire.h>
 
 #include <cstring>
 #include <vector>
 
-namespace sq {
+namespace ge {
 
 class WebSocketSerializer : public dawn::wire::CommandSerializer {
 public:
@@ -73,4 +73,4 @@ protected:
     std::vector<char> frame_;  // reusable scratch for sendMessage
 };
 
-} // namespace sq
+} // namespace ge

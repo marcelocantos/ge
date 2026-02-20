@@ -1,16 +1,16 @@
 #pragma once
 
-#include <sq/GpuContext.h>
+#include <ge/GpuContext.h>
 #include <SDL3/SDL_events.h>
 #include <functional>
 #include <memory>
 
-namespace sq {
+namespace ge {
 
 class Audio;
 class HttpServer;
 
-// Unified session: wire mode (default) or direct native mode (SQ_DIRECT).
+// Unified session: wire mode (default) or direct native mode (GE_DIRECT).
 // Drop-in replacement for WireSession — same interface, backend selected
 // at compile time. Two separate compilation units (SessionWire.cpp,
 // SessionDirect.cpp) each guarded by #if, so the unused backend's
@@ -52,4 +52,4 @@ private:
     std::unique_ptr<M> m;
 };
 
-} // namespace sq
+} // namespace ge

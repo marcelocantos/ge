@@ -8,7 +8,7 @@
 #include <string>
 #include <vector>
 
-namespace sq {
+namespace ge {
 
 // A single HTTP request (parsed from the socket).
 struct HttpRequest {
@@ -114,4 +114,4 @@ private:
 std::shared_ptr<WsConnection> connectWebSocket(
     const std::string& host, uint16_t port, const std::string& path);
 
-} // namespace sq
+} // namespace ge

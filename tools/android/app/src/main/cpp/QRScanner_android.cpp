@@ -1,4 +1,4 @@
-// Android implementation of sq::scanQRCode().
+// Android implementation of ge::scanQRCode().
 // Uses JNI to invoke Google Code Scanner via QRScannerBridge.java.
 
 #include "QRScanner.h"
@@ -10,7 +10,7 @@
 #include <cstring>
 #include <string>
 
-namespace sq {
+namespace ge {
 
 ScanResult scanQRCode() {
     JNIEnv* env = static_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());
@@ -75,4 +75,4 @@ ScanResult scanQRCode() {
     return result;
 }
 
-} // namespace sq
+} // namespace ge

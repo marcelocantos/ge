@@ -1,8 +1,8 @@
-#include <sq/TextRenderer.h>
-#include <sq/GpuContext.h>
-#include <sq/Pipeline.h>
-#include <sq/BindGroup.h>
-#include <sq/WgpuResource.h>
+#include <ge/TextRenderer.h>
+#include <ge/GpuContext.h>
+#include <ge/Pipeline.h>
+#include <ge/BindGroup.h>
+#include <ge/WgpuResource.h>
 #include <spdlog/spdlog.h>
 
 #include <SDL3_ttf/SDL_ttf.h>
@@ -12,7 +12,7 @@
 #include <string>
 #include <vector>
 
-namespace sq {
+namespace ge {
 
 // ─── WGSL shader for textured quads with alpha blending ────────────────────
 
@@ -478,4 +478,4 @@ void TextRenderer::flush(wgpu::RenderPassEncoder& pass, wgpu::BindGroup viewBind
     m->indices.clear();
 }
 
-} // namespace sq
+} // namespace ge

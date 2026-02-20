@@ -1,12 +1,12 @@
 #pragma once
 
 #include <webgpu/webgpu_cpp.h>
-#include <sq/WgpuResource.h>
+#include <ge/WgpuResource.h>
 #include <cstddef>
 #include <cstring>
 #include <memory>
 
-namespace sq {
+namespace ge {
 
 // GPU buffer for uniform data
 class UniformBuffer {
@@ -105,4 +105,4 @@ wgpu::BindGroup createImmediateUniform(wgpu::Device device, wgpu::BindGroupLayou
     return device.CreateBindGroup(&desc);
 }
 
-} // namespace sq
+} // namespace ge

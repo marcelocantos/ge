@@ -1,22 +1,22 @@
-# sq engine — static library for CMake consumers (iOS, etc.)
+# ge engine — static library for CMake consumers (iOS, etc.)
 # Desktop builds use Module.mk instead.
 #
 # Options:
-#   SQ_DIRECT  — Build for direct rendering (no wire/networking). Default: OFF.
+#   GE_DIRECT  — Build for direct rendering (no wire/networking). Default: OFF.
 
 cmake_minimum_required(VERSION 3.22)
 if(CMAKE_SYSTEM_NAME STREQUAL "Android")
-    project(sq LANGUAGES CXX)
+    project(ge LANGUAGES CXX)
 else()
-    project(sq LANGUAGES CXX OBJCXX)
+    project(ge LANGUAGES CXX OBJCXX)
 endif()
 set(CMAKE_CXX_STANDARD 20)
 
-option(SQ_DIRECT "Direct rendering mode (no wire/networking)" OFF)
+option(GE_DIRECT "Direct rendering mode (no wire/networking)" OFF)
 
 # ── Sources ──────────────────────────────────────────
 
-set(SQ_CORE_SOURCES
+set(GE_CORE_SOURCES
     src/GpuContext.cpp
     src/Texture.cpp
     src/Mesh.cpp
@@ -31,15 +31,15 @@ set(SQ_CORE_SOURCES
 
 # Platform-specific sources
 if(CMAKE_SYSTEM_NAME STREQUAL "Android")
-    list(APPEND SQ_CORE_SOURCES src/SdlContext_android.cpp src/NativeSurface_android.cpp)
+    list(APPEND GE_CORE_SOURCES src/SdlContext_android.cpp src/NativeSurface_android.cpp)
 else()
-    list(APPEND SQ_CORE_SOURCES src/SdlContext.cpp src/NativeSurface_apple.cpp)
+    list(APPEND GE_CORE_SOURCES src/SdlContext.cpp src/NativeSurface_apple.cpp)
 endif()
 
-if(SQ_DIRECT)
-    set(SQ_SOURCES ${SQ_CORE_SOURCES} src/SessionDirect.cpp)
+if(GE_DIRECT)
+    set(GE_SOURCES ${GE_CORE_SOURCES} src/SessionDirect.cpp)
 else()
-    set(SQ_SOURCES ${SQ_CORE_SOURCES}
+    set(GE_SOURCES ${GE_CORE_SOURCES}
         src/SessionWire.cpp
         src/WireSession.cpp
         src/CaptureTarget.cpp
@@ -48,10 +48,10 @@ else()
 endif()
 
 # Prepend our directory so paths resolve when included via add_subdirectory
-list(TRANSFORM SQ_SOURCES PREPEND "${CMAKE_CURRENT_SOURCE_DIR}/"
+list(TRANSFORM GE_SOURCES PREPEND "${CMAKE_CURRENT_SOURCE_DIR}/"
      REGEX "^[^/]")
 
-add_library(sq STATIC ${SQ_SOURCES})
+add_library(ge STATIC ${GE_SOURCES})
 
 # ── ObjC++ for files that use ObjC types (Apple only) ─────────────
 
@@ -65,7 +65,7 @@ endif()
 
 # ── Public include directories (inherited by consumers) ──
 
-target_include_directories(sq PUBLIC
+target_include_directories(ge PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/vendor/include
     ${CMAKE_CURRENT_SOURCE_DIR}/vendor/github.com/gabime/spdlog/include
@@ -74,7 +74,7 @@ target_include_directories(sq PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/vendor/sdl3/include
 )
 
-if(SQ_DIRECT)
+if(GE_DIRECT)
     # astcenc (decompress-only) for ASTC→RGBA decoding at runtime
     set(ASTCENC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/vendor/github.com/ARM-software/astc-encoder/Source)
     file(GLOB ASTCENC_SOURCES ${ASTCENC_DIR}/astcenc_*.cpp)
@@ -90,14 +90,14 @@ if(SQ_DIRECT)
     add_library(etcpak STATIC ${ETCPAK_SOURCES})
     target_include_directories(etcpak PUBLIC ${ETCPAK_DIR})
 
-    target_link_libraries(sq PRIVATE astcenc etcpak)
-    target_compile_definitions(sq PRIVATE SQ_HAS_TRANSCODER)
+    target_link_libraries(ge PRIVATE astcenc etcpak)
+    target_compile_definitions(ge PRIVATE GE_HAS_TRANSCODER)
 else()
-    target_include_directories(sq PUBLIC
+    target_include_directories(ge PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/vendor/github.com/chriskohlhoff/asio/include
         ${CMAKE_CURRENT_SOURCE_DIR}/vendor/github.com/nayuki/QR-Code-generator/cpp
     )
-    target_compile_definitions(sq PUBLIC ASIO_STANDALONE)
+    target_compile_definitions(ge PUBLIC ASIO_STANDALONE)
 endif()
 
 # ── Platform-specific dependencies ────────────────────
@@ -108,7 +108,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Android")
         ${CMAKE_CURRENT_SOURCE_DIR}/vendor/github.com/libsdl-org/SDL
         ${CMAKE_BINARY_DIR}/SDL3
     )
-    target_link_libraries(sq PUBLIC SDL3::SDL3)
+    target_link_libraries(ge PUBLIC SDL3::SDL3)
 
     # SDL3_image — built from source
     set(SDL3IMAGE_VENDORED OFF)
@@ -116,34 +116,34 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Android")
         ${CMAKE_CURRENT_SOURCE_DIR}/vendor/github.com/libsdl-org/SDL_image
         ${CMAKE_BINARY_DIR}/SDL3_image
     )
-    target_link_libraries(sq PUBLIC SDL3_image::SDL3_image)
+    target_link_libraries(ge PUBLIC SDL3_image::SDL3_image)
 
     # Dawn — pre-built static libs (from build-deps.sh)
     set(DAWN_LIB_DIR ${CMAKE_CURRENT_SOURCE_DIR}/vendor/dawn/lib/android-arm64)
-    target_link_libraries(sq INTERFACE
+    target_link_libraries(ge INTERFACE
         ${DAWN_LIB_DIR}/libdawn_proc.a
         ${DAWN_LIB_DIR}/libwebgpu_dawn.a
         ${DAWN_LIB_DIR}/libdawn_wire.a
     )
 
     # Android system libs
-    target_link_libraries(sq INTERFACE android log)
+    target_link_libraries(ge INTERFACE android log)
 
 elseif(CMAKE_SYSTEM_NAME STREQUAL "iOS")
-    set(SQ_VENDOR ${CMAKE_CURRENT_SOURCE_DIR}/vendor)
-    target_link_libraries(sq INTERFACE
-        ${SQ_VENDOR}/dawn/xcframeworks/dawn_proc.xcframework
-        ${SQ_VENDOR}/dawn/xcframeworks/webgpu_dawn.xcframework
-        ${SQ_VENDOR}/dawn/xcframeworks/dawn_wire.xcframework
-        ${SQ_VENDOR}/sdl3/xcframeworks/SDL3.xcframework
-        ${SQ_VENDOR}/sdl3/xcframeworks/SDL3_image.xcframework
-        ${SQ_VENDOR}/sdl3/xcframeworks/SDL3_ttf.xcframework
-        ${SQ_VENDOR}/sdl3/xcframeworks/freetype.xcframework
-        ${SQ_VENDOR}/sdl3/xcframeworks/harfbuzz.xcframework
-        ${SQ_VENDOR}/sdl3/xcframeworks/plutosvg.xcframework
-        ${SQ_VENDOR}/sdl3/xcframeworks/plutovg.xcframework
+    set(GE_VENDOR ${CMAKE_CURRENT_SOURCE_DIR}/vendor)
+    target_link_libraries(ge INTERFACE
+        ${GE_VENDOR}/dawn/xcframeworks/dawn_proc.xcframework
+        ${GE_VENDOR}/dawn/xcframeworks/webgpu_dawn.xcframework
+        ${GE_VENDOR}/dawn/xcframeworks/dawn_wire.xcframework
+        ${GE_VENDOR}/sdl3/xcframeworks/SDL3.xcframework
+        ${GE_VENDOR}/sdl3/xcframeworks/SDL3_image.xcframework
+        ${GE_VENDOR}/sdl3/xcframeworks/SDL3_ttf.xcframework
+        ${GE_VENDOR}/sdl3/xcframeworks/freetype.xcframework
+        ${GE_VENDOR}/sdl3/xcframeworks/harfbuzz.xcframework
+        ${GE_VENDOR}/sdl3/xcframeworks/plutosvg.xcframework
+        ${GE_VENDOR}/sdl3/xcframeworks/plutovg.xcframework
     )
-    target_link_libraries(sq INTERFACE
+    target_link_libraries(ge INTERFACE
         "-framework Foundation" "-framework UIKit" "-framework Metal"
         "-framework QuartzCore" "-framework IOKit" "-framework IOSurface"
         "-framework CoreGraphics" "-framework CoreServices"

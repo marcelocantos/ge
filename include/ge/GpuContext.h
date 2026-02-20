@@ -4,7 +4,7 @@
 #include <webgpu/webgpu_cpp.h>
 #include <memory>
 
-namespace sq {
+namespace ge {
 
 class WireTransport;  // Forward declaration
 
@@ -48,4 +48,4 @@ private:
     std::unique_ptr<M> m;
 };
 
-} // namespace sq
+} // namespace ge

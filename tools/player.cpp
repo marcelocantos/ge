@@ -20,11 +20,11 @@ void parseHostPort(const char* arg, std::string& host, uint16_t& port) {
     }
 }
 
-// Try reading the port from .sqport (written by the server on startup).
-// Checks ./.sqport first (same directory as server), then /tmp/.sqport
+// Try reading the port from .geport (written by the server on startup).
+// Checks ./.geport first (same directory as server), then /tmp/.geport
 // (readable by iOS Simulator).
 bool readPortFile(uint16_t& port) {
-    for (auto* path : {".sqport", "/tmp/.sqport"}) {
+    for (auto* path : {".geport", "/tmp/.geport"}) {
         std::ifstream f(path);
         int p = 0;
         if (f >> p && p > 0 && p <= 65535) {
@@ -55,7 +55,7 @@ int main(int argc, char* argv[]) {
     if (pos < argc) {
         parseHostPort(argv[pos++], host, port);
     } else {
-        // No address given — try .sqport for auto-discovery
+        // No address given — try .geport for auto-discovery
         readPortFile(port);
     }
     if (pos < argc) width = std::stoi(argv[pos++]);

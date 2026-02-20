@@ -14,7 +14,7 @@
 
 class DaemonSink : public spdlog::sinks::base_sink<std::mutex> {
 public:
-    explicit DaemonSink(std::shared_ptr<sq::WsConnection> conn)
+    explicit DaemonSink(std::shared_ptr<ge::WsConnection> conn)
         : conn_(std::move(conn)) {}
 
 protected:
@@ -62,5 +62,5 @@ protected:
     void flush_() override {}
 
 private:
-    std::shared_ptr<sq::WsConnection> conn_;
+    std::shared_ptr<ge::WsConnection> conn_;
 };

@@ -1,11 +1,11 @@
 #pragma once
 
-#include <sq/GpuContext.h>
+#include <ge/GpuContext.h>
 #include <SDL3/SDL_events.h>
 #include <functional>
 #include <memory>
 
-namespace sq {
+namespace ge {
 
 class Audio;
 class HttpServer;
@@ -16,7 +16,7 @@ class HttpServer;
 // The resulting GpuContext is owned by the session.
 //
 // Listen address is resolved in this order:
-//   1. SQ_WIRE_ADDR environment variable
+//   1. GE_WIRE_ADDR environment variable
 //   2. Default: "42069"
 // Format: "port" or "address:port"
 class WireSession {
@@ -65,4 +65,4 @@ private:
     std::unique_ptr<M> m;
 };
 
-} // namespace sq
+} // namespace ge

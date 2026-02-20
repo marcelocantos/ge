@@ -3,7 +3,7 @@
 #include <webgpu/webgpu_cpp.h>
 #include <memory>
 
-namespace sq {
+namespace ge {
 
 // Pure asset class for textures
 class Texture {
@@ -31,4 +31,4 @@ private:
     Texture(std::unique_ptr<M> impl);
 };
 
-} // namespace sq
+} // namespace ge

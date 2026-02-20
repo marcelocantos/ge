@@ -1,8 +1,8 @@
-#include <sq/Session.h>
-#include <sq/Audio.h>
-#include <sq/WireSession.h>
+#include <ge/Session.h>
+#include <ge/Audio.h>
+#include <ge/WireSession.h>
 
-namespace sq {
+namespace ge {
 
 struct Session::M {
     WireSession wire;
@@ -22,4 +22,4 @@ bool Session::run(RunConfig config) {
     return m->wire.run({std::move(config.onUpdate), std::move(config.onRender), std::move(config.onEvent), std::move(config.onResize), config.sensors});
 }
 
-} // namespace sq
+} // namespace ge

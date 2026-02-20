@@ -2,7 +2,7 @@
 # Cross-compile Dawn for Android arm64-v8a.
 # Run once (or after updating the Dawn version).
 #
-# Usage: cd sq/tools/android && bash build-deps.sh
+# Usage: cd ge/tools/android && bash build-deps.sh
 #
 # Prerequisites:
 #   - Android NDK (via Android Studio SDK Manager or standalone)

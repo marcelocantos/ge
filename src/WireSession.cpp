@@ -1,10 +1,10 @@
 #define ASIO_STANDALONE
 #include <asio.hpp>
 
-#include <sq/WireSession.h>
-#include <sq/Audio.h>
-#include <sq/DeltaTimer.h>
-#include <sq/Protocol.h>
+#include <ge/WireSession.h>
+#include <ge/Audio.h>
+#include <ge/DeltaTimer.h>
+#include <ge/Protocol.h>
 #include <SDL3/SDL.h>
 #include <spdlog/spdlog.h>
 #include <dawn/dawn_proc.h>
@@ -12,7 +12,7 @@
 #include <webgpu/webgpu_cpp.h>
 
 #include "DaemonSink.h"
-#include <sq/Tweak.h>
+#include <ge/Tweak.h>
 #include "DashboardSink.h"
 #include "HttpServer.h"
 #include "WebSocketSerializer.h"
@@ -22,7 +22,10 @@
 #include <qrcodegen.hpp>
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
 #include <stb_image_write.h>
+#pragma clang diagnostic pop
 
 #include <atomic>
 #include <chrono>
@@ -48,8 +51,8 @@ std::shared_ptr<DashboardSink> g_dashSink;
 // ---------------------------------------------------------------------------
 class PreviewBroadcast {
 public:
-    sq::WsAcceptHandler handler() {
-        return [this](std::shared_ptr<sq::WsConnection> conn) {
+    ge::WsAcceptHandler handler() {
+        return [this](std::shared_ptr<ge::WsConnection> conn) {
             conn->setSendTimeout(2000);
             // Send current device info and orientation to new client
             char buf[128];
@@ -174,7 +177,7 @@ private:
     }
 
     std::mutex mtx_;
-    std::vector<std::shared_ptr<sq::WsConnection>> clients_;
+    std::vector<std::shared_ptr<ge::WsConnection>> clients_;
     int orientation_ = 0;
     int deviceW_ = 0, deviceH_ = 0, pixelRatio_ = 1;
 };
@@ -419,7 +422,7 @@ public:
 };
 
 // Dawn wire command constants for filtering large texture uploads.
-// Values from WireCmd_autogen.h — must match the Dawn version in sq/vendor/dawn.
+// Values from WireCmd_autogen.h — must match the Dawn version in ge/vendor/dawn.
 namespace wire_filter {
 constexpr size_t kCmdHeaderSize = 8;   // CmdHeader: uint64_t commandSize
 constexpr size_t kWireCmdSize = 4;     // WireCmd: uint32_t
@@ -457,9 +460,9 @@ constexpr size_t kThreshold = 4 * 1024; // 4 KB — defer WriteTexture cmds abov
 } // namespace wire_filter
 
 // CommandSerializer that sends wire commands over WebSocket with deferred-mip filtering.
-class WsServerSerializer : public sq::WebSocketSerializer {
+class WsServerSerializer : public ge::WebSocketSerializer {
 public:
-    explicit WsServerSerializer(std::shared_ptr<sq::WsConnection> conn)
+    explicit WsServerSerializer(std::shared_ptr<ge::WsConnection> conn)
         : WebSocketSerializer(std::move(conn), wire::kWireCommandMagic) {}
 
     bool Flush() override {
@@ -806,7 +809,7 @@ void parseListenAddr(const std::string& listenAddr, std::string& address, uint16
 }
 
 std::string resolveListenAddr() {
-    const char* env = std::getenv("SQ_WIRE_ADDR");
+    const char* env = std::getenv("GE_WIRE_ADDR");
     if (env && env[0]) return env;
     return "0";  // OS-assigned port by default
 }
@@ -889,7 +892,7 @@ std::vector<char> generateQrPng(const std::string& url) {
 
 } // namespace
 
-namespace sq {
+namespace ge {
 
 struct WireSession::M {
     std::unique_ptr<HttpServer> httpServer;  // standalone mode only
@@ -916,8 +919,8 @@ struct WireSession::M {
 WireSession::WireSession()
     : m(std::make_unique<M>())
 {
-    // Check for daemon mode: SQ_DAEMON=1 or SQ_DAEMON_ADDR=host:port
-    if (auto* env = std::getenv("SQ_DAEMON_ADDR")) {
+    // Check for daemon mode: GE_DAEMON=1 or GE_DAEMON_ADDR=host:port
+    if (auto* env = std::getenv("GE_DAEMON_ADDR")) {
         m->daemonMode = true;
         std::string addr(env);
         auto colon = addr.rfind(':');
@@ -927,7 +930,7 @@ WireSession::WireSession()
         } else {
             m->daemonHost = addr;
         }
-    } else if (auto* env = std::getenv("SQ_DAEMON")) {
+    } else if (auto* env = std::getenv("GE_DAEMON")) {
         if (std::string(env) == "1") m->daemonMode = true;
     }
 
@@ -985,10 +988,10 @@ WireSession::WireSession()
         // Use actual port (may differ from requested when using port 0)
         auto actualPort = m->httpServer->port();
 
-        // SQ_PUBLISH_ADDR overrides the advertised address in the QR code.
+        // GE_PUBLISH_ADDR overrides the advertised address in the QR code.
         std::string pubHost;
         uint16_t pubPort = actualPort;
-        if (auto* env = std::getenv("SQ_PUBLISH_ADDR")) {
+        if (auto* env = std::getenv("GE_PUBLISH_ADDR")) {
             std::string pubAddr = env;
             auto colon = pubAddr.rfind(':');
             if (colon != std::string::npos) {
@@ -1003,7 +1006,7 @@ WireSession::WireSession()
         m->qrUrl = "squz-remote://" + pubHost + ":" + std::to_string(pubPort);
 
         // Write port file for player auto-discovery
-        for (auto* path : {".sqport", "/tmp/.sqport"}) {
+        for (auto* path : {".geport", "/tmp/.geport"}) {
             std::ofstream pf(path);
             if (pf) pf << actualPort;
         }
@@ -1035,7 +1038,7 @@ WireSession::WireSession()
         });
         m->httpServer->ws("/ws/logs", g_dashSink->handler());
         m->httpServer->ws("/ws/preview", g_previewBroadcast->handler());
-        m->httpServer->serveStatic("/", "sq/web/dist");
+        m->httpServer->serveStatic("/", "ge/web/dist");
 
         // Start accepting HTTP connections
         m->httpServer->start();
@@ -1495,7 +1498,7 @@ bool WireSession::run(RunConfig config) {
             // deliveries, giving progressive quality (blurry → sharp).
             if (m->serializer->hasDeferredMips()) {
                 static const int mipDelayMs = [] {
-                    const char* e = std::getenv("SQ_MIP_DELAY_MS");
+                    const char* e = std::getenv("GE_MIP_DELAY_MS");
                     return (e && e[0]) ? std::atoi(e) : 0;
                 }();
                 static auto lastMipTime = std::chrono::steady_clock::now();
@@ -1576,4 +1579,4 @@ bool WireSession::run(RunConfig config) {
     }
 }
 
-} // namespace sq
+} // namespace ge

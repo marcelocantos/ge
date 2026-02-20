@@ -6,7 +6,7 @@
 #include <memory>
 #include <string>
 
-namespace sq {
+namespace ge {
 
 // Pure asset class for mesh geometry
 class Mesh {
@@ -36,4 +36,4 @@ private:
     Mesh(std::unique_ptr<M> impl);
 };
 
-} // namespace sq
+} // namespace ge

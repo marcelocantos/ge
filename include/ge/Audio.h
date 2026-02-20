@@ -7,7 +7,7 @@
 
 namespace wire { struct AudioCommand; }
 
-namespace sq {
+namespace ge {
 
 class Audio {
 public:
@@ -43,4 +43,4 @@ private:
     std::unique_ptr<M> m;
 };
 
-} // namespace sq
+} // namespace ge

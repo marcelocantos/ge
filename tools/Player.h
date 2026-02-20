@@ -4,7 +4,7 @@
 #include <memory>
 #include <string>
 
-namespace sq { struct ScanResult; }
+namespace ge { struct ScanResult; }
 
 constexpr int kDefaultWidth = 390;
 constexpr int kDefaultHeight = 844;
@@ -25,4 +25,4 @@ private:
 
 // Mobile reconnect loop: calls discover() to get a server address, connects,
 // and loops back to discovery on disconnect. Returns non-zero on fatal error.
-int playerLoop(std::function<sq::ScanResult()> discover);
+int playerLoop(std::function<ge::ScanResult()> discover);

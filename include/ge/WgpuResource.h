@@ -4,7 +4,7 @@
 #include <stdexcept>
 #include <utility>
 
-namespace sq {
+namespace ge {
 
 // RAII wrapper for WebGPU resources.
 // Dawn's wgpu::* types are already reference-counted, but this wrapper provides:
@@ -68,4 +68,4 @@ using WgpuPipelineLayout = WgpuResource<wgpu::PipelineLayout>;
 using WgpuRenderPipeline = WgpuResource<wgpu::RenderPipeline>;
 using WgpuShaderModule = WgpuResource<wgpu::ShaderModule>;
 
-} // namespace sq
+} // namespace ge

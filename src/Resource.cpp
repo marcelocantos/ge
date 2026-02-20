@@ -1,10 +1,10 @@
-#include <sq/Resource.h>
+#include <ge/Resource.h>
 #include <SDL3/SDL.h>
 #if defined(__APPLE__)
 #include <TargetConditionals.h>
 #endif
 
-namespace sq {
+namespace ge {
 
 std::string resource(const std::string& relativePath) {
 #if (defined(__APPLE__) && TARGET_OS_IOS) || defined(__ANDROID__)
@@ -22,4 +22,4 @@ std::string resource(const std::string& relativePath) {
 #endif
 }
 
-} // namespace sq
+} // namespace ge
