@@ -1,9 +1,9 @@
-name: Release sqd
+name: Release ged
 
 on:
   push:
     tags:
-      - "sqd/v*"
+      - "ged/v*"
 
 permissions:
   contents: write
@@ -18,7 +18,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version-file: sqd/go.mod
+          go-version-file: ged/go.mod
 
       - uses: goreleaser/goreleaser-action@v6
         with:

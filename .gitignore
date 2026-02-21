@@ -1,6 +1,6 @@
 build/
-.sqport
-sqd/web/
+.geport
+ged/web/
 /.claude/*
 !/.claude/skills/
 !/.claude/agents/

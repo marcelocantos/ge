@@ -76,6 +76,10 @@ ge/BOX2D_SRC = $(wildcard $(ge/BOX2D_DIR)/src/*.c)
 ge/BOX2D_OBJ = $(patsubst %.c,$(BUILD_DIR)/%.o,$(ge/BOX2D_SRC))
 ge/BOX2D_CFLAGS = -I$(ge/BOX2D_DIR)/include -I$(ge/BOX2D_DIR)/src -O2 -std=c17
 
+# SQLite3 (C code, vendored amalgamation — used by Tweak.h)
+ge/SQLITE_SRC = ge/vendor/src/sqlite3.c
+ge/SQLITE_OBJ = $(BUILD_DIR)/ge/vendor/sqlite3.o
+
 # Triangle library (C code, used by precompute tool)
 ge/TRIANGLE_SRC = ge/vendor/src/triangle.c
 ge/TRIANGLE_OBJ = $(BUILD_DIR)/ge/vendor/triangle.o
@@ -112,7 +116,7 @@ $(BUILD_DIR)/ge/src/%.o: ge/src/%.cpp
 	$(CXX) $(CXXFLAGS) $(SDL_CFLAGS) -MMD -MP -c $< -o $@
 
 # Static library
-$(ge/LIB): $(ge/OBJ)
+$(ge/LIB): $(ge/OBJ) $(ge/SQLITE_OBJ)
 	@mkdir -p $(dir $@)
 	$(AR) rcs $@ $^
 
@@ -125,6 +129,11 @@ $(BUILD_DIR)/ge/vendor/%.o: ge/vendor/%.cpp
 $(BUILD_DIR)/$(ge/BOX2D_DIR)/src/%.o: $(ge/BOX2D_DIR)/src/%.c
 	@mkdir -p $(dir $@)
 	$(CC) $(ge/BOX2D_CFLAGS) -MMD -MP -c $< -o $@
+
+# SQLite3 (C amalgamation)
+$(ge/SQLITE_OBJ): $(ge/SQLITE_SRC)
+	@mkdir -p $(dir $@)
+	$(CC) -O2 -Ige/vendor/include -c $< -o $@
 
 # Triangle library
 $(ge/TRIANGLE_OBJ): $(ge/TRIANGLE_SRC)

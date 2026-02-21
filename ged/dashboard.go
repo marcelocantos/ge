@@ -150,7 +150,7 @@ func (d *Daemon) registerStaticFiles(mux *http.ServeMux) {
 	// Try to find the web dist directory relative to the binary or cwd
 	candidates := []string{
 		"ge/web/dist",
-		filepath.Join(filepath.Dir(os.Args[0]), "..", "sq", "web", "dist"),
+		filepath.Join(filepath.Dir(os.Args[0]), "..", "ge", "web", "dist"),
 	}
 
 	var distDir string

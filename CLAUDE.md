@@ -209,7 +209,9 @@ player: $(ge/PLAYER)
 | `tools/` | Player: shared core (`player_core.cpp`), desktop entry (`player.cpp`), platform backends |
 | `tools/ios/` | iOS player: Xcode project, QR scanner, build scripts |
 | `tools/android/` | Android player: Gradle project, QR scanner |
-| `vendor/` | Third-party dependencies: Dawn, spdlog, linalg.h, earcut.hpp, doctest, Triangle, asio, qrcodegen |
+| `vendor/` | Third-party dependencies: Dawn, spdlog, linalg.h, earcut.hpp, doctest, Triangle, asio, qrcodegen, SQLite3 |
+
+**Note:** SQLite3 is compiled into `libge.a` (from the vendored amalgamation `vendor/src/sqlite3.c`). Do not add `-lsqlite3` to link lines — it's already included.
 
 ## Wire Protocol
 

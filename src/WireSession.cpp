@@ -913,7 +913,7 @@ struct WireSession::M {
     bool daemonMode = false;
     std::string daemonHost = "localhost";
     uint16_t daemonPort = 42069;
-    std::shared_ptr<WsConnection> sidebandConn;  // sideband WS to sqd
+    std::shared_ptr<WsConnection> sidebandConn;  // sideband WS to ged
     std::shared_ptr<DaemonSink> daemonSink;
     uint64_t lastTweakGen = 0;
 };
@@ -937,25 +937,25 @@ WireSession::WireSession()
     }
 
     if (m->daemonMode) {
-        // Daemon mode: connect to sqd, no local HTTP server
-        SPDLOG_INFO("Daemon mode: connecting to sqd at {}:{}...",
+        // Daemon mode: connect to ged, no local HTTP server
+        SPDLOG_INFO("Daemon mode: connecting to ged at {}:{}...",
                     m->daemonHost, m->daemonPort);
 
-        // Retry sideband connection (sqd may be cleaning up after previous session)
+        // Retry sideband connection (ged may be cleaning up after previous session)
         for (int attempt = 1; ; ++attempt) {
             m->sidebandConn = connectWebSocket(
                 m->daemonHost, m->daemonPort, "/ws/server");
             if (m->sidebandConn) break;
             if (attempt >= 10) {
                 throw std::runtime_error(
-                    "Failed to connect to sqd at " + m->daemonHost + ":" +
-                    std::to_string(m->daemonPort) + " — is sqd running?");
+                    "Failed to connect to ged at " + m->daemonHost + ":" +
+                    std::to_string(m->daemonPort) + " — is ged running?");
             }
             SPDLOG_WARN("Sideband connect failed, retrying in 500ms... (attempt {})", attempt);
             std::this_thread::sleep_for(std::chrono::milliseconds(500));
         }
 
-        // Write port file so bare `bin/player` finds sqd
+        // Write port file so bare `bin/player` finds ged
         for (auto* path : {".geport", "/tmp/.geport"}) {
             std::ofstream pf(path);
             if (pf) pf << m->daemonPort;
@@ -967,7 +967,7 @@ WireSession::WireSession()
                  R"({"type":"hello","name":"%s","pid":%d})",
                  getprogname(), getpid());
         m->sidebandConn->sendText(std::string(hello));
-        SPDLOG_INFO("Registered with sqd as '{}' (pid {})", getprogname(), getpid());
+        SPDLOG_INFO("Registered with ged as '{}' (pid {})", getprogname(), getpid());
 
         // Install daemon log sink (forwards to sideband)
         m->daemonSink = std::make_shared<DaemonSink>(m->sidebandConn);
@@ -1061,15 +1061,15 @@ WireSession::WireSession()
 
 void WireSession::connect() {
     if (m->daemonMode) {
-        // Daemon mode: connect wire WS to sqd, wait for DeviceInfo
-        SPDLOG_INFO("Connecting wire to sqd...");
+        // Daemon mode: connect wire WS to ged, wait for DeviceInfo
+        SPDLOG_INFO("Connecting wire to ged...");
 
         m->wsConn = connectWebSocket(
             m->daemonHost, m->daemonPort, "/ws/server/wire");
         if (!m->wsConn) {
-            throw std::runtime_error("Failed to connect wire WS to sqd");
+            throw std::runtime_error("Failed to connect wire WS to ged");
         }
-        SPDLOG_INFO("Wire connected to sqd, waiting for player...");
+        SPDLOG_INFO("Wire connected to ged, waiting for player...");
     } else {
         // Standalone mode: wait for player WebSocket connection
         SPDLOG_INFO("Waiting for player connection...");

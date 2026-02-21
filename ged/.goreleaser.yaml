@@ -1,14 +1,14 @@
-project_name: sqd
+project_name: ged
 
 before:
   hooks:
-    - mkdir -p sqd/web/dist/assets
-    - cp -r web/dist/. sqd/web/dist/
+    - mkdir -p ged/web/dist/assets
+    - cp -r web/dist/. ged/web/dist/
 
 builds:
   - main: .
-    dir: sqd
-    binary: sqd
+    dir: ged
+    binary: ged
     ldflags:
       - -s -w -X main.version={{.Version}}
     env:
@@ -29,11 +29,11 @@ brews:
   - repository:
       owner: squz
       name: homebrew-tap
-    homepage: https://github.com/squz/sq
-    description: Squz development daemon — serves the dashboard and bridges game servers to mobile players
+    homepage: https://github.com/marcelocantos/ge
+    description: ge development daemon — serves the dashboard and bridges game servers to mobile players
     license: MIT
     service: |
-      run [opt_bin/"sqd"]
+      run [opt_bin/"ged"]
       keep_alive true
-      log_path var/"log/sqd.log"
-      error_log_path var/"log/sqd.log"
+      log_path var/"log/ged.log"
+      error_log_path var/"log/ged.log"

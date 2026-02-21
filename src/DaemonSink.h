@@ -1,4 +1,4 @@
-// spdlog sink that forwards log messages to sqd daemon via sideband WebSocket.
+// spdlog sink that forwards log messages to ged daemon via sideband WebSocket.
 // Each log entry is sent as a JSON text frame:
 //   {"type":"log","data":{"ts":"2026-02-11T12:34:56.789","level":"info","msg":"..."}}
 #pragma once

@@ -20,7 +20,7 @@ func main() {
 	flag.Parse()
 
 	if *showVersion {
-		fmt.Println("sqd", version)
+		fmt.Println("ged", version)
 		os.Exit(0)
 	}
 
