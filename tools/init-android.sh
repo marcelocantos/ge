@@ -6,7 +6,7 @@
 #   ge/tools/init-android.sh <package> <app-name>
 #
 # Example:
-#   ge/tools/init-android.sh com.squz.mygame "My Game"
+#   ge/tools/init-android.sh com.marcelocantos.mygame "My Game"
 #
 # Creates android/ at the project root with a complete Gradle project
 # that builds a standalone APK (direct rendering via Vulkan/Dawn).
@@ -15,7 +15,7 @@ set -euo pipefail
 
 if [ $# -lt 2 ]; then
     echo "Usage: $0 <package> <app-name>"
-    echo "  package   — Java package / application ID (e.g. com.squz.mygame)"
+    echo "  package   — Java package / application ID (e.g. com.marcelocantos.mygame)"
     echo "  app-name  — display name shown on the device (e.g. \"My Game\")"
     exit 1
 fi

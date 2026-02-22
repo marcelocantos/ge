@@ -15,11 +15,11 @@ import (
 
 // Wire protocol constants (matching Protocol.h)
 const (
-	kDeviceInfoMagic  = 0x59573244
-	kSessionEndMagic  = 0x5957324D
-	kFrameReadyMagic  = 0x59573247
-	kWireCommandMagic = 0x59573243
-	kProtocolVersion  = 2
+	kDeviceInfoMagic  = 0x47453244
+	kSessionEndMagic  = 0x4745324D
+	kFrameReadyMagic  = 0x47453247
+	kWireCommandMagic = 0x47453243
+	kProtocolVersion  = 3
 )
 
 // makeDeviceInfo constructs a wire DeviceInfo frame: MessageHeader + DeviceInfo struct.

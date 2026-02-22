@@ -18,7 +18,7 @@
         android:hardwareAccelerated="true">
 
         <activity
-            android:name="com.squz.player.SqzActivity"
+            android:name="com.marcelocantos.player.GeActivity"
             android:label="@string/app_name"
             android:alwaysRetainTaskState="true"
             android:launchMode="singleInstance"

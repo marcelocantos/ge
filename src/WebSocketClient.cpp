@@ -219,7 +219,7 @@ std::shared_ptr<WsConnection> connectWebSocket(
 
         // Generate a client key (16 bytes base64-encoded)
         std::string clientKey = sha1::base64(
-            reinterpret_cast<const uint8_t*>("squz-ws-client!!"), 16);
+            reinterpret_cast<const uint8_t*>("ge-ws-client!!!!"), 16);
 
         // Send WebSocket upgrade request
         std::ostringstream req;

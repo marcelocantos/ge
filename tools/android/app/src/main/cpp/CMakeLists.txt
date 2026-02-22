@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(SquzRemote LANGUAGES CXX)
+project(GeRemote LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 23)
 
 set(GE_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../../../../../..)

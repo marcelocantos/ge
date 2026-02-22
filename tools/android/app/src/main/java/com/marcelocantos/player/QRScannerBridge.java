@@ -1,4 +1,4 @@
-package com.squz.player;
+package com.marcelocantos.player;
 
 import android.app.Activity;
 
@@ -29,7 +29,7 @@ public class QRScannerBridge {
             scanner.startScan()
                 .addOnSuccessListener(barcode -> {
                     String value = barcode.getRawValue();
-                    if (value != null && value.startsWith("squz-remote://")) {
+                    if (value != null && value.startsWith("ge-remote://")) {
                         scannedUrl = value;
                     }
                     scanComplete = true;

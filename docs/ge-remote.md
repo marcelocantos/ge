@@ -1,13 +1,13 @@
-# Squz Remote - Mobile Player Setup
+# ge Remote - Mobile Player Setup
 
-Squz Remote is a mobile companion app that renders the game on an iOS or Android device. The game runs as a headless server on your Mac, streaming WebGPU draw calls over the local network to the phone/tablet via Dawn's wire protocol.
+ge Remote is a mobile companion app that renders the game on an iOS or Android device. The game runs as a headless server on your Mac, streaming WebGPU draw calls over the local network to the phone/tablet via Dawn's wire protocol.
 
-You don't need to modify Squz Remote to develop the game. The mobile app is a thin player - all game logic runs in the parent repo. This guide covers how to build the player, install it on a device, and connect it to your development server.
+You don't need to modify ge Remote to develop the game. The mobile app is a thin player - all game logic runs in the parent repo. This guide covers how to build the player, install it on a device, and connect it to your development server.
 
 ## How it works
 
 1. `make run` starts the game as a wire server and prints a QR code in the terminal
-2. Squz Remote on the phone scans the QR code to discover the server's IP and port
+2. ge Remote on the phone scans the QR code to discover the server's IP and port
 3. The server streams all rendering commands over TCP; the phone replays them on its GPU
 4. Touch input on the phone is sent back to the server
 
@@ -112,7 +112,7 @@ cd ge/tools/android
 ./gradlew installDebug
 ```
 
-Launch "Squz Remote" from the app drawer. It opens Google's barcode scanner for QR scanning.
+Launch "ge Player" from the app drawer. It opens Google's barcode scanner for QR scanning.
 
 ## Connecting to the game server
 
@@ -124,7 +124,7 @@ make run
 
 The server prints a QR code in the terminal. Scan it with the phone. The game should appear within a few seconds.
 
-Both devices must be on the same Wi-Fi network. The QR code encodes `squz-remote://<lan-ip>:42069`.
+Both devices must be on the same Wi-Fi network. The QR code encodes `ge-remote://<lan-ip>:42069`.
 
 ## Troubleshooting
 

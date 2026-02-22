@@ -119,7 +119,7 @@
             continue;
         NSString *value =
             [(AVMetadataMachineReadableCodeObject *)obj stringValue];
-        if ([value hasPrefix:@"squz-remote://"]) {
+        if ([value hasPrefix:@"ge-remote://"]) {
             [_session stopRunning];
             if (self.onURL) self.onURL(value);
             return;
@@ -200,7 +200,7 @@ ScanResult scanQRCode() {
 
         window.hidden = YES;
 
-        // Parse squz-remote://host:port
+        // Parse ge-remote://host:port
         NSURL *parsed = [NSURL URLWithString:scannedURL];
         ScanResult result;
         if (parsed.host) {

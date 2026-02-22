@@ -47,12 +47,12 @@ func main() {
 
 	// mDNS advertisement
 	hostname, _ := os.Hostname()
-	mdns, err := zeroconf.Register(hostname, "_squz._tcp", "local.", *port, nil, nil)
+	mdns, err := zeroconf.Register(hostname, "_ge._tcp", "local.", *port, nil, nil)
 	if err != nil {
 		slog.Warn("mDNS registration failed", "err", err)
 	} else {
 		defer mdns.Shutdown()
-		slog.Info("mDNS registered", "service", "_squz._tcp", "port", *port)
+		slog.Info("mDNS registered", "service", "_ge._tcp", "port", *port)
 	}
 
 	// Handle signals

@@ -7,7 +7,7 @@ provides QR codes for mobile device pairing.
 ## Installation
 
 ```bash
-brew install squz/tap/ged
+brew install marcelocantos/tap/ged
 ```
 
 Or build from source:
@@ -55,7 +55,7 @@ All endpoints are on the same port as the dashboard.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/api/qr` | QR code PNG (`squz-remote://<lan-ip>:<port>`) |
+| `GET` | `/api/qr` | QR code PNG (`ge-remote://<lan-ip>:<port>`) |
 | `GET` | `/api/url` | Connection URL as JSON |
 | `GET` | `/api/info` | Server status: `{"connected":bool,"name":string,"pid":int,"sessions":int}` |
 | `GET` | `/api/tweaks` | Current tweak state JSON |
@@ -111,7 +111,7 @@ The game server address defaults to `localhost:42069`. Override with
 When installed via Homebrew, ged can run as a background service:
 
 ```bash
-brew services start squz/tap/ged
+brew services start marcelocantos/tap/ged
 ```
 
 Logs are written to `/opt/homebrew/var/log/ged.log`.

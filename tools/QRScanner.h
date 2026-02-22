@@ -9,7 +9,7 @@ struct ScanResult {
     uint16_t port = 0;
 };
 
-// Presents a full-screen camera view and waits for a squz-remote:// QR code.
+// Presents a full-screen camera view and waits for a ge-remote:// QR code.
 // Returns the parsed host and port. Blocks until a valid code is scanned.
 ScanResult scanQRCode();
 

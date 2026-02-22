@@ -4,7 +4,7 @@
 
 Reusable rendering and asset engine built on Dawn (WebGPU) + SDL3. Consumed as a git submodule; build integration via `Module.mk`.
 
-Apps built on ge use a **server/player architecture**: the app (server) issues WebGPU draw commands through Dawn's wire protocol over TCP, and the platform-native Squz Player renders them and sends input back. This means the app itself has zero platform-specific code — ge and the player handle all of that.
+Apps built on ge use a **server/player architecture**: the app (server) issues WebGPU draw commands through Dawn's wire protocol over TCP, and the platform-native ge Player renders them and sends input back. This means the app itself has zero platform-specific code — ge and the player handle all of that.
 
 ## Integrating ge into a New App
 
@@ -150,8 +150,8 @@ Engine-internal variables use the `ge/` prefix. These are read-only — the pare
 | `ge/FRAMEWORK_LIBS` | Alias for `$(ge/DAWN_LIBS)` |
 | `ge/TEST_SRC`, `ge/TEST_OBJ` | Unit test sources and objects |
 | `ge/TRIANGLE_OBJ` | Triangle library object (for tools that need triangulation) |
-| `ge/PLAYER_SRC`, `ge/PLAYER_OBJ` | Squz Player source and object |
-| `ge/PLAYER` | Squz Player binary path (`bin/player`) |
+| `ge/PLAYER_SRC`, `ge/PLAYER_OBJ` | ge Player source and object |
+| `ge/PLAYER` | ge Player binary path (`bin/player`) |
 
 ### Shared Variables
 
@@ -242,14 +242,14 @@ Player → Server:  MessageHeader{kSdlEventMagic} + SDL_Event structs (input)
 
 | Constant | Value | Purpose |
 |----------|-------|---------|
-| `kProtocolVersion` | 1 | Protocol version for compatibility checking |
+| `kProtocolVersion` | 3 | Protocol version for compatibility checking |
 | `kMaxMessageSize` | 512 MB | Accommodates initial texture uploads over wire |
-| `kDeviceInfoMagic` | `0x59573244` | "YW2D" — player device info |
-| `kSessionInitMagic` | `0x59573253` | "YW2S" — server session init |
-| `kSessionReadyMagic` | `0x59573259` | "YW2Y" — player ready |
-| `kWireCommandMagic` | `0x59573243` | "YW2C" — GPU commands |
-| `kWireResponseMagic` | `0x59573252` | "YW2R" — GPU responses |
-| `kSdlEventMagic` | `0x59573249` | "YW2I" — input events |
+| `kDeviceInfoMagic` | `0x47453244` | "GE2D" — player device info |
+| `kSessionInitMagic` | `0x47453253` | "GE2S" — server session init |
+| `kSessionReadyMagic` | `0x47453259` | "GE2Y" — player ready |
+| `kWireCommandMagic` | `0x47453243` | "GE2C" — GPU commands |
+| `kWireResponseMagic` | `0x47453252` | "GE2R" — GPU responses |
+| `kSdlEventMagic` | `0x47453249` | "GE2I" — input events |
 
 ### Address Resolution
 
@@ -261,7 +261,7 @@ Players connect via ged, which handles QR codes, WebSocket routing, and session 
 
 ## Player
 
-The Squz Player is a shared binary that works with any ge app. It has no app-specific code — it just renders whatever wire commands the server sends and forwards input back.
+The ge Player is a shared binary that works with any ge app. It has no app-specific code — it just renders whatever wire commands the server sends and forwards input back.
 
 ### Platform Backends
 
@@ -326,7 +326,7 @@ The APK is output to `app/build/outputs/apk/debug/app-debug.apk`.
 adb install -r ge/tools/android/app/build/outputs/apk/debug/app-debug.apk
 ```
 
-**Important:** The package name is `com.squz.player` (not `com.squz.remote`). The main activity is `.SqzActivity`.
+**Important:** The package name is `com.marcelocantos.player`. The main activity is `.GeActivity`.
 
 ### Running
 
@@ -336,9 +336,9 @@ adb install -r ge/tools/android/app/build/outputs/apk/debug/app-debug.apk
    ```
 2. Launch the player on the device:
    ```bash
-   adb shell am start -n com.squz.player/.SqzActivity
+   adb shell am start -n com.marcelocantos.player/.GeActivity
    ```
-3. Point the phone camera at the terminal QR code (encodes `squz-remote://<lan-ip>:<port>`).
+3. Point the phone camera at the terminal QR code (encodes `ge-remote://<lan-ip>:<port>`).
 4. The phone connects via WebSocket and renders the app.
 
 **Emulator:** Connects automatically to `10.0.2.2:42069` (host localhost alias), so set `GE_WIRE_ADDR=42069` when launching the server.
@@ -348,7 +348,7 @@ adb install -r ge/tools/android/app/build/outputs/apk/debug/app-debug.apk
 Spdlog output is routed to Android logcat via the `android_sink`. View logs with:
 
 ```bash
-adb logcat -s "SquzPlayer"
+adb logcat -s "GePlayer"
 ```
 
 ### Adding Source Files to the Android Build

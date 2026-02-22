@@ -70,7 +70,7 @@ jobs:
             CODE_SIGN_STYLE=Manual \
             CODE_SIGN_IDENTITY="Apple Distribution" \
             DEVELOPMENT_TEAM=SWA3H3N7TW \
-            PROVISIONING_PROFILE_SPECIFIER="Squz Player Distribution" \
+            PROVISIONING_PROFILE_SPECIFIER="ge Player Distribution" \
             MARKETING_VERSION=${{ env.VERSION }} \
             CURRENT_PROJECT_VERSION=${{ github.run_number }}
 

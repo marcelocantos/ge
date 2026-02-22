@@ -1,4 +1,4 @@
-// Desktop Squz Player entry point.
+// Desktop ge Player entry point.
 // Usage: bin/player [--maximized] [host:port] [width] [height]
 
 #include "Player.h"
@@ -64,7 +64,7 @@ int main(int argc, char* argv[]) {
     if (pos < argc) width = std::stoi(argv[pos++]);
     if (pos < argc) height = std::stoi(argv[pos++]);
 
-    SPDLOG_INFO("Squz Player starting...");
+    SPDLOG_INFO("ge Player starting...");
     SPDLOG_INFO("Target: {}:{}, dimensions: {}x{}{}{}", host, port, width, height,
                 maximized ? " (maximized)" : "",
                 headless ? " (headless)" : "");

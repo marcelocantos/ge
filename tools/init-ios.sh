@@ -6,7 +6,7 @@
 #   ge/tools/init-ios.sh <bundle-id> <app-name> [dev-team]
 #
 # Example:
-#   ge/tools/init-ios.sh com.squz.mygame "My Game" SWA3H3N7TW
+#   ge/tools/init-ios.sh com.marcelocantos.mygame "My Game" SWA3H3N7TW
 #
 # Creates ios/ at the project root with CMakeLists.txt and Info.plist.
 # Generate the Xcode project with: make ios
@@ -15,7 +15,7 @@ set -euo pipefail
 
 if [ $# -lt 2 ]; then
     echo "Usage: $0 <bundle-id> <app-name>"
-    echo "  bundle-id — iOS bundle identifier (e.g. com.squz.mygame)"
+    echo "  bundle-id — iOS bundle identifier (e.g. com.marcelocantos.mygame)"
     echo "  app-name  — display name shown on the device (e.g. \"My Game\")"
     exit 1
 fi

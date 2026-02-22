@@ -81,7 +81,7 @@ func NewDaemon(port int, noOpen bool) *Daemon {
 	ip := lanIP()
 	return &Daemon{
 		lanIP:    ip,
-		qrURL:    fmt.Sprintf("squz-remote://%s:%d", ip, port),
+		qrURL:    fmt.Sprintf("ge-remote://%s:%d", ip, port),
 		port:     port,
 		noOpen:   noOpen,
 		sessions: make(map[string]*PlayerSession),
@@ -435,11 +435,11 @@ func (d *Daemon) broadcastToClients(clients *[]*wsClient, mt websocket.MessageTy
 }
 
 // sendSessionEndLocked sends a wire::kSessionEndMagic message to a player connection.
-// The message is a wire::MessageHeader with magic=0x5957324D and length=0.
+// The message is a wire::MessageHeader with magic=0x4745324D and length=0.
 // Must be called with d.mu held (or the caller must own the connection).
 func (d *Daemon) sendSessionEndLocked(conn *websocket.Conn) {
 	var buf [8]byte
-	binary.LittleEndian.PutUint32(buf[0:4], 0x5957324D) // kSessionEndMagic
+	binary.LittleEndian.PutUint32(buf[0:4], 0x4745324D) // kSessionEndMagic
 	binary.LittleEndian.PutUint32(buf[4:8], 0)          // length = 0
 	ctx, cancel := contextWithTimeout(2 * time.Second)
 	defer cancel()

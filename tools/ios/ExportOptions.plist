@@ -13,8 +13,8 @@
     <string>SWA3H3N7TW</string>
     <key>provisioningProfiles</key>
     <dict>
-        <key>com.squz.player</key>
-        <string>Squz Player Distribution</string>
+        <key>com.marcelocantos.player</key>
+        <string>ge Player Distribution</string>
     </dict>
 </dict>
 </plist>

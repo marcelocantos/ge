@@ -8,23 +8,23 @@ static_assert(std::endian::native == std::endian::little, "Little-endian require
 
 namespace wire {
 
-// Magic numbers for message type identification (ASCII: "YW2x")
-constexpr uint32_t kDeviceInfoMagic = 0x59573244;   // "YW2D"
-constexpr uint32_t kSessionInitMagic = 0x59573253;  // "YW2S"
-constexpr uint32_t kWireCommandMagic = 0x59573243;  // "YW2C"
-constexpr uint32_t kWireResponseMagic = 0x59573252; // "YW2R"
-constexpr uint32_t kSdlEventMagic = 0x59573249;    // "YW2I"
-constexpr uint32_t kFrameEndMagic = 0x59573246;    // "YW2F" — server → player: frame boundary
-constexpr uint32_t kFrameReadyMagic = 0x59573247;  // "YW2G" — player → server: ready for next
-constexpr uint32_t kDeferredMipMagic = 0x59573248; // "YW2H" — server → player: deferred mip data
-constexpr uint32_t kMipCacheHitMagic = 0x5957324A; // "YW2J" — player → server: cached mip found
-constexpr uint32_t kMipCacheMissMagic = 0x5957324B; // "YW2K" — player → server: cached mip not found
-constexpr uint32_t kSessionEndMagic = 0x5957324D;   // "YW2M" — ged → player: server disconnected
-constexpr uint32_t kSensorConfigMagic = 0x5957324C; // "YW2L" — server → player: sensor config
-constexpr uint32_t kAudioDataMagic = 0x59573241;    // "YW2A" — server → player: audio asset data
-constexpr uint32_t kAudioCommandMagic = 0x59573242;  // "YW2B" — server → player: audio play/stop/volume
+// Magic numbers for message type identification (ASCII: "GE2x")
+constexpr uint32_t kDeviceInfoMagic = 0x47453244;   // "GE2D"
+constexpr uint32_t kSessionInitMagic = 0x47453253;  // "GE2S"
+constexpr uint32_t kWireCommandMagic = 0x47453243;  // "GE2C"
+constexpr uint32_t kWireResponseMagic = 0x47453252; // "GE2R"
+constexpr uint32_t kSdlEventMagic = 0x47453249;    // "GE2I"
+constexpr uint32_t kFrameEndMagic = 0x47453246;    // "GE2F" — server → player: frame boundary
+constexpr uint32_t kFrameReadyMagic = 0x47453247;  // "GE2G" — player → server: ready for next
+constexpr uint32_t kDeferredMipMagic = 0x47453248; // "GE2H" — server → player: deferred mip data
+constexpr uint32_t kMipCacheHitMagic = 0x4745324A; // "GE2J" — player → server: cached mip found
+constexpr uint32_t kMipCacheMissMagic = 0x4745324B; // "GE2K" — player → server: cached mip not found
+constexpr uint32_t kSessionEndMagic = 0x4745324D;   // "GE2M" — ged → player: server disconnected
+constexpr uint32_t kSensorConfigMagic = 0x4745324C; // "GE2L" — server → player: sensor config
+constexpr uint32_t kAudioDataMagic = 0x47453241;    // "GE2A" — server → player: audio asset data
+constexpr uint32_t kAudioCommandMagic = 0x47453242;  // "GE2B" — server → player: audio play/stop/volume
 
-constexpr uint16_t kProtocolVersion = 2;
+constexpr uint16_t kProtocolVersion = 3;
 constexpr size_t kMaxMessageSize = 512 * 1024 * 1024;  // 512MB (initial resource uploads can be large)
 
 // Sent by player after connecting to game server
@@ -59,7 +59,7 @@ struct SessionInit {
 };
 
 // Sent by player after injecting native resources
-constexpr uint32_t kSessionReadyMagic = 0x59573259;  // "YW2Y"
+constexpr uint32_t kSessionReadyMagic = 0x47453259;  // "GE2Y"
 struct SessionReady {
     uint32_t magic = kSessionReadyMagic;
     uint16_t version = kProtocolVersion;

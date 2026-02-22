@@ -21,7 +21,7 @@ ScanResult scanQRCode() {
         return {};
     }
 
-    jclass bridgeClass = env->FindClass("com/squz/player/QRScannerBridge");
+    jclass bridgeClass = env->FindClass("com/marcelocantos/player/QRScannerBridge");
     if (!bridgeClass) {
         SPDLOG_ERROR("Failed to find QRScannerBridge class");
         return {};
@@ -50,9 +50,9 @@ ScanResult scanQRCode() {
     if (url) {
         const char* urlStr = env->GetStringUTFChars(url, nullptr);
 
-        // Parse squz-remote://host:port
+        // Parse ge-remote://host:port
         std::string urlString(urlStr);
-        const std::string prefix = "squz-remote://";
+        const std::string prefix = "ge-remote://";
         if (urlString.rfind(prefix, 0) == 0) {
             auto hostPort = urlString.substr(prefix.size());
             auto colon = hostPort.rfind(':');

@@ -1,4 +1,4 @@
-// Android Squz Player entry point.
+// Android ge Player entry point.
 // Scans a QR code on startup to discover the game server, then runs the shared
 // Player.
 
@@ -16,13 +16,13 @@ bool isEmulator() {
     return value[0] == '1';
 }
 
-// Check debug.squz.address system property for direct connection (skips QR).
-// Set via: adb shell setprop debug.squz.address "192.168.1.100:42069"
-// Or just: adb shell setprop debug.squz.address "192.168.1.100" (uses default port)
-// Clear:  adb shell setprop debug.squz.address ""
+// Check debug.ge.address system property for direct connection (skips QR).
+// Set via: adb shell setprop debug.ge.address "192.168.1.100:42069"
+// Or just: adb shell setprop debug.ge.address "192.168.1.100" (uses default port)
+// Clear:  adb shell setprop debug.ge.address ""
 ge::ScanResult directAddress() {
     char value[PROP_VALUE_MAX] = {};
-    __system_property_get("debug.squz.address", value);
+    __system_property_get("debug.ge.address", value);
     if (value[0] == '\0') return {};
 
     std::string addr(value);
@@ -37,17 +37,17 @@ ge::ScanResult directAddress() {
 } // namespace
 
 int main(int argc, char* argv[]) {
-    auto logger = spdlog::android_logger_mt("squz", "SquzPlayer");
+    auto logger = spdlog::android_logger_mt("ge", "GePlayer");
     spdlog::set_default_logger(logger);
     spdlog::set_level(spdlog::level::info);
 
-    SPDLOG_INFO("Squz Player (Android) starting...");
+    SPDLOG_INFO("ge Player (Android) starting...");
 
     return playerLoop([] {
         // Priority: debug property > emulator detection > QR scan
         auto direct = directAddress();
         if (!direct.host.empty()) {
-            SPDLOG_INFO("Direct connection via debug.squz.address: {}:{}", direct.host, direct.port);
+            SPDLOG_INFO("Direct connection via debug.ge.address: {}:{}", direct.host, direct.port);
             return direct;
         }
         if (isEmulator()) return ge::ScanResult{"10.0.2.2", kDefaultPort};
