@@ -108,10 +108,10 @@ jobs:
 
           # Push to tap
           CONTENT=$(base64 -w0 /tmp/ged.rb)
-          EXISTING_SHA=$(gh api repos/squz/homebrew-tap/contents/Formula/ged.rb --jq '.sha' 2>/dev/null || true)
+          EXISTING_SHA=$(gh api repos/marcelocantos/homebrew-tap/contents/Formula/ged.rb --jq '.sha' 2>/dev/null || true)
 
           ARGS=(
-            repos/squz/homebrew-tap/contents/Formula/ged.rb
+            repos/marcelocantos/homebrew-tap/contents/Formula/ged.rb
             --method PUT
             --field "message=Update ged formula to ${VERSION}"
             --field "content=${CONTENT}"
