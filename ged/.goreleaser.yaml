@@ -22,6 +22,4 @@ builds:
       - arm64
 
 archives:
-  - format_overrides:
-      - goos: darwin
-        format: zip
+  - name_template: "ged-{{ .Version }}-{{ .Os }}-{{ .Arch }}"
