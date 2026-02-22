@@ -21,6 +21,7 @@
 #include <chrono>
 #include <csignal>
 #include <cstdlib>
+#include <optional>
 #include <queue>
 #include <span>
 #include <stdexcept>
@@ -326,6 +327,10 @@ public:
 
     int frameReadyCount = 2; // initial credits = pipeline depth (double-buffer)
 
+    std::optional<std::vector<char>> takeStashedStateData() {
+        return std::exchange(stashedStateData_, std::nullopt);
+    }
+
     void processResponses(dawn::wire::WireClient& client,
                            const std::function<void(const SDL_Event&)>& onEvent,
                            const std::function<void(std::span<const uint8_t>)>& onMessage = nullptr) {
@@ -380,6 +385,9 @@ public:
                         pendingMips_.erase(it);
                     }
                 }
+            } else if (header.magic == wire::kStateDataMagic) {
+                // Stash for the state-sync loop to pick up
+                stashedStateData_ = std::move(payload);
             } else if (header.magic == wire::kSqlpipeMsgMagic) {
                 if (onMessage && !payload.empty()) {
                     onMessage(std::span<const uint8_t>(
@@ -415,6 +423,7 @@ private:
     std::vector<char> responseBuffer_;
     std::priority_queue<DeferredMip> deferredMips_;
     std::unordered_map<uint64_t, DeferredMip> pendingMips_; // awaiting HIT/MISS
+    std::optional<std::vector<char>> stashedStateData_;     // caught by processResponses
 };
 
 } // namespace
@@ -705,7 +714,6 @@ bool WireSession::run(RunConfig config) {
             config.appId.data(), config.appId.size());
         SPDLOG_INFO("Sent StateRequest (app={}), waiting for player DB...", config.appId);
 
-        wire::MessageHeader stateHdr{};
         std::vector<char> statePayload;
         for (;;) {
             if (!m->serializer->connection().isOpen()) {
@@ -714,13 +722,9 @@ bool WireSession::run(RunConfig config) {
             }
             m->serializer->processResponses(*m->wireClient, m->onEvent, m->onMessage);
             m->instance.ProcessEvents();
-            if (m->serializer->connection().available() > 0) {
-                if (!m->serializer->recvMessage(stateHdr, statePayload)) {
-                    SPDLOG_WARN("Player disconnected during state sync");
-                    return true;
-                }
-                if (stateHdr.magic == wire::kStateDataMagic) break;
-                SPDLOG_WARN("Unexpected magic 0x{:08X} during state sync, skipping", stateHdr.magic);
+            if (auto data = m->serializer->takeStashedStateData()) {
+                statePayload = std::move(*data);
+                break;
             }
             SDL_Delay(1);
         }
