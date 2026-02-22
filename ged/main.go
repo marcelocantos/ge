@@ -18,10 +18,16 @@ func main() {
 	port := flag.Int("port", 42069, "listen port")
 	noOpen := flag.Bool("no-open", false, "don't open dashboard in browser")
 	showVersion := flag.Bool("version", false, "print version and exit")
+	showAgentGuide := flag.Bool("help-agent", false, "print the agent guide and exit")
 	flag.Parse()
 
 	if *showVersion {
 		fmt.Println("ged", version)
+		os.Exit(0)
+	}
+
+	if *showAgentGuide {
+		fmt.Print(agentGuide)
 		os.Exit(0)
 	}
 

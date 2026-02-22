@@ -1,5 +1,8 @@
 project_name: ged
 
+monorepo:
+  tag_prefix: ged/
+
 before:
   hooks:
     - mkdir -p ged/web/dist/assets
@@ -31,7 +34,7 @@ brews:
       name: homebrew-tap
     homepage: https://github.com/marcelocantos/ge
     description: ge development daemon — serves the dashboard and bridges game servers to mobile players
-    license: MIT
+    license: Apache-2.0
     service: |
       run [opt_bin/"ged"]
       keep_alive true
