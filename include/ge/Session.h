@@ -6,7 +6,9 @@
 #include <memory>
 #include <string>
 
+#ifndef GE_DIRECT
 class DaemonSink;
+#endif
 
 namespace ge {
 
@@ -19,11 +21,15 @@ class Audio;
 // dependencies never enter the final binary.
 class Session {
 public:
+#ifdef GE_DIRECT
+    Session();
+#else
     // Hosted mode: SessionHost owns the sideband; this session connects
     // its wire WS to /ws/server/wire/{sessionId}.
     Session(const std::string& daemonHost, uint16_t daemonPort,
             const std::string& sessionId,
             std::shared_ptr<DaemonSink> sharedSink);
+#endif
 
     ~Session();
 

@@ -35,11 +35,6 @@ struct Session::M {
 Session::Session() : m(std::make_unique<M>()) {}
 Session::~Session() = default;
 
-HttpServer& Session::http() {
-    static_assert(sizeof(HttpServer*) > 0, "HttpServer not available in direct mode");
-    SPDLOG_ERROR("http() not available in direct mode");
-    std::abort();
-}
 void Session::connect() { /* no-op in direct mode */ }
 GpuContext& Session::gpu() { return m->gpu; }
 Audio& Session::audio() { return m->audio; }
