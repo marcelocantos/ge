@@ -16,7 +16,7 @@
 #include <ge/Protocol.h>
 
 // Engine headers for WebSocket
-#include "../src/HttpServer.h"
+#include "../src/WebSocketClient.h"
 #include "../src/WebSocketSerializer.h"
 
 #include <filesystem>
@@ -503,6 +503,7 @@ struct Player::M {
     int pixelHeight = 0;
     int backoffMs = 10;
     bool maximized = false;
+    bool headless = false;
     int maxRetries = -1;  // -1 = unlimited
 
     SDL_Window* window = nullptr;
@@ -546,17 +547,21 @@ struct Player::M {
 
     void initWindow();
     void initGpu();
+    // Poll events while attempting WebSocket connection in background.
+    // Returns the connection (nullptr on failure), or sets quit=true if user quit.
+    std::shared_ptr<ge::WsConnection> connectWithUI(bool& quit);
     ConnectionResult connectAndRun();
 };
 
 Player::Player(std::string host, uint16_t port, int width, int height,
-                   bool maximized, int maxRetries)
+                   bool maximized, int maxRetries, bool headless)
     : m(std::make_unique<M>()) {
     m->host = std::move(host);
     m->port = port;
     m->width = width;
     m->height = height;
     m->maximized = maximized;
+    m->headless = headless;
     m->maxRetries = maxRetries;
 }
 
@@ -579,17 +584,8 @@ int Player::run() {
                 break;
             }
 
-            SPDLOG_INFO("Reconnecting in {}ms... (attempt {})", m->backoffMs, retries);
-            SDL_Delay(m->backoffMs);
+            // Backoff is handled inside connectWithUI() on the next iteration
             m->backoffMs = std::min(m->backoffMs * 2, 2000);
-
-            SDL_Event event;
-            while (SDL_PollEvent(&event)) {
-                if (event.type == SDL_EVENT_QUIT)
-                    return 0;
-                if (event.type == SDL_EVENT_KEY_DOWN && event.key.key == SDLK_Q)
-                    return 0;
-            }
         }
         return 0;
     } catch (const std::exception& e) {
@@ -599,8 +595,6 @@ int Player::run() {
 }
 
 void Player::M::initWindow() {
-    platform::activateApp();
-
     if (!SDL_Init(SDL_INIT_VIDEO)) {
         throw std::runtime_error(std::string("SDL_Init failed: ") + SDL_GetError());
     }
@@ -612,12 +606,16 @@ void Player::M::initWindow() {
 
     SDL_WindowFlags flags = platform::windowFlags();
     if (maximized) flags |= SDL_WINDOW_MAXIMIZED | SDL_WINDOW_RESIZABLE;
+    if (headless) flags |= SDL_WINDOW_HIDDEN;
     flags |= SDL_WINDOW_RESIZABLE;
     window = SDL_CreateWindow("Squz Player", width, height, flags);
     if (!window) {
         SDL_Quit();
         throw std::runtime_error(std::string("SDL_CreateWindow failed: ") + SDL_GetError());
     }
+
+    // Activate after SDL_Init + window creation so NSApp exists on macOS
+    platform::activateApp();
 
     SDL_GetWindowSizeInPixels(window, &pixelWidth, &pixelHeight);
     SPDLOG_INFO("Window created: {}x{} ({}x{} pixels)", width, height, pixelWidth, pixelHeight);
@@ -680,15 +678,78 @@ void Player::M::initGpu() {
     SPDLOG_INFO("WebGPU initialized: format={}", static_cast<int>(swapChainFormat));
 }
 
+std::shared_ptr<ge::WsConnection> Player::M::connectWithUI(bool& quit) {
+    quit = false;
+
+    // Show connecting status in window title (no GPU rendering — surface
+    // stays unconfigured so the wire session gets a pristine surface).
+    std::string title = "Squz Player \xe2\x80\x94 Connecting to " + host + ":" + std::to_string(port) + "...";
+    SDL_SetWindowTitle(window, title.c_str());
+
+    // Backoff delay: poll events while waiting before next attempt
+    if (backoffMs > 10) {
+        SPDLOG_INFO("Reconnecting in {}ms...", backoffMs);
+        auto waitUntil = SDL_GetTicks() + backoffMs;
+        while (SDL_GetTicks() < waitUntil) {
+            SDL_Event ev;
+            while (SDL_PollEvent(&ev)) {
+                if (ev.type == SDL_EVENT_QUIT ||
+                    (ev.type == SDL_EVENT_KEY_DOWN && ev.key.key == SDLK_Q)) {
+                    SDL_SetWindowTitle(window, "Squz Player");
+                    quit = true;
+                    return nullptr;
+                }
+                if (ev.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED)
+                    SDL_GetWindowSizeInPixels(window, &pixelWidth, &pixelHeight);
+            }
+            SDL_Delay(16);
+        }
+    }
+
+    // Launch connection in background thread
+    std::shared_ptr<ge::WsConnection> result;
+    std::atomic<bool> done{false};
+    std::thread connThread([&] {
+        result = ge::connectWebSocket(host, port, "/ws/wire");
+        done.store(true, std::memory_order_release);
+    });
+
+    // Poll events while waiting for connection
+    while (!done.load(std::memory_order_acquire)) {
+        SDL_Event ev;
+        while (SDL_PollEvent(&ev)) {
+            if (ev.type == SDL_EVENT_QUIT ||
+                (ev.type == SDL_EVENT_KEY_DOWN && ev.key.key == SDLK_Q)) {
+                connThread.join();
+                SDL_SetWindowTitle(window, "Squz Player");
+                quit = true;
+                return nullptr;
+            }
+            if (ev.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED)
+                SDL_GetWindowSizeInPixels(window, &pixelWidth, &pixelHeight);
+        }
+        SDL_Delay(16);
+    }
+
+    connThread.join();
+
+    if (result) {
+        SPDLOG_INFO("Connected via WebSocket");
+        backoffMs = 10;
+    }
+    return result;
+}
+
 ConnectionResult Player::M::connectAndRun() {
     SPDLOG_INFO("Connecting to {}:{}...", host, port);
 
-    auto wsConn = ge::connectWebSocket(host, port, "/ws/wire");
+    bool quit = false;
+    auto wsConn = connectWithUI(quit);
+    if (quit) return ConnectionResult::Quit;
     if (!wsConn) {
         SPDLOG_WARN("WebSocket connection failed");
         return ConnectionResult::Disconnected;
     }
-    SPDLOG_INFO("Connected via WebSocket");
 
     // Sync the GPU layer's drawable size with the window — on iOS the
     // CAMetalLayer may not auto-resize after rotation.
@@ -710,14 +771,54 @@ ConnectionResult Player::M::connectAndRun() {
     serializer->sendMessage(wire::kDeviceInfoMagic, &deviceInfo, sizeof(deviceInfo));
     SPDLOG_INFO("Sent DeviceInfo");
 
-    // Receive SessionInit
+    // Wait for SessionInit (surface stays unconfigured — title bar shows status).
+    SDL_SetWindowTitle(window, ("Squz Player \xe2\x80\x94 Waiting for " + host + "...").c_str());
     wire::MessageHeader initHdr{};
     std::vector<char> initPayload;
-    if (!serializer->recvMessage(initHdr, initPayload) ||
-        initPayload.size() < sizeof(wire::SessionInit)) {
-        SPDLOG_WARN("Failed to read SessionInit");
-        return ConnectionResult::Disconnected;
+    auto sessionWaitStart = SDL_GetTicks();
+    while (true) {
+        if (!wsConn->isOpen()) {
+            SPDLOG_WARN("Connection lost waiting for SessionInit");
+            SDL_SetWindowTitle(window, "Squz Player");
+            return ConnectionResult::Disconnected;
+        }
+        // Timeout: if no SessionInit within 5s, reconnect.
+        if (SDL_GetTicks() - sessionWaitStart > 5000) {
+            SPDLOG_WARN("SessionInit timeout — reconnecting");
+            SDL_SetWindowTitle(window, "Squz Player");
+            return ConnectionResult::Disconnected;
+        }
+        if (wsConn->available() > 0) {
+            if (!serializer->recvMessage(initHdr, initPayload)) {
+                SPDLOG_WARN("Failed to read SessionInit");
+                SDL_SetWindowTitle(window, "Squz Player");
+                return ConnectionResult::Disconnected;
+            }
+            if (initHdr.magic == wire::kSessionEndMagic) {
+                SPDLOG_INFO("Server session ended while waiting for SessionInit");
+                SDL_SetWindowTitle(window, "Squz Player");
+                return ConnectionResult::Disconnected;
+            }
+            if (initPayload.size() < sizeof(wire::SessionInit)) {
+                SPDLOG_WARN("SessionInit too small");
+                SDL_SetWindowTitle(window, "Squz Player");
+                return ConnectionResult::Disconnected;
+            }
+            break;
+        }
+        SDL_Event ev;
+        while (SDL_PollEvent(&ev)) {
+            if (ev.type == SDL_EVENT_QUIT ||
+                (ev.type == SDL_EVENT_KEY_DOWN && ev.key.key == SDLK_Q)) {
+                SDL_SetWindowTitle(window, "Squz Player");
+                return ConnectionResult::Quit;
+            }
+            if (ev.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED)
+                SDL_GetWindowSizeInPixels(window, &pixelWidth, &pixelHeight);
+        }
+        SDL_Delay(16);
     }
+    SDL_SetWindowTitle(window, "Squz Player");
 
     wire::SessionInit sessionInit{};
     std::memcpy(&sessionInit, initPayload.data(), sizeof(sessionInit));
@@ -1030,6 +1131,10 @@ ConnectionResult Player::M::connectAndRun() {
                 }
                 serializer->sendMessage(wire::kFrameReadyMagic);
                 break; // yield to SDL event polling
+            } else if (header.magic == wire::kSessionEndMagic) {
+                SPDLOG_INFO("Server session ended (ged sent SessionEnd)");
+                exitLoop = true;
+                break;
             } else {
                 SPDLOG_WARN("Unknown message magic: 0x{:08X}", header.magic);
                 exitLoop = true;

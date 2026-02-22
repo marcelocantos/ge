@@ -137,9 +137,9 @@ func (d *Daemon) registerDashboard(mux *http.ServeMux) {
 	// WebSocket: wire (player connection)
 	mux.HandleFunc("/ws/wire", d.handlePlayer)
 
-	// WebSocket: server sideband + wire
+	// WebSocket: server sideband + per-session wire
 	mux.HandleFunc("/ws/server", d.handleServer)
-	mux.HandleFunc("/ws/server/wire", d.handleServerWire)
+	mux.HandleFunc("/ws/server/wire/{sessionID}", d.handleServerSessionWire)
 
 	// Static files: serve ge/web/dist
 	d.registerStaticFiles(mux)

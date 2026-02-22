@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
-	"time"
 
 	"github.com/coder/websocket"
 )
@@ -45,10 +44,9 @@ func (d *Daemon) handleServer(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sc := &ServerConn{
-		Conn:      conn,
-		Name:      hello.Name,
-		PID:       hello.PID,
-		wireReady: make(chan struct{}),
+		Conn: conn,
+		Name: hello.Name,
+		PID:  hello.PID,
 	}
 
 	d.SetServer(sc)
@@ -73,50 +71,46 @@ func (d *Daemon) handleServer(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleServerWire handles the game server's wire WebSocket at /ws/server/wire.
-// This carries binary frames forwarded to/from the player.
-func (d *Daemon) handleServerWire(w http.ResponseWriter, r *http.Request) {
+// handleServerSessionWire handles a per-session wire WebSocket at /ws/server/wire/{sessionID}.
+// The game server connects one of these for each player session.
+func (d *Daemon) handleServerSessionWire(w http.ResponseWriter, r *http.Request) {
+	sessionID := r.PathValue("sessionID")
+	if sessionID == "" {
+		http.Error(w, "missing session ID", 400)
+		return
+	}
+
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 		InsecureSkipVerify: true,
 	})
 	if err != nil {
-		slog.Error("Server wire accept failed", "err", err)
+		slog.Error("Server session wire accept failed", "session", sessionID, "err", err)
 		return
 	}
 	defer conn.CloseNow()
 
 	conn.SetReadLimit(maxFrameSize)
 
-	// Associate with current server
-	d.mu.Lock()
-	sc := d.server
-	d.mu.Unlock()
-
-	if sc == nil {
-		slog.Error("Server wire: no server registered")
+	if !d.SetSessionWire(sessionID, conn) {
+		slog.Error("Server session wire: unknown session", "session", sessionID)
 		return
 	}
+	defer d.UnsetSessionWire(sessionID)
 
-	if !d.SetServerWire(sc, conn) {
-		slog.Error("Server wire: server mismatch")
-		return
-	}
-	defer d.UnsetServerWire(sc)
+	slog.Info("Server session wire connected", "session", sessionID)
 
-	slog.Info("Server wire connected", "name", sc.Name)
-
-	// Read loop: forward binary frames to player
+	// Read loop: forward binary frames to the session's player
 	ctx := r.Context()
 	for {
 		mt, data, err := conn.Read(ctx)
 		if err != nil {
 			if ctx.Err() == nil {
-				slog.Info("Server wire disconnected", "name", sc.Name)
+				slog.Info("Server session wire disconnected", "session", sessionID)
 			}
 			return
 		}
 		if mt == websocket.MessageBinary {
-			d.forwardToPlayer(data)
+			d.ForwardToPlayer(sessionID, data)
 		}
 	}
 }
@@ -146,19 +140,4 @@ func (d *Daemon) handleServerSideband(data []byte) {
 	case "tweaks":
 		d.SetTweakState(msg.Data)
 	}
-}
-
-// forwardToPlayer sends a binary frame to the player if connected.
-func (d *Daemon) forwardToPlayer(data []byte) {
-	d.mu.Lock()
-	player := d.player
-	d.mu.Unlock()
-
-	if player == nil {
-		return
-	}
-
-	ctx, cancel := contextWithTimeout(5 * time.Second)
-	defer cancel()
-	_ = player.Conn.Write(ctx, websocket.MessageBinary, data)
 }

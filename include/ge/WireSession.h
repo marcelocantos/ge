@@ -4,32 +4,26 @@
 #include <SDL3/SDL_events.h>
 #include <functional>
 #include <memory>
+#include <string>
+
+class DaemonSink;
 
 namespace ge {
 
 class Audio;
-class HttpServer;
 
-// Wire session: creates an HTTP+WebSocket server, waits for a player to
-// connect via WebSocket, performs the Dawn wire handshake, and acquires
-// WebGPU resources (adapter, device, queue) through the wire protocol.
-// The resulting GpuContext is owned by the session.
-//
-// Listen address is resolved in this order:
-//   1. GE_WIRE_ADDR environment variable
-//   2. Default: "42069"
-// Format: "port" or "address:port"
 class WireSession {
 public:
-    WireSession();
+    // Hosted mode: SessionHost owns the sideband; this session connects
+    // its wire WS to /ws/server/wire/{sessionId}.
+    WireSession(const std::string& daemonHost, uint16_t daemonPort,
+                const std::string& sessionId,
+                std::shared_ptr<DaemonSink> sharedSink);
+
     ~WireSession();
 
     WireSession(const WireSession&) = delete;
     WireSession& operator=(const WireSession&) = delete;
-
-    // Access the HTTP server for registering endpoints (standalone mode).
-    // Returns nullptr in daemon mode. Available before connect().
-    HttpServer* http();
 
     // Access the audio system for loading and playing sounds.
     Audio& audio();
@@ -57,7 +51,7 @@ public:
     };
 
     // Run the render loop. Returns true on player disconnect (reconnectable),
-    // false on server stop (dashboard closed, SIGINT).
+    // false on server stop (SIGINT).
     bool run(RunConfig config);
 
 private:

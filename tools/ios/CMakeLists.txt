@@ -13,7 +13,7 @@ set(SOURCES
     ${GE_ROOT}/tools/player_platform_apple.cpp
     ${GE_ROOT}/tools/AudioPlayer.cpp
     ${GE_ROOT}/src/WireTransport.cpp
-    ${GE_ROOT}/src/HttpServer.cpp
+    ${GE_ROOT}/src/WebSocketClient.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/QRScanner.mm
 )
 

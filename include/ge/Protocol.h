@@ -19,6 +19,7 @@ constexpr uint32_t kFrameReadyMagic = 0x59573247;  // "YW2G" — player → serv
 constexpr uint32_t kDeferredMipMagic = 0x59573248; // "YW2H" — server → player: deferred mip data
 constexpr uint32_t kMipCacheHitMagic = 0x5957324A; // "YW2J" — player → server: cached mip found
 constexpr uint32_t kMipCacheMissMagic = 0x5957324B; // "YW2K" — player → server: cached mip not found
+constexpr uint32_t kSessionEndMagic = 0x5957324D;   // "YW2M" — ged → player: server disconnected
 constexpr uint32_t kSensorConfigMagic = 0x5957324C; // "YW2L" — server → player: sensor config
 constexpr uint32_t kAudioDataMagic = 0x59573241;    // "YW2A" — server → player: audio asset data
 constexpr uint32_t kAudioCommandMagic = 0x59573242;  // "YW2B" — server → player: audio play/stop/volume

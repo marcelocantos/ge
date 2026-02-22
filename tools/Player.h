@@ -14,7 +14,7 @@ constexpr uint16_t kDefaultPort = 42069;
 class Player {
 public:
     Player(std::string host, uint16_t port, int width, int height,
-           bool maximized = false, int maxRetries = -1);
+           bool maximized = false, int maxRetries = -1, bool headless = false);
     ~Player();
     int run();
 

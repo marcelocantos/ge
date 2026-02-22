@@ -18,7 +18,7 @@ add_library(main SHARED
     ${GE_ROOT}/tools/player_core.cpp
     ${GE_ROOT}/tools/AudioPlayer.cpp
     ${GE_ROOT}/src/WireTransport.cpp
-    ${GE_ROOT}/src/HttpServer.cpp
+    ${GE_ROOT}/src/WebSocketClient.cpp
 )
 
 target_compile_definitions(main PRIVATE ASIO_STANDALONE)

@@ -43,12 +43,15 @@ int main(int argc, char* argv[]) {
     int width = kDefaultWidth;
     int height = kDefaultHeight;
     bool maximized = false;
+    bool headless = false;
 
     // Consume flags, then positional args
     int pos = 1;
     while (pos < argc && argv[pos][0] == '-') {
         if (std::strcmp(argv[pos], "--maximized") == 0) {
             maximized = true;
+        } else if (std::strcmp(argv[pos], "--headless") == 0) {
+            headless = true;
         }
         pos++;
     }
@@ -62,9 +65,10 @@ int main(int argc, char* argv[]) {
     if (pos < argc) height = std::stoi(argv[pos++]);
 
     SPDLOG_INFO("Squz Player starting...");
-    SPDLOG_INFO("Target: {}:{}, dimensions: {}x{}{}", host, port, width, height,
-                maximized ? " (maximized)" : "");
+    SPDLOG_INFO("Target: {}:{}, dimensions: {}x{}{}{}", host, port, width, height,
+                maximized ? " (maximized)" : "",
+                headless ? " (headless)" : "");
 
-    Player player(host, port, width, height, maximized);
+    Player player(host, port, width, height, maximized, -1, headless);
     return player.run();
 }

@@ -4,7 +4,7 @@
 // overrides Flush() to add deferred-mip filtering.
 #pragma once
 
-#include "HttpServer.h"
+#include "WebSocketClient.h"
 #include <ge/Protocol.h>
 #include <dawn/wire/Wire.h>
 

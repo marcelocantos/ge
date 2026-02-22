@@ -6,12 +6,21 @@ namespace ge {
 
 struct Session::M {
     WireSession wire;
+
+    M(const std::string& daemonHost, uint16_t daemonPort,
+      const std::string& sessionId,
+      std::shared_ptr<DaemonSink> sharedSink)
+        : wire(daemonHost, daemonPort, sessionId, std::move(sharedSink)) {}
 };
 
-Session::Session() : m(std::make_unique<M>()) {}
+Session::Session(const std::string& daemonHost, uint16_t daemonPort,
+                 const std::string& sessionId,
+                 std::shared_ptr<DaemonSink> sharedSink)
+    : m(std::make_unique<M>(daemonHost, daemonPort, sessionId,
+                            std::move(sharedSink))) {}
+
 Session::~Session() = default;
 
-HttpServer* Session::http() { return m->wire.http(); }
 Audio& Session::audio() { return m->wire.audio(); }
 void Session::connect() { m->wire.connect(); }
 GpuContext& Session::gpu() { return m->wire.gpu(); }

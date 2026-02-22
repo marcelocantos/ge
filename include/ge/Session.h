@@ -4,26 +4,32 @@
 #include <SDL3/SDL_events.h>
 #include <functional>
 #include <memory>
+#include <string>
+
+class DaemonSink;
 
 namespace ge {
 
 class Audio;
-class HttpServer;
 
 // Unified session: wire mode (default) or direct native mode (GE_DIRECT).
-// Drop-in replacement for WireSession — same interface, backend selected
+// Drop-in replacement for WireSession -- same interface, backend selected
 // at compile time. Two separate compilation units (SessionWire.cpp,
 // SessionDirect.cpp) each guarded by #if, so the unused backend's
 // dependencies never enter the final binary.
 class Session {
 public:
-    Session();
+    // Hosted mode: SessionHost owns the sideband; this session connects
+    // its wire WS to /ws/server/wire/{sessionId}.
+    Session(const std::string& daemonHost, uint16_t daemonPort,
+            const std::string& sessionId,
+            std::shared_ptr<DaemonSink> sharedSink);
+
     ~Session();
 
     Session(const Session&) = delete;
     Session& operator=(const Session&) = delete;
 
-    HttpServer* http();
     Audio& audio();
     void connect();
     GpuContext& gpu();

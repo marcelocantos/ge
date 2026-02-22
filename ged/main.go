@@ -16,6 +16,7 @@ var version = "dev"
 
 func main() {
 	port := flag.Int("port", 42069, "listen port")
+	noOpen := flag.Bool("no-open", false, "don't open dashboard in browser")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
 
@@ -29,7 +30,7 @@ func main() {
 		Level: slog.LevelInfo,
 	})))
 
-	d := NewDaemon(*port)
+	d := NewDaemon(*port, *noOpen)
 
 	// Print QR code
 	printQR(d.qrURL)

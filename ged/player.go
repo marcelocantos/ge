@@ -1,10 +1,8 @@
 package main
 
 import (
-	"context"
 	"log/slog"
 	"net/http"
-	"time"
 
 	"github.com/coder/websocket"
 )
@@ -38,37 +36,19 @@ func (d *Daemon) handlePlayer(w http.ResponseWriter, r *http.Request) {
 	}
 
 	pc := &PlayerConn{Conn: conn, DeviceInfo: deviceInfo}
-	d.SetPlayer(pc)
-	defer d.UnsetPlayer(pc)
+	sessionID := d.AddPlayer(pc)
+	defer d.RemovePlayer(sessionID)
 
-	// Forward remaining frames to the server's wire connection.
+	// Forward remaining frames to the server's wire connection for this session.
 	for {
 		mt, data, err := conn.Read(ctx)
 		if err != nil {
 			if ctx.Err() == nil {
-				slog.Info("Player disconnected")
+				slog.Info("Player disconnected", "session", sessionID)
 			}
 			return
 		}
 
-		d.forwardToServerWire(mt, data)
+		d.ForwardToServerWire(sessionID, mt, data)
 	}
-}
-
-// forwardToServerWire sends a frame to the server's wire connection.
-func (d *Daemon) forwardToServerWire(mt websocket.MessageType, data []byte) {
-	d.mu.Lock()
-	server := d.server
-	d.mu.Unlock()
-
-	if server == nil || server.WireConn == nil {
-		return
-	}
-
-	server.wireMu.Lock()
-	defer server.wireMu.Unlock()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	_ = server.WireConn.Write(ctx, mt, data)
 }

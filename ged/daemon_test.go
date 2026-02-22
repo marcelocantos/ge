@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -15,9 +16,7 @@ import (
 // Wire protocol constants (matching Protocol.h)
 const (
 	kDeviceInfoMagic  = 0x59573244
-	kSessionInitMagic = 0x59573253
 	kSessionEndMagic  = 0x5957324D
-	kFrameEndMagic    = 0x59573246
 	kFrameReadyMagic  = 0x59573247
 	kWireCommandMagic = 0x59573243
 	kProtocolVersion  = 2
@@ -64,13 +63,13 @@ func readMagic(data []byte) uint32 {
 
 // startTestDaemon creates a Daemon with an httptest.Server.
 func startTestDaemon(t *testing.T) (*Daemon, *httptest.Server) {
-	d := NewDaemon(0)
+	d := NewDaemon(0, true)
 	mux := http.NewServeMux()
 
-	// Register only the WebSocket routes needed for testing
+	// Register WebSocket routes
 	mux.HandleFunc("/ws/wire", d.handlePlayer)
 	mux.HandleFunc("/ws/server", d.handleServer)
-	mux.HandleFunc("/ws/server/wire", d.handleServerWire)
+	mux.HandleFunc("/ws/server/wire/{sessionID}", d.handleServerSessionWire)
 
 	ts := httptest.NewServer(mux)
 	t.Cleanup(ts.Close)
@@ -110,13 +109,27 @@ func readBinary(t *testing.T, conn *websocket.Conn, timeout time.Duration) []byt
 	return data
 }
 
-type fakeServer struct {
-	sideband *websocket.Conn
-	wire     *websocket.Conn
+// readText reads one text WebSocket frame with a timeout.
+func readText(t *testing.T, conn *websocket.Conn, timeout time.Duration) string {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	mt, data, err := conn.Read(ctx)
+	if err != nil {
+		t.Fatalf("Read text failed: %v", err)
+	}
+	if mt != websocket.MessageText {
+		t.Fatalf("Expected text frame, got %v", mt)
+	}
+	return string(data)
 }
 
-// connectFakeServer connects a fake game server (sideband + wire) to the daemon.
-func connectFakeServer(t *testing.T, ts *httptest.Server, name string) *fakeServer {
+type fakeServer struct {
+	sideband *websocket.Conn
+}
+
+// connectFakeServerSideband connects a fake game server's sideband to the daemon.
+func connectFakeServerSideband(t *testing.T, ts *httptest.Server, name string) *fakeServer {
 	t.Helper()
 	ctx := context.Background()
 
@@ -129,17 +142,32 @@ func connectFakeServer(t *testing.T, ts *httptest.Server, name string) *fakeServ
 	// Give daemon time to register the server
 	time.Sleep(50 * time.Millisecond)
 
-	wire := dial(t, wsURL(ts, "/ws/server/wire"))
-
-	// Give daemon time to establish bridge
-	time.Sleep(50 * time.Millisecond)
-
-	return &fakeServer{sideband: sideband, wire: wire}
+	return &fakeServer{sideband: sideband}
 }
 
-func (s *fakeServer) close() {
-	s.wire.CloseNow()
-	s.sideband.CloseNow()
+// readPlayerAttached reads a player_attached sideband message and returns the session ID.
+func readPlayerAttached(t *testing.T, server *fakeServer) string {
+	t.Helper()
+	text := readText(t, server.sideband, 2*time.Second)
+	var msg struct {
+		Type      string `json:"type"`
+		SessionID string `json:"session_id"`
+	}
+	if err := json.Unmarshal([]byte(text), &msg); err != nil {
+		t.Fatalf("Failed to parse player_attached: %v (text: %s)", err, text)
+	}
+	if msg.Type != "player_attached" {
+		t.Fatalf("Expected player_attached, got %s", msg.Type)
+	}
+	return msg.SessionID
+}
+
+// connectSessionWire connects the server's per-session wire for the given session ID.
+func connectSessionWire(t *testing.T, ts *httptest.Server, sessionID string) *websocket.Conn {
+	t.Helper()
+	wire := dial(t, wsURL(ts, "/ws/server/wire/"+sessionID))
+	time.Sleep(50 * time.Millisecond)
+	return wire
 }
 
 // connectFakePlayer connects a fake player to the daemon and sends DeviceInfo.
@@ -164,12 +192,20 @@ func TestBridgeEstablishment(t *testing.T) {
 	player := connectFakePlayer(t, ts)
 	defer player.CloseNow()
 
-	// Server connects (sideband + wire)
-	server := connectFakeServer(t, ts, "test-game")
-	defer server.close()
+	// Server connects sideband
+	server := connectFakeServerSideband(t, ts, "test-game")
+	defer server.sideband.CloseNow()
+
+	// Server reads player_attached notification
+	sessionID := readPlayerAttached(t, server)
+	t.Logf("Got player_attached: session=%s", sessionID)
+
+	// Server connects per-session wire
+	wire := connectSessionWire(t, ts, sessionID)
+	defer wire.CloseNow()
 
 	// Server should receive the player's DeviceInfo on its wire WS
-	data := readBinary(t, server.wire, 2*time.Second)
+	data := readBinary(t, wire, 2*time.Second)
 	magic := readMagic(data)
 	if magic != kDeviceInfoMagic {
 		t.Fatalf("Expected DeviceInfoMagic 0x%08X, got 0x%08X", kDeviceInfoMagic, magic)
@@ -182,15 +218,22 @@ func TestBridgeServerFirst(t *testing.T) {
 	_, ts := startTestDaemon(t)
 
 	// Server connects first (no player yet)
-	server := connectFakeServer(t, ts, "test-game")
-	defer server.close()
+	server := connectFakeServerSideband(t, ts, "test-game")
+	defer server.sideband.CloseNow()
 
 	// Player connects after server, sends DeviceInfo
 	player := connectFakePlayer(t, ts)
 	defer player.CloseNow()
 
-	// Server should receive DeviceInfo (daemon bridges once both are present)
-	data := readBinary(t, server.wire, 2*time.Second)
+	// Server reads player_attached
+	sessionID := readPlayerAttached(t, server)
+
+	// Server connects per-session wire
+	wire := connectSessionWire(t, ts, sessionID)
+	defer wire.CloseNow()
+
+	// Server should receive DeviceInfo
+	data := readBinary(t, wire, 2*time.Second)
 	magic := readMagic(data)
 	if magic != kDeviceInfoMagic {
 		t.Fatalf("Expected DeviceInfoMagic 0x%08X, got 0x%08X", kDeviceInfoMagic, magic)
@@ -205,16 +248,19 @@ func TestSessionEndOnServerDisconnect(t *testing.T) {
 	player := connectFakePlayer(t, ts)
 	defer player.CloseNow()
 
-	server := connectFakeServer(t, ts, "test-game")
+	server := connectFakeServerSideband(t, ts, "test-game")
+	sessionID := readPlayerAttached(t, server)
+	wire := connectSessionWire(t, ts, sessionID)
 
 	// Verify bridge is up: server gets DeviceInfo
-	data := readBinary(t, server.wire, 2*time.Second)
+	data := readBinary(t, wire, 2*time.Second)
 	if readMagic(data) != kDeviceInfoMagic {
 		t.Fatal("Bridge not established")
 	}
 
 	// Server crashes (close both connections)
-	server.close()
+	wire.CloseNow()
+	server.sideband.CloseNow()
 
 	// Player should receive SessionEnd
 	data = readBinary(t, player, 2*time.Second)
@@ -226,53 +272,20 @@ func TestSessionEndOnServerDisconnect(t *testing.T) {
 	t.Log("Player received SessionEnd after server disconnect")
 }
 
-func TestServerRestart(t *testing.T) {
-	_, ts := startTestDaemon(t)
-
-	player := connectFakePlayer(t, ts)
-	defer player.CloseNow()
-
-	// First server
-	server1 := connectFakeServer(t, ts, "game-v1")
-	data := readBinary(t, server1.wire, 2*time.Second)
-	if readMagic(data) != kDeviceInfoMagic {
-		t.Fatal("First bridge not established")
-	}
-
-	// First server crashes
-	server1.close()
-
-	// Player receives SessionEnd
-	data = readBinary(t, player, 2*time.Second)
-	if readMagic(data) != kSessionEndMagic {
-		t.Fatal("Expected SessionEnd after first server disconnect")
-	}
-
-	// Second server connects
-	server2 := connectFakeServer(t, ts, "game-v2")
-	defer server2.close()
-
-	// Second server should receive the same stored DeviceInfo
-	data = readBinary(t, server2.wire, 2*time.Second)
-	magic := readMagic(data)
-	if magic != kDeviceInfoMagic {
-		t.Fatalf("Expected DeviceInfoMagic on restart, got 0x%08X", magic)
-	}
-
-	t.Log("Server restart: second server received DeviceInfo, player stayed connected")
-}
-
 func TestWireFrameForwarding(t *testing.T) {
 	_, ts := startTestDaemon(t)
 
 	player := connectFakePlayer(t, ts)
 	defer player.CloseNow()
 
-	server := connectFakeServer(t, ts, "test-game")
-	defer server.close()
+	server := connectFakeServerSideband(t, ts, "test-game")
+	defer server.sideband.CloseNow()
+	sessionID := readPlayerAttached(t, server)
+	wire := connectSessionWire(t, ts, sessionID)
+	defer wire.CloseNow()
 
 	// Wait for bridge
-	data := readBinary(t, server.wire, 2*time.Second)
+	data := readBinary(t, wire, 2*time.Second)
 	if readMagic(data) != kDeviceInfoMagic {
 		t.Fatal("Bridge not established")
 	}
@@ -281,7 +294,7 @@ func TestWireFrameForwarding(t *testing.T) {
 
 	// Server sends a wire command to player (through daemon bridge)
 	fakeCmd := makeMessage(kWireCommandMagic, []byte("hello-from-server"))
-	if err := server.wire.Write(ctx, websocket.MessageBinary, fakeCmd); err != nil {
+	if err := wire.Write(ctx, websocket.MessageBinary, fakeCmd); err != nil {
 		t.Fatalf("Server wire write failed: %v", err)
 	}
 
@@ -299,7 +312,7 @@ func TestWireFrameForwarding(t *testing.T) {
 	}
 
 	// Server should receive it
-	data = readBinary(t, server.wire, 2*time.Second)
+	data = readBinary(t, wire, 2*time.Second)
 	magic = readMagic(data)
 	if magic != kFrameReadyMagic {
 		t.Fatalf("Expected FrameReadyMagic 0x%08X, got 0x%08X", kFrameReadyMagic, magic)
@@ -312,11 +325,14 @@ func TestPlayerDisconnectClosesServerWire(t *testing.T) {
 	_, ts := startTestDaemon(t)
 
 	player := connectFakePlayer(t, ts)
-	server := connectFakeServer(t, ts, "test-game")
-	defer server.close()
+	server := connectFakeServerSideband(t, ts, "test-game")
+	defer server.sideband.CloseNow()
+	sessionID := readPlayerAttached(t, server)
+	wire := connectSessionWire(t, ts, sessionID)
+	defer wire.CloseNow()
 
 	// Wait for bridge
-	data := readBinary(t, server.wire, 2*time.Second)
+	data := readBinary(t, wire, 2*time.Second)
 	if readMagic(data) != kDeviceInfoMagic {
 		t.Fatal("Bridge not established")
 	}
@@ -327,7 +343,7 @@ func TestPlayerDisconnectClosesServerWire(t *testing.T) {
 	// Server wire should get closed by daemon (read returns error)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	_, _, err := server.wire.Read(ctx)
+	_, _, err := wire.Read(ctx)
 	if err == nil {
 		t.Fatal("Expected server wire to close after player disconnect, but read succeeded")
 	}
@@ -335,30 +351,109 @@ func TestPlayerDisconnectClosesServerWire(t *testing.T) {
 	t.Logf("Server wire closed after player disconnect: %v", err)
 }
 
-func TestMultipleServerRestarts(t *testing.T) {
+func TestMultiplePlayers(t *testing.T) {
+	_, ts := startTestDaemon(t)
+
+	// Connect server sideband
+	server := connectFakeServerSideband(t, ts, "test-game")
+	defer server.sideband.CloseNow()
+
+	// Connect two players
+	player1 := connectFakePlayer(t, ts)
+	defer player1.CloseNow()
+	session1 := readPlayerAttached(t, server)
+	wire1 := connectSessionWire(t, ts, session1)
+	defer wire1.CloseNow()
+
+	player2 := connectFakePlayer(t, ts)
+	defer player2.CloseNow()
+	session2 := readPlayerAttached(t, server)
+	wire2 := connectSessionWire(t, ts, session2)
+	defer wire2.CloseNow()
+
+	if session1 == session2 {
+		t.Fatal("Expected different session IDs for different players")
+	}
+
+	// Both should receive DeviceInfo
+	data1 := readBinary(t, wire1, 2*time.Second)
+	if readMagic(data1) != kDeviceInfoMagic {
+		t.Fatal("Bridge 1 not established")
+	}
+	data2 := readBinary(t, wire2, 2*time.Second)
+	if readMagic(data2) != kDeviceInfoMagic {
+		t.Fatal("Bridge 2 not established")
+	}
+
+	ctx := context.Background()
+
+	// Send different commands on each wire
+	cmd1 := makeMessage(kWireCommandMagic, []byte("cmd-for-player1"))
+	if err := wire1.Write(ctx, websocket.MessageBinary, cmd1); err != nil {
+		t.Fatal(err)
+	}
+	cmd2 := makeMessage(kWireCommandMagic, []byte("cmd-for-player2"))
+	if err := wire2.Write(ctx, websocket.MessageBinary, cmd2); err != nil {
+		t.Fatal(err)
+	}
+
+	// Each player should receive only their own command
+	recv1 := readBinary(t, player1, 2*time.Second)
+	recv2 := readBinary(t, player2, 2*time.Second)
+	if readMagic(recv1) != kWireCommandMagic || readMagic(recv2) != kWireCommandMagic {
+		t.Fatal("Expected wire commands on both players")
+	}
+
+	t.Logf("Two players with independent sessions: %s, %s", session1, session2)
+}
+
+func TestServerRestart(t *testing.T) {
 	_, ts := startTestDaemon(t)
 
 	player := connectFakePlayer(t, ts)
 	defer player.CloseNow()
 
-	for i := 0; i < 3; i++ {
-		server := connectFakeServer(t, ts, "game")
-
-		// Server gets DeviceInfo
-		data := readBinary(t, server.wire, 2*time.Second)
-		if readMagic(data) != kDeviceInfoMagic {
-			t.Fatalf("Iteration %d: bridge not established", i)
-		}
-
-		// Server crashes
-		server.close()
-
-		// Player gets SessionEnd
-		data = readBinary(t, player, 2*time.Second)
-		if readMagic(data) != kSessionEndMagic {
-			t.Fatalf("Iteration %d: expected SessionEnd", i)
-		}
+	// First server
+	server1 := connectFakeServerSideband(t, ts, "game-v1")
+	session1 := readPlayerAttached(t, server1)
+	wire1 := connectSessionWire(t, ts, session1)
+	data := readBinary(t, wire1, 2*time.Second)
+	if readMagic(data) != kDeviceInfoMagic {
+		t.Fatal("First bridge not established")
 	}
 
-	t.Log("Player survived 3 server restarts on the same WebSocket")
+	// First server crashes
+	wire1.CloseNow()
+	server1.sideband.CloseNow()
+
+	// Player receives SessionEnd
+	data = readBinary(t, player, 2*time.Second)
+	if readMagic(data) != kSessionEndMagic {
+		t.Fatal("Expected SessionEnd after first server disconnect")
+	}
+
+	// Give player time to be cleaned up
+	time.Sleep(100 * time.Millisecond)
+
+	// Player reconnects (new WebSocket)
+	player.CloseNow()
+	player = connectFakePlayer(t, ts)
+	defer player.CloseNow()
+
+	// Second server connects
+	server2 := connectFakeServerSideband(t, ts, "game-v2")
+	defer server2.sideband.CloseNow()
+
+	session2 := readPlayerAttached(t, server2)
+	wire2 := connectSessionWire(t, ts, session2)
+	defer wire2.CloseNow()
+
+	// Second server should receive DeviceInfo
+	data = readBinary(t, wire2, 2*time.Second)
+	magic := readMagic(data)
+	if magic != kDeviceInfoMagic {
+		t.Fatalf("Expected DeviceInfoMagic on restart, got 0x%08X", magic)
+	}
+
+	t.Log("Server restart: second server received DeviceInfo")
 }

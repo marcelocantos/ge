@@ -3,6 +3,12 @@ import QRCode from "./QRCode";
 import LogViewer from "./LogViewer";
 import TweakPanel from "./TweakPanel";
 import PhonePreview from "./PhonePreview";
+import SessionList from "./SessionList";
+
+interface SessionInfo {
+  id: string;
+  active: boolean;
+}
 
 function App() {
   const [connected, setConnected] = useState(false);
@@ -12,6 +18,25 @@ function App() {
 
   const [appName, setAppName] = useState("ge");
   const stoppedRef = useRef(false);
+
+  const [sessions, setSessions] = useState<SessionInfo[]>([]);
+  const [selectedSession, setSelectedSession] = useState<string | null>(null);
+
+  const handleSessionAdd = useCallback((sessionId: string) => {
+    setSessions((prev) => {
+      const existing = prev.find((s) => s.id === sessionId);
+      if (existing) {
+        return prev.map((s) => (s.id === sessionId ? { ...s, active: true } : s));
+      }
+      return [...prev, { id: sessionId, active: true }];
+    });
+  }, []);
+
+  const handleSessionRemove = useCallback((sessionId: string) => {
+    setSessions((prev) =>
+      prev.map((s) => (s.id === sessionId ? { ...s, active: false } : s))
+    );
+  }, []);
 
   useEffect(() => {
     fetch("/api/info").then(r => r.json()).then(d => {
@@ -81,10 +106,20 @@ function App() {
       <div className="layout">
         <aside className="sidebar">
           <QRCode />
+          <SessionList
+            sessions={sessions}
+            selected={selectedSession}
+            onSelect={setSelectedSession}
+          />
           <TweakPanel />
         </aside>
         <main className="main">
-          <LogViewer onConnectionChange={setConnected} />
+          <LogViewer
+            onConnectionChange={setConnected}
+            sessionFilter={selectedSession}
+            onSessionAdd={handleSessionAdd}
+            onSessionRemove={handleSessionRemove}
+          />
         </main>
         <aside className="preview-column">
           <PhonePreview />

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 
 const MAX_MESSAGES = 1000;
 const RECONNECT_DELAY_MS = 2000;
@@ -7,6 +7,7 @@ interface LogMessage {
   ts: string;
   level: string;
   msg: string;
+  session?: string;
 }
 
 interface LogEntry extends LogMessage {
@@ -48,11 +49,14 @@ function formatTimestamp(ts: string): string {
 
 interface Props {
   onConnectionChange: (connected: boolean) => void;
+  sessionFilter: string | null;
+  onSessionAdd: (sessionId: string) => void;
+  onSessionRemove: (sessionId: string) => void;
 }
 
 let nextId = 0;
 
-function LogViewer({ onConnectionChange }: Props) {
+function LogViewer({ onConnectionChange, sessionFilter, onSessionAdd, onSessionRemove }: Props) {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const bottomRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -66,11 +70,18 @@ function LogViewer({ onConnectionChange }: Props) {
     userScrolledUp.current = !atBottom;
   }, []);
 
+  const filteredLogs = useMemo(() => {
+    if (sessionFilter === null) return logs;
+    return logs.filter(
+      (entry) => !entry.session || entry.session === sessionFilter
+    );
+  }, [logs, sessionFilter]);
+
   useEffect(() => {
     if (!userScrolledUp.current) {
       bottomRef.current?.scrollIntoView({ behavior: "smooth" });
     }
-  }, [logs]);
+  }, [filteredLogs]);
 
   useEffect(() => {
     let ws: WebSocket | null = null;
@@ -101,7 +112,19 @@ function LogViewer({ onConnectionChange }: Props) {
 
       ws.onmessage = (event) => {
         try {
-          const data: LogMessage = JSON.parse(event.data);
+          const data = JSON.parse(event.data);
+
+          // Handle session lifecycle events
+          if (data.type === "session_add") {
+            onSessionAdd(data.session);
+            return;
+          }
+          if (data.type === "session_remove") {
+            onSessionRemove(data.session);
+            return;
+          }
+
+          // Regular log message
           const entry: LogEntry = { ...data, id: nextId++ };
           setLogs((prev) => {
             const next = [...prev, entry];
@@ -127,7 +150,7 @@ function LogViewer({ onConnectionChange }: Props) {
       }
       onConnectionChange(false);
     };
-  }, [onConnectionChange]);
+  }, [onConnectionChange, onSessionAdd, onSessionRemove]);
 
   return (
     <div className="log-viewer" ref={containerRef} onScroll={handleScroll}>
@@ -143,10 +166,10 @@ function LogViewer({ onConnectionChange }: Props) {
           </svg>
         </button>
       )}
-      {logs.length === 0 && (
+      {filteredLogs.length === 0 && (
         <div className="log-empty">Waiting for log messages...</div>
       )}
-      {logs.map((entry) => {
+      {filteredLogs.map((entry) => {
         const style = levelStyle(entry.level);
         return (
           <div key={entry.id} className="log-line">
@@ -154,6 +177,9 @@ function LogViewer({ onConnectionChange }: Props) {
             <span className="log-level" style={style}>
               {entry.level.toUpperCase().padEnd(8)}
             </span>
+            {entry.session && sessionFilter === null && (
+              <span className="log-session">{entry.session}</span>
+            )}
             <span className="log-msg" style={{ fontWeight: style.fontWeight }}>
               {entry.msg}
             </span>

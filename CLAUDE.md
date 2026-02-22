@@ -15,33 +15,37 @@ A complete ge app needs three things: a `Makefile`, a `main.cpp`, and game logic
 **main.cpp** — the standard entry point pattern:
 
 ```cpp
+#include <ge/SessionHost.h>
 #include <ge/Session.h>
 
 int main() {
     MyState state;  // Persistent game state (survives reconnects)
 
-    for (bool done = false; !done;) {
-        ge::Session session;
+    ge::SessionHost host;
+    host.run([&](ge::Session& session) -> ge::Session::RunConfig {
         auto& ctx = session.gpu();
-        MyApp app(ctx);
+        auto app = std::make_shared<MyApp>(ctx);
 
-        done = !session.run({
-            .onUpdate = [&](float dt) { app.update(dt, state); },
-            .onRender = [&](wgpu::TextureView target) { app.render(ctx, state, target); },
-            .onEvent  = [&](const SDL_Event& e) { app.event(e, state); },
-        });
-        // Wire: returns true (reconnect), Direct: returns false (quit)
-    }
+        return {
+            .onUpdate = [&, app](float dt) { app->update(dt, state); },
+            .onRender = [&, app](wgpu::TextureView target, int w, int h) {
+                app->render(ctx, state, target);
+            },
+            .onEvent  = [&, app](const SDL_Event& e) { app->event(e, state); },
+        };
+    });
 }
 ```
 
 Key points:
-- **State lives outside the session loop** so it persists across player reconnects
-- **App/GPU resources are recreated** each connection (new wire handles)
+- **`SessionHost`** connects to the ged daemon broker and spawns a session per player
+- **State lives outside the host** so it persists across player reconnects
+- **App/GPU resources are created per session** (each player gets its own wire handles)
+- The factory callback receives a connected `Session&` and returns a `RunConfig`
 - `session.run()` drives the render loop at ~60fps with frame delta timing
 - `RunConfig` uses designated initializers: `onUpdate`, `onRender`, `onEvent`, `onResize`
 - The engine manages frame view acquisition, present, and window resize internally
-- Returns when the player disconnects; Ctrl+C terminates the process
+- Ctrl+C terminates the process gracefully
 
 **Makefile** — minimal integration:
 
@@ -78,11 +82,12 @@ $(BUILD_DIR)/%.o: %.cpp
 ### Running Your App
 
 ```bash
-make && bin/myapp          # Terminal 1: server (prints QR code)
-make player && bin/player   # Terminal 2: desktop player
+make ged && bin/ged &       # Start the daemon broker
+make && bin/myapp           # Terminal 1: game server (connects to ged)
+make player && bin/player   # Terminal 2: desktop player (connects via ged)
 ```
 
-The server prints a QR code to stderr. Mobile players scan it; desktop players connect to localhost.
+The ged daemon manages player connections, QR codes, and session routing. Game servers and players both connect to ged.
 
 ### What ge Gives You
 
@@ -93,8 +98,8 @@ The server prints a QR code to stderr. Mobile players scan it; desktop players c
 | Frame loop | `session.run()` with delta timing + signal handling | `onUpdate(dt)` + `onRender(target)` callbacks |
 | Input | Player captures SDL events, sends over TCP | `onEvent(e)` callback |
 | Window resize | Engine calls `GpuContext::resize()` automatically | Optional `onResize(w, h)` callback |
-| Reconnection | Outer loop in main.cpp | Separate State from App |
-| QR code | Auto-generated from LAN IP | Nothing |
+| Reconnection | SessionHost spawns new session per player | Separate State from App |
+| Session routing | ged daemon manages connections + QR codes | Nothing |
 | Asset loading | `ge::loadManifest<T>()` for meshes + textures | manifest.json + data files |
 | Shaders | WGSL loaded at runtime via `Pipeline` | .wgsl shader files |
 | Mobile builds | iOS/Android player projects in `ge/tools/` | Nothing (shared player) |
@@ -209,7 +214,7 @@ player: $(ge/PLAYER)
 | `tools/` | Player: shared core (`player_core.cpp`), desktop entry (`player.cpp`), platform backends |
 | `tools/ios/` | iOS player: Xcode project, QR scanner, build scripts |
 | `tools/android/` | Android player: Gradle project, QR scanner |
-| `vendor/` | Third-party dependencies: Dawn, spdlog, linalg.h, earcut.hpp, doctest, Triangle, asio, qrcodegen, SQLite3 |
+| `vendor/` | Third-party dependencies: Dawn, spdlog, linalg.h, earcut.hpp, doctest, Triangle, asio, SQLite3 |
 
 **Note:** SQLite3 is compiled into `libge.a` (from the vendored amalgamation `vendor/src/sqlite3.c`). Do not add `-lsqlite3` to link lines — it's already included.
 
@@ -248,23 +253,11 @@ Player → Server:  MessageHeader{kSdlEventMagic} + SDL_Event structs (input)
 
 ### Address Resolution
 
-`WireSession` resolves the listen address in order:
-1. `GE_WIRE_ADDR` environment variable
-2. Default: `"42069"`
+Game servers connect to the ged daemon broker. `SessionHost` resolves the daemon address in order:
+1. `GE_DAEMON_ADDR` environment variable (format: `"host:port"`)
+2. Default: `localhost:42069`
 
-Format: `"port"` (listen on all interfaces) or `"address:port"`.
-
-The server auto-discovers its LAN IP (via UDP socket to 8.8.8.8, no packets sent) and encodes it into a QR code: `squz-remote://<lan-ip>:<port>`.
-
-## QR Code Connection
-
-The server prints a QR code to stderr on startup containing `squz-remote://<lan-ip>:<port>`. Mobile players scan this to connect:
-
-- **iOS device:** `QRScanner.mm` uses AVFoundation camera to detect QR codes with the `squz-remote://` scheme
-- **iOS simulator:** Skips QR scan, connects directly to `localhost:42069`
-- **Android device:** Uses Google barcode scanner
-- **Android emulator:** Connects to `10.0.2.2:42069` (host localhost alias)
-- **Desktop:** CLI argument or `localhost:42069` default
+Players connect via ged, which handles QR codes, WebSocket routing, and session management.
 
 ## Player
 
@@ -285,6 +278,24 @@ Implementations: `player_platform_apple.cpp` (macOS/iOS Metal), `player_platform
 ### Reconnection
 
 The player retries on disconnect with exponential backoff: 10ms initial, doubling to 2000ms cap, reset on success. This means you can restart the server and the player will reconnect automatically.
+
+### Headless Mode
+
+Use `--headless` to run the player with a hidden window (no visible UI). Useful for background debugging sessions where the player window would steal focus:
+
+```bash
+bin/player --headless
+```
+
+The player still connects, processes wire commands, and logs normally — the window is simply not shown.
+
+### Ged Quiet Mode
+
+Use `-no-open` to prevent ged from opening the dashboard in the browser on first server connection:
+
+```bash
+bin/ged -no-open
+```
 
 ### Mobile Builds
 
@@ -349,7 +360,7 @@ The Android player's native sources are listed in `ge/tools/android/app/src/main
 - `player_platform_android.cpp` — Vulkan surface creation
 - `${GE_ROOT}/tools/player_core.cpp` — Shared player logic
 - `${GE_ROOT}/src/WireTransport.cpp` — Wire transport
-- `${GE_ROOT}/src/HttpServer.cpp` — HTTP/WebSocket client (`connectWebSocket`)
+- `${GE_ROOT}/src/WebSocketClient.cpp` — WebSocket client (`connectWebSocket`)
 
 ## Standalone iOS App (Direct Mode)
 
@@ -495,9 +506,9 @@ For real devices, omit `-DCMAKE_OSX_SYSROOT=iphonesimulator` (defaults to `iphon
 
 | Concern | Wire mode | Direct mode |
 |---------|-----------|-------------|
-| Session | `SessionWire.cpp` (TCP server) | `SessionDirect.cpp` (SDL window) |
+| Session | `SessionWire.cpp` (wire via ged) | `SessionDirect.cpp` (SDL window) |
 | Rendering | Player renders on-device | App renders directly via Metal |
-| Dependencies | asio, QR code generator | None (no networking) |
+| Dependencies | asio, WebSocket client | None (no networking) |
 | Entry point | `main()` (plain C++) | `main(int, char*[])` with `SDL_main.h` |
 | Asset paths | Relative to working directory | `ge::resource()` resolves to bundle |
 | Texture format | ASTC (if device supports it) | Runtime fallback: ASTC or ETC2 |
@@ -514,7 +525,8 @@ Use `SDL_EVENT_FINGER_*` events exclusively for touch/drag input. SDL3 synthesiz
 
 ### Wire Transport
 
-- **`WireSession`** — TCP wire server session. Listens for a player connection, performs the Dawn wire handshake, acquires adapter/device/queue through wire. Owns the resulting `GpuContext`. `run()` manages the render loop with signal handling and frame timing. pImpl.
+- **`WireSession`** — Wire session that connects to ged via WebSocket, performs the Dawn wire handshake, acquires adapter/device/queue through wire. Owns the resulting `GpuContext`. `run()` manages the render loop with signal handling and frame timing. pImpl.
+- **`SessionHost`** — Manages the sideband connection to ged and spawns `Session` threads for each player that attaches. `run(Factory)` takes a factory callback that configures each session's render loop. pImpl.
 - **`WireTransport`** — In-process wire transport connecting WireClient to WireServer via memory buffers. Used for testing. pImpl.
 - **`Protocol`** — Wire protocol structs (`DeviceInfo`, `SessionInit`, `SessionReady`, `MessageHeader`) and magic numbers. Header-only.
 

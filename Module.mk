@@ -19,7 +19,6 @@ ge/INCLUDES = \
 	-Ige/vendor/dawn/include \
 	-Ige/vendor/github.com/libsdl-org/SDL/include \
 	-Ige/vendor/sdl3/include \
-	-Ige/vendor/github.com/nayuki/QR-Code-generator/cpp \
 	-Ige/vendor/github.com/erincatto/box2d/include
 
 # Dawn (WebGPU) libraries
@@ -56,8 +55,8 @@ ge/SRC = \
 	ge/src/Audio.cpp \
 	ge/src/WireTransport.cpp \
 	ge/src/WireSession.cpp \
-	ge/src/HttpServer.cpp \
-	ge/vendor/github.com/nayuki/QR-Code-generator/cpp/qrcodegen.cpp
+	ge/src/SessionHost.cpp \
+	ge/src/WebSocketClient.cpp
 
 # Session backend objects (linked by the parent, not part of libge.a)
 ge/SESSION_WIRE_OBJ = $(BUILD_DIR)/ge/src/SessionWire.o
@@ -102,7 +101,7 @@ ge/TEST_SRC = \
 ge/TEST_OBJ = $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(ge/TEST_SRC))
 
 # Shared variables (parent can += to extend)
-CLEAN = bin build deps.dot deps.svg deps.png
+CLEAN = bin build deps.dot deps.svg deps.png ge/ged/web
 COMPILE_DB_DEPS = $(ge/SRC) $(ge/TEST_SRC) $(ge/PLAYER_SRC) ge/Module.mk
 ge/DEPGRAPH_DEPS = $(ge/SRC) $(wildcard ge/include/ge/*.h) ge/tools/depgraph.py
 
@@ -269,6 +268,24 @@ ge/init:
 .PHONY: web
 web:
 	cd ge/web && npm install && npm run build
+
+# Game Engine Daemon (Go binary with embedded web UI)
+.PHONY: ged
+ged: web
+	@if [ ! -d ge/web/dist ]; then \
+		echo "ERROR: ge/web/dist not found. Run 'make web' first."; exit 1; \
+	fi
+	@rm -rf ge/ged/web/dist
+	@mkdir -p ge/ged/web
+	@cp -R ge/web/dist ge/ged/web/dist
+	cd ge/ged && go build -o ../../bin/ged .
+
+.PHONY: ged-test
+ged-test:
+	@if [ ! -d ge/ged/web/dist ]; then \
+		mkdir -p ge/ged/web/dist && touch ge/ged/web/dist/index.html; \
+	fi
+	cd ge/ged && go test ./...
 
 # Canned recipe for the parent to expand at the end of its init target.
 define ge/INIT_DONE

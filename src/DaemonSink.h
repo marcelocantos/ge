@@ -1,9 +1,10 @@
 // spdlog sink that forwards log messages to ged daemon via sideband WebSocket.
 // Each log entry is sent as a JSON text frame:
-//   {"type":"log","data":{"ts":"2026-02-11T12:34:56.789","level":"info","msg":"..."}}
+//   {"type":"log","data":{"ts":"...","level":"info","msg":"...","session":"s1"}}
+// The "session" field is set per-thread via ge::sessionId (empty for global logs).
 #pragma once
 
-#include "HttpServer.h"
+#include "WebSocketClient.h"
 #include <spdlog/sinks/base_sink.h>
 
 #include <chrono>
@@ -11,6 +12,11 @@
 #include <iomanip>
 #include <mutex>
 #include <sstream>
+#include <string>
+
+namespace ge {
+inline thread_local std::string sessionId;
+}
 
 class DaemonSink : public spdlog::sinks::base_sink<std::mutex> {
 public:
@@ -50,7 +56,11 @@ protected:
         std::ostringstream json;
         json << R"({"type":"log","data":{"ts":")" << ts.str()
              << R"(","level":")" << std::string_view(level.data(), level.size())
-             << R"(","msg":")" << escaped << "\"}}";
+             << R"(","msg":")" << escaped << '"';
+        if (!ge::sessionId.empty()) {
+            json << R"(,"session":")" << ge::sessionId << '"';
+        }
+        json << "}}";
 
         try {
             conn_->sendText(json.str());

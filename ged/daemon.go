@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os/exec"
+	"strconv"
 	"sync"
 	"time"
 
@@ -19,23 +20,15 @@ func contextWithTimeout(d time.Duration) (context.Context, context.CancelFunc) {
 
 const maxLogHistory = 1000
 
-// ServerConn represents a connected game server.
-// The server has two WebSocket connections:
-//   - Sideband (Conn): text frames for hello, logs, preview, tweaks, player_attached/detached
-//   - Wire (WireConn): binary frames forwarded to/from the player
+// ServerConn represents a connected game server's sideband connection.
+// Wire connections are now per-session (see PlayerSession).
 type ServerConn struct {
-	Conn     *websocket.Conn // sideband
-	WireConn *websocket.Conn // wire (nil until player attached and server connects wire)
-	Name     string
-	PID      int
+	Conn *websocket.Conn // sideband
+	Name string
+	PID  int
 
 	// sendMu serializes writes to the sideband WebSocket.
 	sendMu sync.Mutex
-	// wireMu serializes writes to the wire WebSocket.
-	wireMu sync.Mutex
-
-	// wireReady is closed when WireConn is set.
-	wireReady chan struct{}
 }
 
 // PlayerConn represents a connected player.
@@ -44,12 +37,24 @@ type PlayerConn struct {
 	DeviceInfo []byte // first binary frame (wire protocol DeviceInfo)
 }
 
+// PlayerSession represents an active session between a player and the game server.
+// Each player gets its own session with a dedicated wire WS pair.
+type PlayerSession struct {
+	ID     string
+	Player *PlayerConn
+
+	// Per-session wire connection to the game server.
+	ServerWire *websocket.Conn
+	wireMu     sync.Mutex
+	bridged    bool
+}
+
 // Daemon is the central coordinator between game servers, players, and the dashboard.
 type Daemon struct {
-	mu     sync.Mutex
-	server *ServerConn
-	player *PlayerConn
-	bridge *Bridge
+	mu       sync.Mutex
+	server   *ServerConn
+	sessions map[string]*PlayerSession // sessionID → session
+	nextID   int                       // incrementing session counter
 
 	// Dashboard state
 	logHistory  []string        // JSON-encoded log entries (ring buffer)
@@ -61,6 +66,7 @@ type Daemon struct {
 	lanIP      string
 	qrURL      string
 	port       int
+	noOpen     bool // suppress browser open on first server connect
 	openedDash bool // true after first browser open
 }
 
@@ -71,46 +77,54 @@ type wsClient struct {
 }
 
 // NewDaemon creates a new daemon instance.
-func NewDaemon(port int) *Daemon {
+func NewDaemon(port int, noOpen bool) *Daemon {
 	ip := lanIP()
 	return &Daemon{
-		lanIP: ip,
-		qrURL: fmt.Sprintf("squz-remote://%s:%d", ip, port),
-		port:  port,
+		lanIP:    ip,
+		qrURL:    fmt.Sprintf("squz-remote://%s:%d", ip, port),
+		port:     port,
+		noOpen:   noOpen,
+		sessions: make(map[string]*PlayerSession),
 	}
 }
 
-// SetServer registers a new game server, tearing down any existing bridge.
+// SetServer registers a new game server.
+// Closes old server wire connections but keeps player sessions alive,
+// then notifies the new server about existing players.
 func (d *Daemon) SetServer(sc *ServerConn) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	// Tear down old bridge if active
-	if d.bridge != nil {
-		d.bridge.Close()
-		d.bridge = nil
+	// Close server wire connections from old server (but keep player sessions)
+	for _, sess := range d.sessions {
+		if sess.ServerWire != nil {
+			sess.ServerWire.CloseNow()
+			sess.ServerWire = nil
+		}
+		sess.bridged = false
 	}
 
-	// Close old server connection
+	// Close old server sideband connection
 	if d.server != nil {
 		d.server.Conn.CloseNow()
-		if d.server.WireConn != nil {
-			d.server.WireConn.CloseNow()
-		}
 	}
 
 	d.server = sc
 	slog.Info("Server registered", "name", sc.Name, "pid", sc.PID)
 
-	if !d.openedDash {
+	// Notify new server about existing player sessions
+	for _, sess := range d.sessions {
+		msg := fmt.Sprintf(`{"type":"player_attached","session_id":"%s"}`, sess.ID)
+		d.sendToServerLocked(msg)
+	}
+
+	if !d.noOpen && !d.openedDash {
 		d.openedDash = true
 		go func() {
 			url := fmt.Sprintf("http://localhost:%d", d.port)
 			_ = exec.Command("open", url).Run()
 		}()
 	}
-
-	d.tryBridgeLocked()
 }
 
 // UnsetServer removes the current game server.
@@ -122,132 +136,164 @@ func (d *Daemon) UnsetServer(sc *ServerConn) {
 		return // stale unset
 	}
 
-	if d.bridge != nil {
-		d.bridge.Close()
-		d.bridge = nil
+	// Notify all players that the server is gone and close server wires
+	for _, sess := range d.sessions {
+		d.sendSessionEndLocked(sess.Player.Conn)
+		if sess.ServerWire != nil {
+			sess.ServerWire.CloseNow()
+			sess.ServerWire = nil
+		}
+		sess.bridged = false
 	}
 
 	d.server = nil
 	slog.Info("Server disconnected")
-
-	// Always notify the player when the server disconnects. The player
-	// handles SessionEnd gracefully whether mid-session or waiting idle.
-	// (UnsetServerWire may race and clear the bridge first, so we can't
-	// rely on bridge state.)
-	if d.player != nil {
-		d.sendSessionEndLocked(d.player.Conn)
-	}
 }
 
-// SetServerWire sets the wire WebSocket for the current server and starts the bridge.
-func (d *Daemon) SetServerWire(sc *ServerConn, wireConn *websocket.Conn) bool {
+// AddPlayer registers a new player, assigns a session ID, and notifies the server.
+// Returns the session ID.
+func (d *Daemon) AddPlayer(pc *PlayerConn) string {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	if d.server != sc {
+	d.nextID++
+	sessionID := "s" + strconv.Itoa(d.nextID)
+
+	sess := &PlayerSession{
+		ID:     sessionID,
+		Player: pc,
+	}
+	d.sessions[sessionID] = sess
+	slog.Info("Player connected", "session", sessionID)
+
+	// Notify the game server that a new player has attached
+	if d.server != nil {
+		msg := fmt.Sprintf(`{"type":"player_attached","session_id":"%s"}`, sessionID)
+		d.sendToServerLocked(msg)
+	}
+
+	// Notify dashboard log clients about the new session
+	d.broadcastToClients(&d.logClients, websocket.MessageText,
+		[]byte(fmt.Sprintf(`{"type":"session_add","session":"%s"}`, sessionID)))
+
+	return sessionID
+}
+
+// RemovePlayer tears down a player session.
+func (d *Daemon) RemovePlayer(sessionID string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	sess, ok := d.sessions[sessionID]
+	if !ok {
+		return
+	}
+
+	// Close the server wire for this session (signals the game server thread to exit)
+	if sess.ServerWire != nil {
+		sess.ServerWire.CloseNow()
+	}
+
+	delete(d.sessions, sessionID)
+	slog.Info("Player disconnected", "session", sessionID)
+
+	// Notify the game server
+	if d.server != nil {
+		msg := fmt.Sprintf(`{"type":"player_detached","session_id":"%s"}`, sessionID)
+		d.sendToServerLocked(msg)
+	}
+
+	// Notify dashboard log clients about the removed session
+	d.broadcastToClients(&d.logClients, websocket.MessageText,
+		[]byte(fmt.Sprintf(`{"type":"session_remove","session":"%s"}`, sessionID)))
+}
+
+// SetSessionWire associates a wire WebSocket with a session and bridges it.
+func (d *Daemon) SetSessionWire(sessionID string, wireConn *websocket.Conn) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	sess, ok := d.sessions[sessionID]
+	if !ok {
 		return false
 	}
 
-	sc.WireConn = wireConn
-
-	// Signal that wire is ready
-	select {
-	case <-sc.wireReady:
-	default:
-		close(sc.wireReady)
-	}
-
-	// Start bridge if player is connected
-	d.tryBridgeLocked()
+	sess.ServerWire = wireConn
+	d.tryBridgeSessionLocked(sess)
 	return true
 }
 
-// UnsetServerWire clears the wire connection for a server.
-func (d *Daemon) UnsetServerWire(sc *ServerConn) {
+// UnsetSessionWire clears the wire connection for a session.
+func (d *Daemon) UnsetSessionWire(sessionID string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	if d.server != sc {
+	sess, ok := d.sessions[sessionID]
+	if !ok {
 		return
 	}
 
-	if d.bridge != nil {
-		d.bridge.Close()
-		d.bridge = nil
-	}
-
-	sc.WireConn = nil
+	sess.bridged = false
+	sess.ServerWire = nil
 }
 
-// SetPlayer registers a new player connection.
-func (d *Daemon) SetPlayer(pc *PlayerConn) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	// Close old player
-	if d.player != nil {
-		if d.bridge != nil {
-			d.bridge.Close()
-			d.bridge = nil
-		}
-		d.player.Conn.CloseNow()
-	}
-
-	d.player = pc
-	slog.Info("Player connected")
-
-	d.tryBridgeLocked()
-}
-
-// UnsetPlayer removes the current player.
-func (d *Daemon) UnsetPlayer(pc *PlayerConn) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	if d.player != pc {
-		return
-	}
-
-	if d.bridge != nil {
-		d.bridge.Close()
-		d.bridge = nil
-	}
-
-	d.player = nil
-	slog.Info("Player disconnected")
-
-	// Close server wire WS to signal disconnect to the server.
-	// Server's processResponses detects this, run() returns true,
-	// outer loop creates a new WireSession that reconnects.
-	if d.server != nil && d.server.WireConn != nil {
-		d.server.WireConn.CloseNow()
-	}
-}
-
-// tryBridgeLocked attempts to establish a bridge if server wire and player are both ready.
-// Sends the player's stored DeviceInfo to the server to initiate the wire handshake.
+// tryBridgeSessionLocked attempts to establish a bridge for a specific session.
+// Sends the player's stored DeviceInfo to the server wire to initiate the handshake.
 // Must be called with d.mu held.
-func (d *Daemon) tryBridgeLocked() {
-	if d.server == nil || d.server.WireConn == nil || d.player == nil || d.bridge != nil {
+func (d *Daemon) tryBridgeSessionLocked(sess *PlayerSession) {
+	if sess.ServerWire == nil || sess.Player == nil || sess.bridged {
 		return
 	}
-	if d.player.DeviceInfo == nil {
+	if sess.Player.DeviceInfo == nil {
 		return
 	}
 
 	// Send stored DeviceInfo to server — this initiates the wire handshake.
-	d.server.wireMu.Lock()
+	sess.wireMu.Lock()
 	ctx, cancel := contextWithTimeout(5 * time.Second)
-	err := d.server.WireConn.Write(ctx, websocket.MessageBinary, d.player.DeviceInfo)
+	err := sess.ServerWire.Write(ctx, websocket.MessageBinary, sess.Player.DeviceInfo)
 	cancel()
-	d.server.wireMu.Unlock()
+	sess.wireMu.Unlock()
 	if err != nil {
-		slog.Error("Failed to send DeviceInfo to server", "err", err)
+		slog.Error("Failed to send DeviceInfo to server", "session", sess.ID, "err", err)
 		return
 	}
 
-	d.bridge = NewBridge(d, d.server, d.player)
-	slog.Info("Bridge established")
+	sess.bridged = true
+	slog.Info("Bridge established", "session", sess.ID)
+}
+
+// ForwardToPlayer sends a binary frame to the player for a specific session.
+func (d *Daemon) ForwardToPlayer(sessionID string, data []byte) {
+	d.mu.Lock()
+	sess, ok := d.sessions[sessionID]
+	d.mu.Unlock()
+
+	if !ok || sess.Player == nil {
+		return
+	}
+
+	ctx, cancel := contextWithTimeout(5 * time.Second)
+	defer cancel()
+	_ = sess.Player.Conn.Write(ctx, websocket.MessageBinary, data)
+}
+
+// ForwardToServerWire sends a frame to the server's wire for a specific session.
+func (d *Daemon) ForwardToServerWire(sessionID string, mt websocket.MessageType, data []byte) {
+	d.mu.Lock()
+	sess, ok := d.sessions[sessionID]
+	d.mu.Unlock()
+
+	if !ok || sess.ServerWire == nil {
+		return
+	}
+
+	sess.wireMu.Lock()
+	defer sess.wireMu.Unlock()
+
+	ctx, cancel := contextWithTimeout(5 * time.Second)
+	defer cancel()
+	_ = sess.ServerWire.Write(ctx, mt, data)
 }
 
 // sendToServerLocked sends a text message to the current server's sideband.
@@ -290,7 +336,15 @@ func (d *Daemon) AddLogClient(c *wsClient) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	// Replay history
+	// Replay current session list so the dashboard knows existing sessions
+	for _, sess := range d.sessions {
+		msg := fmt.Sprintf(`{"type":"session_add","session":"%s"}`, sess.ID)
+		ctx, cancel := contextWithTimeout(5 * time.Second)
+		_ = c.conn.Write(ctx, websocket.MessageText, []byte(msg))
+		cancel()
+	}
+
+	// Replay log history
 	for _, msg := range d.logHistory {
 		ctx, cancel := contextWithTimeout(5 * time.Second)
 		_ = c.conn.Write(ctx, websocket.MessageText, []byte(msg))
@@ -355,6 +409,7 @@ func (d *Daemon) ServerInfo() map[string]any {
 	defer d.mu.Unlock()
 	info := map[string]any{
 		"connected": d.server != nil,
+		"sessions":  len(d.sessions),
 	}
 	if d.server != nil {
 		info["name"] = d.server.Name
