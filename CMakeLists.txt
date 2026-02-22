@@ -10,7 +10,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Android")
 else()
     project(ge LANGUAGES CXX OBJCXX)
 endif()
-set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD 23)
 
 option(GE_DIRECT "Direct rendering mode (no wire/networking)" OFF)
 
