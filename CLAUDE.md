@@ -4,7 +4,7 @@
 
 Reusable rendering and asset engine built on Dawn (WebGPU) + SDL3. Consumed as a git submodule; build integration via `Module.mk`.
 
-Apps built on ge use a **server/player architecture**: the app (server) issues WebGPU draw commands through Dawn's wire protocol over TCP, and the platform-native ge Player renders them and sends input back. This means the app itself has zero platform-specific code — ge and the player handle all of that.
+Apps built on ge use a **server/player architecture**: the app (server) issues WebGPU draw commands through Dawn's wire protocol over TCP, and the platform-native ge player renders them and sends input back. This means the app itself has zero platform-specific code — ge and the player handle all of that.
 
 ## Integrating ge into a New App
 
@@ -150,8 +150,8 @@ Engine-internal variables use the `ge/` prefix. These are read-only — the pare
 | `ge/FRAMEWORK_LIBS` | Alias for `$(ge/DAWN_LIBS)` |
 | `ge/TEST_SRC`, `ge/TEST_OBJ` | Unit test sources and objects |
 | `ge/TRIANGLE_OBJ` | Triangle library object (for tools that need triangulation) |
-| `ge/PLAYER_SRC`, `ge/PLAYER_OBJ` | ge Player source and object |
-| `ge/PLAYER` | ge Player binary path (`bin/player`) |
+| `ge/PLAYER_SRC`, `ge/PLAYER_OBJ` | ge player source and object |
+| `ge/PLAYER` | ge player binary path (`bin/player`) |
 
 ### Shared Variables
 
@@ -264,7 +264,7 @@ Players connect via ged, which handles QR codes, WebSocket routing, and session 
 
 ## Player
 
-The ge Player is a shared binary that works with any ge app. It has no app-specific code — it just renders whatever wire commands the server sends and forwards input back.
+The ge player is a shared binary that works with any ge app. It has no app-specific code — it just renders whatever wire commands the server sends and forwards input back.
 
 ### Platform Backends
 

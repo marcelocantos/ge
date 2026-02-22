@@ -1,4 +1,4 @@
-// Android ge Player entry point.
+// Android ge player entry point.
 // Scans a QR code on startup to discover the game server, then runs the shared
 // Player.
 
@@ -41,7 +41,7 @@ int main(int argc, char* argv[]) {
     spdlog::set_default_logger(logger);
     spdlog::set_level(spdlog::level::info);
 
-    SPDLOG_INFO("ge Player (Android) starting...");
+    SPDLOG_INFO("ge player (Android) starting...");
 
     return playerLoop([] {
         // Priority: debug property > emulator detection > QR scan

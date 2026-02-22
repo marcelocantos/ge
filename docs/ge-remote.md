@@ -112,7 +112,7 @@ cd ge/tools/android
 ./gradlew installDebug
 ```
 
-Launch "ge Player" from the app drawer. It opens Google's barcode scanner for QR scanning.
+Launch "ge player" from the app drawer. It opens Google's barcode scanner for QR scanning.
 
 ## Connecting to the game server
 

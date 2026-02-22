@@ -630,7 +630,7 @@ void Player::M::initWindow() {
     if (maximized) flags |= SDL_WINDOW_MAXIMIZED | SDL_WINDOW_RESIZABLE;
     if (headless) flags |= SDL_WINDOW_HIDDEN;
     flags |= SDL_WINDOW_RESIZABLE;
-    window = SDL_CreateWindow("ge Player", width, height, flags);
+    window = SDL_CreateWindow("ge player", width, height, flags);
     if (!window) {
         SDL_Quit();
         throw std::runtime_error(std::string("SDL_CreateWindow failed: ") + SDL_GetError());
@@ -705,7 +705,7 @@ std::shared_ptr<ge::WsConnection> Player::M::connectWithUI(bool& quit) {
 
     // Show connecting status in window title (no GPU rendering — surface
     // stays unconfigured so the wire session gets a pristine surface).
-    std::string title = "ge Player \xe2\x80\x94 Connecting to " + host + ":" + std::to_string(port) + "...";
+    std::string title = "ge player \xe2\x80\x94 Connecting to " + host + ":" + std::to_string(port) + "...";
     SDL_SetWindowTitle(window, title.c_str());
 
     // Backoff delay: poll events while waiting before next attempt
@@ -717,7 +717,7 @@ std::shared_ptr<ge::WsConnection> Player::M::connectWithUI(bool& quit) {
             while (SDL_PollEvent(&ev)) {
                 if (ev.type == SDL_EVENT_QUIT ||
                     (ev.type == SDL_EVENT_KEY_DOWN && ev.key.key == SDLK_Q)) {
-                    SDL_SetWindowTitle(window, "ge Player");
+                    SDL_SetWindowTitle(window, "ge player");
                     quit = true;
                     return nullptr;
                 }
@@ -743,7 +743,7 @@ std::shared_ptr<ge::WsConnection> Player::M::connectWithUI(bool& quit) {
             if (ev.type == SDL_EVENT_QUIT ||
                 (ev.type == SDL_EVENT_KEY_DOWN && ev.key.key == SDLK_Q)) {
                 connThread.join();
-                SDL_SetWindowTitle(window, "ge Player");
+                SDL_SetWindowTitle(window, "ge player");
                 quit = true;
                 return nullptr;
             }
@@ -797,36 +797,36 @@ ConnectionResult Player::M::connectAndRun() {
     SPDLOG_INFO("Sent DeviceInfo");
 
     // Wait for SessionInit (surface stays unconfigured — title bar shows status).
-    SDL_SetWindowTitle(window, ("ge Player \xe2\x80\x94 Waiting for " + host + "...").c_str());
+    SDL_SetWindowTitle(window, ("ge player \xe2\x80\x94 Waiting for " + host + "...").c_str());
     wire::MessageHeader initHdr{};
     std::vector<char> initPayload;
     auto sessionWaitStart = SDL_GetTicks();
     while (true) {
         if (!wsConn->isOpen()) {
             SPDLOG_WARN("Connection lost waiting for SessionInit");
-            SDL_SetWindowTitle(window, "ge Player");
+            SDL_SetWindowTitle(window, "ge player");
             return ConnectionResult::Disconnected;
         }
         // Timeout: if no SessionInit within 5s, reconnect.
         if (SDL_GetTicks() - sessionWaitStart > 5000) {
             SPDLOG_WARN("SessionInit timeout — reconnecting");
-            SDL_SetWindowTitle(window, "ge Player");
+            SDL_SetWindowTitle(window, "ge player");
             return ConnectionResult::Disconnected;
         }
         if (wsConn->available() > 0) {
             if (!serializer->recvMessage(initHdr, initPayload)) {
                 SPDLOG_WARN("Failed to read SessionInit");
-                SDL_SetWindowTitle(window, "ge Player");
+                SDL_SetWindowTitle(window, "ge player");
                 return ConnectionResult::Disconnected;
             }
             if (initHdr.magic == wire::kSessionEndMagic) {
                 SPDLOG_INFO("Server session ended while waiting for SessionInit");
-                SDL_SetWindowTitle(window, "ge Player");
+                SDL_SetWindowTitle(window, "ge player");
                 return ConnectionResult::Disconnected;
             }
             if (initPayload.size() < sizeof(wire::SessionInit)) {
                 SPDLOG_WARN("SessionInit too small");
-                SDL_SetWindowTitle(window, "ge Player");
+                SDL_SetWindowTitle(window, "ge player");
                 return ConnectionResult::Disconnected;
             }
             break;
@@ -835,7 +835,7 @@ ConnectionResult Player::M::connectAndRun() {
         while (SDL_PollEvent(&ev)) {
             if (ev.type == SDL_EVENT_QUIT ||
                 (ev.type == SDL_EVENT_KEY_DOWN && ev.key.key == SDLK_Q)) {
-                SDL_SetWindowTitle(window, "ge Player");
+                SDL_SetWindowTitle(window, "ge player");
                 return ConnectionResult::Quit;
             }
             if (ev.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED)
@@ -843,7 +843,7 @@ ConnectionResult Player::M::connectAndRun() {
         }
         SDL_Delay(16);
     }
-    SDL_SetWindowTitle(window, "ge Player");
+    SDL_SetWindowTitle(window, "ge player");
 
     wire::SessionInit sessionInit{};
     std::memcpy(&sessionInit, initPayload.data(), sizeof(sessionInit));

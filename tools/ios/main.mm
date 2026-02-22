@@ -1,4 +1,4 @@
-// iOS ge Player entry point.
+// iOS ge player entry point.
 // Scans a QR code on startup to discover the game server, then runs the shared Player.
 
 #include <TargetConditionals.h>
@@ -9,7 +9,7 @@
 #include <fstream>
 
 int main(int argc, char* argv[]) {
-    SPDLOG_INFO("ge Player (iOS) starting...");
+    SPDLOG_INFO("ge player (iOS) starting...");
 
     return playerLoop([] {
 #if TARGET_OS_SIMULATOR
