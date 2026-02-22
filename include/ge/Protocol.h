@@ -23,6 +23,9 @@ constexpr uint32_t kSessionEndMagic = 0x4745324D;   // "GE2M" — ged → player
 constexpr uint32_t kSensorConfigMagic = 0x4745324C; // "GE2L" — server → player: sensor config
 constexpr uint32_t kAudioDataMagic = 0x47453241;    // "GE2A" — server → player: audio asset data
 constexpr uint32_t kAudioCommandMagic = 0x47453242;  // "GE2B" — server → player: audio play/stop/volume
+constexpr uint32_t kStateRequestMagic = 0x47453251;  // "GE2Q" — server → player: send your DB
+constexpr uint32_t kStateDataMagic = 0x47453250;      // "GE2P" — player → server: raw DB bytes
+constexpr uint32_t kSqlpipeMsgMagic = 0x47453254;     // "GE2T" — bidirectional sqlpipe messages
 
 constexpr uint16_t kProtocolVersion = 3;
 constexpr size_t kMaxMessageSize = 512 * 1024 * 1024;  // 512MB (initial resource uploads can be large)

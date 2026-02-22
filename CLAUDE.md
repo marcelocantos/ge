@@ -250,6 +250,9 @@ Player → Server:  MessageHeader{kSdlEventMagic} + SDL_Event structs (input)
 | `kWireCommandMagic` | `0x47453243` | "GE2C" — GPU commands |
 | `kWireResponseMagic` | `0x47453252` | "GE2R" — GPU responses |
 | `kSdlEventMagic` | `0x47453249` | "GE2I" — input events |
+| `kStateRequestMagic` | `0x47453251` | "GE2Q" — server requests player's DB |
+| `kStateDataMagic` | `0x47453250` | "GE2P" — player sends raw DB bytes |
+| `kSqlpipeMsgMagic` | `0x47453254` | "GE2T" — bidirectional sqlpipe messages |
 
 ### Address Resolution
 

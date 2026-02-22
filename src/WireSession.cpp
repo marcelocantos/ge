@@ -22,6 +22,7 @@
 #include <csignal>
 #include <cstdlib>
 #include <queue>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <sys/socket.h>
@@ -326,7 +327,8 @@ public:
     int frameReadyCount = 2; // initial credits = pipeline depth (double-buffer)
 
     void processResponses(dawn::wire::WireClient& client,
-                           const std::function<void(const SDL_Event&)>& onEvent) {
+                           const std::function<void(const SDL_Event&)>& onEvent,
+                           const std::function<void(std::span<const uint8_t>)>& onMessage = nullptr) {
         while (conn_->available() > 0) {
             wire::MessageHeader header{};
             std::vector<char> payload;
@@ -378,6 +380,11 @@ public:
                         pendingMips_.erase(it);
                     }
                 }
+            } else if (header.magic == wire::kSqlpipeMsgMagic) {
+                if (onMessage && !payload.empty()) {
+                    onMessage(std::span<const uint8_t>(
+                        reinterpret_cast<const uint8_t*>(payload.data()), payload.size()));
+                }
             } else {
                 SPDLOG_ERROR("Unknown message magic: 0x{:08X}", header.magic);
             }
@@ -421,6 +428,7 @@ struct WireSession::M {
     wgpu::Instance instance;
     std::unique_ptr<GpuContext> gfx;
     std::function<void(const SDL_Event&)> onEvent;
+    std::function<void(std::span<const uint8_t>)> onMessage;
     int pixelRatio = 1;
     bool connected = false;
     Audio audio;
@@ -540,7 +548,7 @@ void WireSession::connect() {
 
     m->serializer->Flush();
     while (!adapterReceived) {
-        m->serializer->processResponses(*m->wireClient, m->onEvent);
+        m->serializer->processResponses(*m->wireClient, m->onEvent, m->onMessage);
         m->instance.ProcessEvents();
     }
 
@@ -595,7 +603,7 @@ void WireSession::connect() {
 
     m->serializer->Flush();
     while (!deviceReceived) {
-        m->serializer->processResponses(*m->wireClient, m->onEvent);
+        m->serializer->processResponses(*m->wireClient, m->onEvent, m->onMessage);
         m->instance.ProcessEvents();
     }
 
@@ -635,13 +643,15 @@ Audio& WireSession::audio() {
 }
 
 void WireSession::flush() {
-    m->serializer->processResponses(*m->wireClient, m->onEvent);
+    m->serializer->processResponses(*m->wireClient, m->onEvent, m->onMessage);
     m->instance.ProcessEvents();
     m->serializer->Flush();
 }
 
 bool WireSession::run(RunConfig config) {
     if (!m->connected) connect();
+
+    m->onMessage = std::move(config.onMessage);
 
     m->onEvent = [this,
                   userEvent = std::move(config.onEvent),
@@ -689,6 +699,36 @@ bool WireSession::run(RunConfig config) {
                     i, dataSize / 1024.0, hdr.format, m->audio.clipLoop(i));
     }
 
+    // State sync: request player's persistent DB if the app wants it
+    if (config.onStateReceived) {
+        m->serializer->sendMessage(wire::kStateRequestMagic,
+            config.appId.data(), config.appId.size());
+        SPDLOG_INFO("Sent StateRequest (app={}), waiting for player DB...", config.appId);
+
+        wire::MessageHeader stateHdr{};
+        std::vector<char> statePayload;
+        for (;;) {
+            if (!m->serializer->connection().isOpen()) {
+                SPDLOG_WARN("Player disconnected during state sync");
+                return true;
+            }
+            m->serializer->processResponses(*m->wireClient, m->onEvent, m->onMessage);
+            m->instance.ProcessEvents();
+            if (m->serializer->connection().available() > 0) {
+                if (!m->serializer->recvMessage(stateHdr, statePayload)) {
+                    SPDLOG_WARN("Player disconnected during state sync");
+                    return true;
+                }
+                if (stateHdr.magic == wire::kStateDataMagic) break;
+                SPDLOG_WARN("Unexpected magic 0x{:08X} during state sync, skipping", stateHdr.magic);
+            }
+            SDL_Delay(1);
+        }
+
+        config.onStateReceived(std::move(statePayload));
+        SPDLOG_INFO("State sync complete ({} bytes)", statePayload.size());
+    }
+
     DeltaTimer frameTimer;
 
     // Install SIGINT handler to allow graceful exit with exit message
@@ -729,7 +769,7 @@ bool WireSession::run(RunConfig config) {
             return true;
         }
         try {
-            m->serializer->processResponses(*m->wireClient, m->onEvent);
+            m->serializer->processResponses(*m->wireClient, m->onEvent, m->onMessage);
         } catch (const std::exception& e) {
             SPDLOG_WARN("Player disconnected: {}", e.what());
             return true;
@@ -742,7 +782,7 @@ bool WireSession::run(RunConfig config) {
                 return true;
             }
             try {
-                m->serializer->processResponses(*m->wireClient, m->onEvent);
+                m->serializer->processResponses(*m->wireClient, m->onEvent, m->onMessage);
             } catch (const std::exception& e) {
                 SPDLOG_WARN("Player disconnected: {}", e.what());
                 return true;
@@ -795,6 +835,14 @@ bool WireSession::run(RunConfig config) {
             auto cmds = m->audio.drainCommands();
             for (const auto& cmd : cmds) {
                 m->serializer->sendMessage(wire::kAudioCommandMagic, &cmd, sizeof(cmd));
+            }
+
+            // Drain app-level messages (sqlpipe changesets)
+            if (config.drainMessages) {
+                for (auto& msg : config.drainMessages()) {
+                    m->serializer->sendMessage(wire::kSqlpipeMsgMagic,
+                        reinterpret_cast<const char*>(msg.data()), msg.size());
+                }
             }
 
             m->serializer->sendFrameEnd();

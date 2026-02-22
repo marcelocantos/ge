@@ -10,7 +10,7 @@ add_subdirectory(
     ${CMAKE_CURRENT_BINARY_DIR}/SDL3
 )
 
-# Sources — Android entry point + shared player + wire transport + platform + QR
+# Sources — Android entry point + shared player + wire transport + platform + QR + sqlite3/sqlpipe
 add_library(main SHARED
     ${CMAKE_CURRENT_SOURCE_DIR}/main.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/QRScanner_android.cpp
@@ -19,9 +19,16 @@ add_library(main SHARED
     ${GE_ROOT}/tools/AudioPlayer.cpp
     ${GE_ROOT}/src/WireTransport.cpp
     ${GE_ROOT}/src/WebSocketClient.cpp
+    ${GE_ROOT}/vendor/src/sqlite3.c
+    ${GE_ROOT}/vendor/src/sqlpipe.cpp
 )
 
-target_compile_definitions(main PRIVATE ASIO_STANDALONE)
+target_compile_definitions(main PRIVATE
+    ASIO_STANDALONE
+    SQLITE_ENABLE_SESSION
+    SQLITE_ENABLE_PREUPDATE_HOOK
+    SQLITE_ENABLE_DESERIALIZE
+)
 
 target_include_directories(main PRIVATE
     ${GE_ROOT}/include

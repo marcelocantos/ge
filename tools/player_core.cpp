@@ -14,6 +14,8 @@
 #include <webgpu/webgpu_cpp.h>
 
 #include <ge/Protocol.h>
+#include <sqlite3.h>
+#include <sqlpipe.h>
 
 // Engine headers for WebSocket
 #include "../src/WebSocketClient.h"
@@ -505,6 +507,12 @@ struct Player::M {
     bool maximized = false;
     bool headless = false;
     int maxRetries = -1;  // -1 = unlimited
+    std::string profile = "default";
+
+    // Persistent state DB for sqlpipe sync
+    std::string dbPath;
+    sqlite3* stateDb = nullptr;
+    std::unique_ptr<sqlpipe::Replica> replica;
 
     SDL_Window* window = nullptr;
 
@@ -516,6 +524,13 @@ struct Player::M {
     wgpu::TextureFormat swapChainFormat = wgpu::TextureFormat::BGRA8Unorm;
 
     ~M() {
+        // Clean up sqlpipe replica before closing the DB
+        replica.reset();
+        if (stateDb) {
+            sqlite3_close(stateDb);
+            stateDb = nullptr;
+        }
+
         // Surface cleanup happens in connectAndRun() while the wire device is
         // still alive (see recycleSurface). By the time ~M() runs the surface
         // is either already clean or was never configured, so a normal release
@@ -554,7 +569,8 @@ struct Player::M {
 };
 
 Player::Player(std::string host, uint16_t port, int width, int height,
-                   bool maximized, int maxRetries, bool headless)
+                   bool maximized, int maxRetries, bool headless,
+                   std::string profile)
     : m(std::make_unique<M>()) {
     m->host = std::move(host);
     m->port = port;
@@ -563,6 +579,12 @@ Player::Player(std::string host, uint16_t port, int width, int height,
     m->maximized = maximized;
     m->headless = headless;
     m->maxRetries = maxRetries;
+    m->profile = std::move(profile);
+
+    // Store profile base directory — DB opened when kStateRequestMagic arrives
+    const char* home = std::getenv("HOME");
+    if (!home) home = "/tmp";
+    m->dbPath = (fs::path(home) / ".cache" / "ge" / "profiles" / m->profile).string();
 }
 
 Player::~Player() = default;
@@ -741,6 +763,9 @@ std::shared_ptr<ge::WsConnection> Player::M::connectWithUI(bool& quit) {
 }
 
 ConnectionResult Player::M::connectAndRun() {
+    // Reset replica from any previous session
+    replica.reset();
+
     SPDLOG_INFO("Connecting to {}:{}...", host, port);
 
     bool quit = false;
@@ -1123,6 +1148,74 @@ ConnectionResult Player::M::connectAndRun() {
                     wire::AudioCommand ac{};
                     std::memcpy(&ac, payload.data(), sizeof(ac));
                     audioPlayer.handleCommand(ac.command, ac.audioId, ac.volume);
+                }
+            } else if (header.magic == wire::kStateRequestMagic) {
+                // Server wants our persistent DB. Payload is the app ID.
+                std::string appId(payload.data(), payload.size());
+
+                // Open (or reopen) DB at profile/appId path
+                replica.reset();
+                if (stateDb) { sqlite3_close(stateDb); stateDb = nullptr; }
+                auto dir = appId.empty() ? fs::path(dbPath) : fs::path(dbPath) / appId;
+                std::error_code ec;
+                fs::create_directories(dir, ec);
+                auto fullDbPath = (dir / "state.db").string();
+                int rc = sqlite3_open(fullDbPath.c_str(), &stateDb);
+                if (rc != SQLITE_OK) {
+                    SPDLOG_ERROR("Failed to open state DB at {}: {}",
+                                 fullDbPath, sqlite3_errmsg(stateDb));
+                    sqlite3_close(stateDb);
+                    stateDb = nullptr;
+                } else {
+                    SPDLOG_INFO("State DB opened: {}", fullDbPath);
+                }
+                if (stateDb) {
+                    sqlite3_int64 dbSize = 0;
+                    unsigned char* dbBytes = sqlite3_serialize(stateDb, "main", &dbSize, 0);
+                    if (dbBytes && dbSize > 0) {
+                        try {
+                            serializer->sendMessage(wire::kStateDataMagic,
+                                reinterpret_cast<const char*>(dbBytes), static_cast<size_t>(dbSize));
+                        } catch (...) {}
+                        SPDLOG_INFO("Sent state DB ({} bytes)", dbSize);
+                    } else {
+                        // Empty DB — send zero-length payload
+                        try { serializer->sendMessage(wire::kStateDataMagic); } catch (...) {}
+                        SPDLOG_INFO("Sent empty state DB");
+                    }
+                    sqlite3_free(dbBytes);
+
+                    // Set up Replica for ongoing sync
+                    replica.reset();
+                    replica = std::make_unique<sqlpipe::Replica>(stateDb);
+                    auto helloMsg = replica->hello();
+                    auto helloBytes = sqlpipe::serialize(helloMsg);
+                    try {
+                        serializer->sendMessage(wire::kSqlpipeMsgMagic,
+                            reinterpret_cast<const char*>(helloBytes.data()), helloBytes.size());
+                    } catch (...) {}
+                    SPDLOG_INFO("Sent sqlpipe hello");
+                } else {
+                    // No DB available — send empty
+                    try { serializer->sendMessage(wire::kStateDataMagic); } catch (...) {}
+                    SPDLOG_WARN("No state DB available, sent empty");
+                }
+            } else if (header.magic == wire::kSqlpipeMsgMagic) {
+                if (replica && !payload.empty()) {
+                    try {
+                        auto msg = sqlpipe::deserialize(std::span<const uint8_t>(
+                            reinterpret_cast<const uint8_t*>(payload.data()), payload.size()));
+                        auto result = replica->handle_message(msg);
+                        for (auto& resp : result.messages) {
+                            auto bytes = sqlpipe::serialize(resp);
+                            serializer->sendMessage(wire::kSqlpipeMsgMagic,
+                                reinterpret_cast<const char*>(bytes.data()), bytes.size());
+                        }
+                    } catch (const sqlpipe::Error& e) {
+                        SPDLOG_ERROR("sqlpipe error: {}", e.what());
+                    } catch (const std::exception& e) {
+                        SPDLOG_WARN("sqlpipe message handling failed: {}", e.what());
+                    }
                 }
             } else if (header.magic == wire::kFrameEndMagic) {
                 if (!firstFrameLogged) {

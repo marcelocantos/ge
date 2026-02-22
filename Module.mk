@@ -20,7 +20,7 @@ ge/INCLUDES = \
 	-Ige/vendor/github.com/libsdl-org/SDL/include \
 	-Ige/vendor/sdl3/include \
 	-Ige/vendor/github.com/erincatto/box2d/include \
-	-DSQLITE_ENABLE_SESSION -DSQLITE_ENABLE_PREUPDATE_HOOK
+	-DSQLITE_ENABLE_SESSION -DSQLITE_ENABLE_PREUPDATE_HOOK -DSQLITE_ENABLE_DESERIALIZE
 
 # Dawn (WebGPU) libraries
 # Order matters: dawn_proc first (provides switchable wgpu* stubs), then webgpu_dawn (native impl)
@@ -137,7 +137,7 @@ $(BUILD_DIR)/$(ge/BOX2D_DIR)/src/%.o: $(ge/BOX2D_DIR)/src/%.c
 # SQLite3 (C amalgamation)
 $(ge/SQLITE_OBJ): $(ge/SQLITE_SRC)
 	@mkdir -p $(dir $@)
-	$(CC) -O2 -Ige/vendor/include -DSQLITE_ENABLE_SESSION -DSQLITE_ENABLE_PREUPDATE_HOOK -c $< -o $@
+	$(CC) -O2 -Ige/vendor/include -DSQLITE_ENABLE_SESSION -DSQLITE_ENABLE_PREUPDATE_HOOK -DSQLITE_ENABLE_DESERIALIZE -c $< -o $@
 
 # Triangle library
 $(ge/TRIANGLE_OBJ): $(ge/TRIANGLE_SRC)

@@ -6,7 +6,7 @@ set(CMAKE_XCODE_LINK_BUILD_PHASE_MODE KNOWN_LOCATION)
 set(GE_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../..)
 set(DEPS_BUILD ${CMAKE_CURRENT_SOURCE_DIR}/build)
 
-# Sources — iOS entry point + shared player + wire transport + QR scanner
+# Sources — iOS entry point + shared player + wire transport + QR scanner + sqlite3/sqlpipe
 set(SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/main.mm
     ${GE_ROOT}/tools/player_core.cpp
@@ -14,6 +14,8 @@ set(SOURCES
     ${GE_ROOT}/tools/AudioPlayer.cpp
     ${GE_ROOT}/src/WireTransport.cpp
     ${GE_ROOT}/src/WebSocketClient.cpp
+    ${GE_ROOT}/vendor/src/sqlite3.c
+    ${GE_ROOT}/vendor/src/sqlpipe.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/QRScanner.mm
 )
 
@@ -22,7 +24,13 @@ add_executable(Player MACOSX_BUNDLE ${SOURCES})
 # player_platform_apple.cpp uses ObjC (CAMetalLayer) — compile as ObjC++
 set_source_files_properties(${GE_ROOT}/tools/player_platform_apple.cpp PROPERTIES LANGUAGE OBJCXX)
 
-target_compile_definitions(Player PRIVATE ASIO_STANDALONE GE_IOS)
+target_compile_definitions(Player PRIVATE
+    ASIO_STANDALONE
+    GE_IOS
+    SQLITE_ENABLE_SESSION
+    SQLITE_ENABLE_PREUPDATE_HOOK
+    SQLITE_ENABLE_DESERIALIZE
+)
 
 # Headers (engine + header-only vendors + iOS-specific)
 target_include_directories(Player PRIVATE
