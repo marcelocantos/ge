@@ -75,6 +75,7 @@ function PhonePreview() {
     screenCtx.fillRect(0, 0, screenCanvas.width, screenCanvas.height);
 
     const screenTexture = new THREE.CanvasTexture(screenCanvas);
+    screenTexture.colorSpace = THREE.SRGBColorSpace;
     screenTexture.minFilter = THREE.LinearFilter;
     screenTexture.magFilter = THREE.LinearFilter;
 
