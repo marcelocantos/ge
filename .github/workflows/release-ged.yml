@@ -107,15 +107,18 @@ jobs:
           FORMULA
 
           # Push to tap
-          gh api repos/squz/homebrew-tap/contents/Formula/ged.rb \
-            --method PUT \
-            --field message="Update ged formula to ${VERSION}" \
-            --field content="$(base64 -w0 /tmp/ged.rb)" \
-            --field branch=master \
-            $(
-              # Include SHA if file already exists (update vs create)
-              EXISTING_SHA=$(gh api repos/squz/homebrew-tap/contents/Formula/ged.rb --jq '.sha' 2>/dev/null || true)
-              if [ -n "$EXISTING_SHA" ]; then
-                echo "--field sha=$EXISTING_SHA"
-              fi
-            )
+          CONTENT=$(base64 -w0 /tmp/ged.rb)
+          EXISTING_SHA=$(gh api repos/squz/homebrew-tap/contents/Formula/ged.rb --jq '.sha' 2>/dev/null || true)
+
+          ARGS=(
+            repos/squz/homebrew-tap/contents/Formula/ged.rb
+            --method PUT
+            --field "message=Update ged formula to ${VERSION}"
+            --field "content=${CONTENT}"
+            --field branch=master
+          )
+          if [ -n "$EXISTING_SHA" ]; then
+            ARGS+=(--field "sha=${EXISTING_SHA}")
+          fi
+
+          gh api "${ARGS[@]}"
