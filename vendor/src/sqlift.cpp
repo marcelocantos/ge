@@ -294,6 +294,7 @@ Schema extract(sqlite3* db) {
         "SELECT type, name, tbl_name, sql FROM sqlite_master "
         "WHERE type IN ('table', 'index', 'view', 'trigger') "
         "AND name NOT LIKE 'sqlite_%' "
+        "AND name NOT LIKE '_sqlpipe_%' "
         "AND name != '_sqlift_state' "
         "ORDER BY type, name");
 

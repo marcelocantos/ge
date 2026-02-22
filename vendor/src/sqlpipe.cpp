@@ -496,6 +496,7 @@ std::vector<std::string> get_tracked_tables(
         "SELECT name FROM sqlite_master "
         "WHERE type='table' "
         "  AND name NOT LIKE '_sqlpipe_%' "
+        "  AND name NOT LIKE '_sqlift_%' "
         "  AND name NOT LIKE 'sqlite_%' "
         "ORDER BY name");
 
