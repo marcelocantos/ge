@@ -1,9 +1,6 @@
 version: 2
 project_name: ged
 
-monorepo:
-  tag_prefix: ged/
-
 before:
   hooks:
     - mkdir -p ged/web/dist/assets
@@ -28,16 +25,3 @@ archives:
   - format_overrides:
       - goos: darwin
         format: zip
-
-brews:
-  - repository:
-      owner: squz
-      name: homebrew-tap
-    homepage: https://github.com/marcelocantos/ge
-    description: ge development daemon — serves the dashboard and bridges game servers to mobile players
-    license: Apache-2.0
-    service: |
-      run [opt_bin/"ged"]
-      keep_alive true
-      log_path var/"log/ged.log"
-      error_log_path var/"log/ged.log"

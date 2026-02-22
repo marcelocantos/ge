@@ -9,7 +9,7 @@ permissions:
   contents: write
 
 jobs:
-  release:
+  build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -20,9 +20,38 @@ jobs:
         with:
           go-version-file: ged/go.mod
 
+      - name: Create semver tag for goreleaser
+        run: |
+          SEMVER_TAG=${GITHUB_REF#refs/tags/ged/}
+          git tag "$SEMVER_TAG"
+          echo "SEMVER_TAG=$SEMVER_TAG" >> "$GITHUB_ENV"
+
       - uses: goreleaser/goreleaser-action@v6
         with:
           version: "~> v2"
-          args: release --clean --config ged/.goreleaser.yaml
+          args: release --clean --skip=publish --config ged/.goreleaser.yaml
         env:
-          GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          GORELEASER_CURRENT_TAG: ${{ env.SEMVER_TAG }}
+
+      - name: Upload assets to release
+        run: gh release upload "$GITHUB_REF_NAME" dist/*.tar.gz dist/*.zip --repo "$GITHUB_REPOSITORY"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  homebrew:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: Justintime50/homebrew-releaser@v3
+        with:
+          homebrew_owner: squz
+          homebrew_tap: homebrew-tap
+          github_token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          formula_folder: Formula
+          install: 'bin.install "ged" => "ged"'
+          target_darwin_arm64: true
+          target_linux_amd64: true
+          target_linux_arm64: true
+          test: 'system bin/"ged", "--version"'
+          skip_checksum: true
+          update_readme_table: true
