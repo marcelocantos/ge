@@ -30,8 +30,21 @@ function createRoundedRectShape(
   return shape;
 }
 
-function PhonePreview() {
+interface PhonePreviewProps {
+  selectedSession: string | null;
+}
+
+function PhonePreview({ selectedSession }: PhonePreviewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const wsRef = useRef<WebSocket | null>(null);
+
+  // Send session selection whenever it changes
+  useEffect(() => {
+    const ws = wsRef.current;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: "select", session: selectedSession }));
+    }
+  }, [selectedSession]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -207,11 +220,15 @@ function PhonePreview() {
         window.location.protocol === "https:" ? "wss:" : "ws:";
       const wsUrl = `${protocol}//${window.location.host}/ws/preview`;
       ws = new WebSocket(wsUrl);
+      wsRef.current = ws;
       ws.binaryType = "arraybuffer";
 
-      ws.onopen = () => {};
+      ws.onopen = () => {
+        ws!.send(JSON.stringify({ type: "select", session: selectedSession }));
+      };
 
       ws.onclose = () => {
+        wsRef.current = null;
         if (!disposed) {
           reconnectTimer = setTimeout(connect, RECONNECT_DELAY_MS);
         }
@@ -293,6 +310,7 @@ function PhonePreview() {
       if (ws) {
         ws.onclose = null;
         ws.close();
+        wsRef.current = null;
       }
       cancelAnimationFrame(animFrame);
       resizeObserver.disconnect();

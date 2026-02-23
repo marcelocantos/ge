@@ -126,10 +126,28 @@ func (d *Daemon) registerDashboard(mux *http.ServeMux) {
 		d.AddPreviewClient(client)
 		defer d.RemovePreviewClient(client)
 
+		// Read loop: parse session selection messages from dashboard.
 		for {
-			_, _, err := conn.Read(r.Context())
+			mt, data, err := conn.Read(r.Context())
 			if err != nil {
 				return
+			}
+			if mt != websocket.MessageText {
+				continue
+			}
+			var msg struct {
+				Type    string  `json:"type"`
+				Session *string `json:"session"` // pointer to distinguish null/missing from ""
+			}
+			if json.Unmarshal(data, &msg) != nil {
+				continue
+			}
+			if msg.Type == "select" {
+				sid := ""
+				if msg.Session != nil {
+					sid = *msg.Session
+				}
+				d.SetPreviewSession(client, sid)
 			}
 		}
 	})

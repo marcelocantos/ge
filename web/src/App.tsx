@@ -122,7 +122,7 @@ function App() {
           />
         </main>
         <aside className="preview-column">
-          <PhonePreview />
+          <PhonePreview selectedSession={selectedSession} />
         </aside>
       </div>
 

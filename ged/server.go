@@ -53,7 +53,7 @@ func (d *Daemon) handleServer(w http.ResponseWriter, r *http.Request) {
 	defer d.UnsetServer(sc)
 
 	// Sideband read loop: text frames carry JSON control messages,
-	// binary frames carry raw JPEG preview data.
+	// binary frames carry session-tagged JPEG preview data ("s1\0<JPEG>").
 	ctx := r.Context()
 	for {
 		mt, data, err := conn.Read(ctx)
@@ -66,7 +66,17 @@ func (d *Daemon) handleServer(w http.ResponseWriter, r *http.Request) {
 		if mt == websocket.MessageText {
 			d.handleServerSideband(data)
 		} else if mt == websocket.MessageBinary {
-			d.BroadcastPreview(websocket.MessageBinary, data)
+			// Extract null-terminated session ID prefix.
+			sessionID := ""
+			payload := data
+			for i := 0; i < len(data) && i < 16; i++ {
+				if data[i] == 0 {
+					sessionID = string(data[:i])
+					payload = data[i+1:]
+					break
+				}
+			}
+			d.SendPreview(sessionID, websocket.MessageBinary, payload)
 		}
 	}
 }
@@ -125,6 +135,13 @@ func (d *Daemon) handleServerSideband(data []byte) {
 		return
 	}
 
+	// Extract optional session field from the message.
+	var full struct {
+		Session string `json:"session"`
+	}
+	json.Unmarshal(data, &full)
+	sid := full.Session
+
 	switch msg.Type {
 	case "log":
 		// Extract inner data so dashboard receives {"ts":"...","level":"...","msg":"..."}
@@ -132,11 +149,11 @@ func (d *Daemon) handleServerSideband(data []byte) {
 			d.BroadcastLog(string(msg.Data))
 		}
 	case "preview":
-		d.BroadcastPreview(websocket.MessageText, data)
+		d.SendPreview(sid, websocket.MessageText, data)
 	case "preview_bin":
-		d.BroadcastPreview(websocket.MessageBinary, msg.Data)
+		d.SendPreview(sid, websocket.MessageBinary, msg.Data)
 	case "accel":
-		d.BroadcastPreview(websocket.MessageText, data)
+		d.SendPreview(sid, websocket.MessageText, data)
 	case "tweaks":
 		d.SetTweakState(msg.Data)
 	}

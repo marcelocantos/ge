@@ -72,8 +72,9 @@ type Daemon struct {
 
 // wsClient wraps a dashboard WebSocket connection.
 type wsClient struct {
-	conn *websocket.Conn
-	mu   sync.Mutex
+	conn            *websocket.Conn
+	mu              sync.Mutex
+	selectedSession string // preview filter: "" = show all
 }
 
 // NewDaemon creates a new daemon instance.
@@ -324,11 +325,36 @@ func (d *Daemon) BroadcastLog(jsonMsg string) {
 	d.broadcastToClients(&d.logClients, websocket.MessageText, []byte(jsonMsg))
 }
 
-// BroadcastPreview sends a preview frame/accel to all dashboard /ws/preview clients.
-func (d *Daemon) BroadcastPreview(msgType websocket.MessageType, data []byte) {
+// SendPreview sends a preview frame to dashboard clients that have selected the
+// given session. If sessionID is empty, sends to all clients (backward compat).
+func (d *Daemon) SendPreview(sessionID string, msgType websocket.MessageType, data []byte) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	d.broadcastToClients(&d.prevClients, msgType, data)
+
+	alive := d.prevClients[:0]
+	for _, c := range d.prevClients {
+		// Send if: no session tag (broadcast), client has no filter, or filter matches.
+		if sessionID != "" && c.selectedSession != "" && c.selectedSession != sessionID {
+			alive = append(alive, c)
+			continue
+		}
+		c.mu.Lock()
+		ctx, cancel := contextWithTimeout(time.Second)
+		err := c.conn.Write(ctx, msgType, data)
+		cancel()
+		c.mu.Unlock()
+		if err == nil {
+			alive = append(alive, c)
+		}
+	}
+	d.prevClients = alive
+}
+
+// SetPreviewSession sets which session a preview client wants to watch.
+func (d *Daemon) SetPreviewSession(c *wsClient, sessionID string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	c.selectedSession = sessionID
 }
 
 // AddLogClient adds a dashboard log WebSocket client, replaying history.
