@@ -1,5 +1,6 @@
 build/
 .geport
+ged/ged
 ged/web/
 /.claude/*
 !/.claude/skills/
