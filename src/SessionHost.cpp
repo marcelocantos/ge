@@ -16,7 +16,6 @@
 #include <chrono>
 #include <csignal>
 #include <cstdlib>
-#include <fstream>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -125,17 +124,11 @@ void SessionHost::run(Factory factory) {
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
     }
 
-    // Write port file so bare `bin/player` finds ged
-    for (auto* path : {".geport", "/tmp/.geport"}) {
-        std::ofstream pf(path);
-        if (pf) pf << m->daemonPort;
-    }
-
     // Send hello
     char hello[256];
     snprintf(hello, sizeof(hello),
-             R"({"type":"hello","name":"%s","pid":%d})",
-             getprogname(), getpid());
+             R"({"type":"hello","name":"%s","pid":%d,"version":%d})",
+             getprogname(), getpid(), wire::kProtocolVersion);
     m->sidebandConn->sendText(std::string(hello));
     SPDLOG_INFO("Registered with ged as '{}' (pid {})", getprogname(), getpid());
 

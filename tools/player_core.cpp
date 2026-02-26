@@ -796,11 +796,44 @@ ConnectionResult Player::M::connectAndRun() {
     serializer->sendMessage(wire::kDeviceInfoMagic, &deviceInfo, sizeof(deviceInfo));
     SPDLOG_INFO("Sent DeviceInfo");
 
-    // Wait for SessionInit (surface stays unconfigured — title bar shows status).
+    // On Android, SDL blocks the native thread when the app is backgrounded
+    // (SDL_HINT_ANDROID_BLOCK_ON_PAUSE defaults to true). Lifecycle events are
+    // delivered via event watchers, not queued for SDL_PollEvent. We use a flag
+    // set by an event watcher; after SDL_PollEvent unblocks on resume, we check
+    // it and return to the QR scan screen.
+    bool wasBackgrounded = false;
+    SDL_EventFilter bgWatcher = [](void* ud, SDL_Event* ev) -> bool {
+        if (ev->type == SDL_EVENT_DID_ENTER_BACKGROUND)
+            *static_cast<bool*>(ud) = true;
+        return true;
+    };
+    SDL_AddEventWatch(bgWatcher, &wasBackgrounded);
+    struct WatcherGuard {
+        SDL_EventFilter fn; void* ud;
+        ~WatcherGuard() { SDL_RemoveEventWatch(fn, ud); }
+    } watcherGuard{bgWatcher, &wasBackgrounded};
+
+    SDL_Sensor* openSensors[7] = {};  // indexed by SDL_SensorType (up to SDL_SENSOR_COUNT)
+    struct SensorGuard {
+        SDL_Sensor** s; int n;
+        ~SensorGuard() {
+            for (int i = 0; i < n; i++) if (s[i]) SDL_CloseSensor(s[i]);
+            if (SDL_WasInit(SDL_INIT_SENSOR))
+                SDL_QuitSubSystem(SDL_INIT_SENSOR);
+        }
+    } sensorGuard{openSensors, 7};
+
+    // Outer loop: each iteration waits for SessionInit, creates a WireServer,
+    // runs the render loop, and tears down on SessionEnd. The WebSocket stays
+    // alive across server switches — ged re-bridges internally.
+    while (wsConn->isOpen()) {
+
+    // --- Wait for SessionInit ---
     SDL_SetWindowTitle(window, ("ge player \xe2\x80\x94 Waiting for " + host + "...").c_str());
     wire::MessageHeader initHdr{};
     std::vector<char> initPayload;
     auto sessionWaitStart = SDL_GetTicks();
+    bool gotSessionInit = false;
     while (true) {
         if (!wsConn->isOpen()) {
             SPDLOG_WARN("Connection lost waiting for SessionInit");
@@ -821,14 +854,15 @@ ConnectionResult Player::M::connectAndRun() {
             }
             if (initHdr.magic == wire::kSessionEndMagic) {
                 SPDLOG_INFO("Server session ended while waiting for SessionInit");
-                SDL_SetWindowTitle(window, "ge player");
-                return ConnectionResult::Disconnected;
+                // Stay in outer loop — another server may attach
+                continue;
             }
             if (initPayload.size() < sizeof(wire::SessionInit)) {
                 SPDLOG_WARN("SessionInit too small");
                 SDL_SetWindowTitle(window, "ge player");
                 return ConnectionResult::Disconnected;
             }
+            gotSessionInit = true;
             break;
         }
         SDL_Event ev;
@@ -843,12 +877,18 @@ ConnectionResult Player::M::connectAndRun() {
         }
         SDL_Delay(16);
     }
+    if (!gotSessionInit) continue; // shouldn't happen, but be safe
     SDL_SetWindowTitle(window, "ge player");
 
     wire::SessionInit sessionInit{};
     std::memcpy(&sessionInit, initPayload.data(), sizeof(sessionInit));
     if (sessionInit.magic != wire::kSessionInitMagic) {
         SPDLOG_WARN("Invalid SessionInit magic");
+        return ConnectionResult::Disconnected;
+    }
+    if (sessionInit.version != wire::kProtocolVersion) {
+        SPDLOG_ERROR("Protocol version mismatch: server={}, player={}",
+                     sessionInit.version, wire::kProtocolVersion);
         return ConnectionResult::Disconnected;
     }
     SPDLOG_INFO("Received SessionInit with instance handle={{id={}, gen={}}}",
@@ -883,23 +923,6 @@ ConnectionResult Player::M::connectAndRun() {
 
     SPDLOG_INFO("Starting render loop...");
 
-    // On Android, SDL blocks the native thread when the app is backgrounded
-    // (SDL_HINT_ANDROID_BLOCK_ON_PAUSE defaults to true). Lifecycle events are
-    // delivered via event watchers, not queued for SDL_PollEvent. We use a flag
-    // set by an event watcher; after SDL_PollEvent unblocks on resume, we check
-    // it and return to the QR scan screen.
-    bool wasBackgrounded = false;
-    SDL_EventFilter bgWatcher = [](void* ud, SDL_Event* ev) -> bool {
-        if (ev->type == SDL_EVENT_DID_ENTER_BACKGROUND)
-            *static_cast<bool*>(ud) = true;
-        return true;
-    };
-    SDL_AddEventWatch(bgWatcher, &wasBackgrounded);
-    struct WatcherGuard {
-        SDL_EventFilter fn; void* ud;
-        ~WatcherGuard() { SDL_RemoveEventWatch(fn, ud); }
-    } watcherGuard{bgWatcher, &wasBackgrounded};
-
     AudioPlayer audioPlayer;
     bool firstFrameLogged = false;
 
@@ -907,24 +930,16 @@ ConnectionResult Player::M::connectAndRun() {
     commandBuffer.reserve(64 * 1024);
     MipTracker mipTracker;
     auto cacheDir = mipCacheDir(host, port);
-    SDL_Sensor* openSensors[7] = {};  // indexed by SDL_SensorType (up to SDL_SENSOR_COUNT)
-    struct SensorGuard {
-        SDL_Sensor** s; int n;
-        ~SensorGuard() {
-            for (int i = 0; i < n; i++) if (s[i]) SDL_CloseSensor(s[i]);
-            if (SDL_WasInit(SDL_INIT_SENSOR))
-                SDL_QuitSubSystem(SDL_INIT_SENSOR);
-        }
-    } sensorGuard{openSensors, 7};
 
     // All render loop exits set this and break out of the outer loop.
     // We must call recycleSurface() while the wireServer is still alive
     // (so the wire-created device can flush VkSurfaceKHR deletion).
     ConnectionResult exitResult = ConnectionResult::Disconnected;
     bool exitLoop = false;
+    bool serverSwitched = false;
     bool serverSentCleanup = false;  // set when we process UnregisterObject commands
 
-    while (!exitLoop) {
+    while (!exitLoop && !serverSwitched) {
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
             switch (event.type) {
@@ -963,11 +978,13 @@ ConnectionResult Player::M::connectAndRun() {
 
         if (wasBackgrounded) {
             SPDLOG_INFO("App was backgrounded, returning to QR scan");
+            exitLoop = true;
             break;
         }
 
         if (!wsConn->isOpen()) {
             SPDLOG_WARN("Connection closed by server");
+            exitLoop = true;
             break;
         }
 
@@ -1225,8 +1242,8 @@ ConnectionResult Player::M::connectAndRun() {
                 serializer->sendMessage(wire::kFrameReadyMagic);
                 break; // yield to SDL event polling
             } else if (header.magic == wire::kSessionEndMagic) {
-                SPDLOG_INFO("Server session ended (ged sent SessionEnd)");
-                exitLoop = true;
+                SPDLOG_INFO("Server session ended — switching server");
+                serverSwitched = true;
                 break;
             } else {
                 SPDLOG_WARN("Unknown message magic: 0x{:08X}", header.magic);
@@ -1236,7 +1253,7 @@ ConnectionResult Player::M::connectAndRun() {
         }
 
         SDL_Delay(1);
-    }
+    } // end render loop
 
     // The surface's Vulkan swapchain holds a VkSurfaceKHR whose cleanup
     // requires the wire-created device's FencedDeleter.  Dawn's WireServer
@@ -1258,16 +1275,7 @@ ConnectionResult Player::M::connectAndRun() {
     //   recycleSurface fully destroys the surface while the device is
     //   alive, then leak the WireServer to prevent DestroyAllObjects.
     if (!serverSentCleanup) {
-        // Abrupt disconnect: the WireServer still holds the InjectSurface
-        // AddRef on our surface.  Dawn's DestroyAllObjects releases devices
-        // BEFORE surfaces — if the surface's swapchain still exists when
-        // the device dies, DetachFromSurface will crash (null FencedDeleter).
-        //
-        // Fix: feed a synthetic UnregisterObject(Surface) to the WireServer.
-        // This removes the surface from KnownObjects and drops the
-        // InjectSurface ref, so our recycleSurface drops the sole remaining
-        // ref → ~Surface → DetachFromSurface with the device still alive.
-        SPDLOG_INFO("Abrupt disconnect — sending synthetic UnregisterObject(Surface, id={})",
+        SPDLOG_INFO("Sending synthetic UnregisterObject(Surface, id={})",
                     surfaceHandle.id);
         auto cmd = buildUnregisterObjectCmd(
             wire_obs::kObjectTypeSurface, surfaceHandle.id);
@@ -1290,7 +1298,23 @@ ConnectionResult Player::M::connectAndRun() {
     // before the new surface tries to use the same ANativeWindow.
     dawn::native::InstanceProcessEvents(dawnInstance->Get());
 
-    return exitResult;
+    // Destroy the WireServer before potentially creating a new one
+    wireServer.reset();
+
+    if (!serverSwitched) return exitResult;
+
+    // Reset replica for the new server session
+    replica.reset();
+
+    // AudioPlayer and MipTracker are destroyed by going out of scope here
+    // and recreated on the next iteration of the outer loop.
+
+    SDL_SetWindowTitle(window, "ge player \xe2\x80\x94 Switching...");
+    SPDLOG_INFO("Server switch — waiting for new SessionInit");
+
+    } // end outer server-switch loop
+
+    return ConnectionResult::Disconnected;
 }
 
 int playerLoop(std::function<ge::ScanResult()> discover) {

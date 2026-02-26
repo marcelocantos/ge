@@ -178,6 +178,84 @@ body {
   word-break: break-all;
 }
 
+/* ---------- Server List ---------- */
+
+.server-list {
+  margin-top: 16px;
+  width: 100%;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px;
+}
+
+.server-title {
+  font-size: 14px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+  text-align: center;
+}
+
+.server-items {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.server-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-primary);
+  cursor: pointer;
+  font-size: 13px;
+  font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", "SF Mono", "Menlo", monospace;
+  text-align: left;
+  width: 100%;
+  transition: background 0.1s, border-color 0.1s;
+}
+
+.server-item:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.server-item.active {
+  background: rgba(79, 195, 247, 0.1);
+  border-color: var(--accent);
+}
+
+.server-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.server-dot.active {
+  background: var(--green);
+  box-shadow: 0 0 4px var(--green);
+}
+
+.server-dot.inactive {
+  background: var(--text-muted);
+}
+
+.server-name {
+  flex: 1;
+}
+
+.server-pid {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
 /* ---------- Session List ---------- */
 
 .session-list {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -71,6 +72,17 @@ func startTestDaemon(t *testing.T) (*Daemon, *httptest.Server) {
 	mux.HandleFunc("/ws/server", d.handleServer)
 	mux.HandleFunc("/ws/server/wire/{sessionID}", d.handleServerSessionWire)
 
+	// Register dashboard API routes needed by tests
+	mux.HandleFunc("POST /api/servers/{id}/select", func(w http.ResponseWriter, r *http.Request) {
+		serverID := r.PathValue("id")
+		if d.SwitchServer(serverID) {
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"ok":true}`)
+		} else {
+			http.Error(w, `{"error":"server not found"}`, 404)
+		}
+	})
+
 	ts := httptest.NewServer(mux)
 	t.Cleanup(ts.Close)
 	return d, ts
@@ -134,7 +146,7 @@ func connectFakeServerSideband(t *testing.T, ts *httptest.Server, name string) *
 	ctx := context.Background()
 
 	sideband := dial(t, wsURL(ts, "/ws/server"))
-	hello := `{"type":"hello","name":"` + name + `","pid":99999}`
+	hello := fmt.Sprintf(`{"type":"hello","name":"%s","pid":99999,"version":%d}`, name, protocolVersion)
 	if err := sideband.Write(ctx, websocket.MessageText, []byte(hello)); err != nil {
 		t.Fatalf("Server hello write failed: %v", err)
 	}
@@ -158,6 +170,23 @@ func readPlayerAttached(t *testing.T, server *fakeServer) string {
 	}
 	if msg.Type != "player_attached" {
 		t.Fatalf("Expected player_attached, got %s", msg.Type)
+	}
+	return msg.SessionID
+}
+
+// readPlayerDetached reads a player_detached sideband message and returns the session ID.
+func readPlayerDetached(t *testing.T, server *fakeServer) string {
+	t.Helper()
+	text := readText(t, server.sideband, 2*time.Second)
+	var msg struct {
+		Type      string `json:"type"`
+		SessionID string `json:"session_id"`
+	}
+	if err := json.Unmarshal([]byte(text), &msg); err != nil {
+		t.Fatalf("Failed to parse player_detached: %v (text: %s)", err, text)
+	}
+	if msg.Type != "player_detached" {
+		t.Fatalf("Expected player_detached, got %s (full: %s)", msg.Type, text)
 	}
 	return msg.SessionID
 }
@@ -456,4 +485,217 @@ func TestServerRestart(t *testing.T) {
 	}
 
 	t.Log("Server restart: second server received DeviceInfo")
+}
+
+// --- Multi-server tests ---
+
+func TestMultiServerRegistration(t *testing.T) {
+	d, ts := startTestDaemon(t)
+
+	// Connect two servers
+	server1 := connectFakeServerSideband(t, ts, "game-alpha")
+	defer server1.sideband.CloseNow()
+
+	server2 := connectFakeServerSideband(t, ts, "game-beta")
+	defer server2.sideband.CloseNow()
+
+	d.mu.Lock()
+	numServers := len(d.servers)
+	activeID := d.activeServer
+	d.mu.Unlock()
+
+	if numServers != 2 {
+		t.Fatalf("Expected 2 servers, got %d", numServers)
+	}
+
+	// First server should be active
+	if activeID != "srv1" {
+		t.Fatalf("Expected active server srv1, got %s", activeID)
+	}
+
+	t.Logf("Two servers registered, active=%s", activeID)
+}
+
+func TestMultiServerPlayerRoutesToActive(t *testing.T) {
+	_, ts := startTestDaemon(t)
+
+	// Connect two servers
+	server1 := connectFakeServerSideband(t, ts, "game-alpha")
+	defer server1.sideband.CloseNow()
+
+	server2 := connectFakeServerSideband(t, ts, "game-beta")
+	defer server2.sideband.CloseNow()
+
+	// Connect a player — should route to server1 (active)
+	player := connectFakePlayer(t, ts)
+	defer player.CloseNow()
+
+	// Server1 should get player_attached
+	sessionID := readPlayerAttached(t, server1)
+
+	// Connect wire on server1
+	wire := connectSessionWire(t, ts, sessionID)
+	defer wire.CloseNow()
+
+	// Server1 should receive DeviceInfo
+	data := readBinary(t, wire, 2*time.Second)
+	if readMagic(data) != kDeviceInfoMagic {
+		t.Fatal("Bridge not established on active server")
+	}
+
+	t.Logf("Player routed to active server, session=%s", sessionID)
+}
+
+func TestSwitchServer(t *testing.T) {
+	d, ts := startTestDaemon(t)
+
+	// Connect two servers
+	server1 := connectFakeServerSideband(t, ts, "game-alpha")
+	defer server1.sideband.CloseNow()
+
+	server2 := connectFakeServerSideband(t, ts, "game-beta")
+	defer server2.sideband.CloseNow()
+
+	// Connect a player — routes to server1
+	player := connectFakePlayer(t, ts)
+	defer player.CloseNow()
+
+	sessionID := readPlayerAttached(t, server1)
+	wire1 := connectSessionWire(t, ts, sessionID)
+	defer wire1.CloseNow()
+
+	data := readBinary(t, wire1, 2*time.Second)
+	if readMagic(data) != kDeviceInfoMagic {
+		t.Fatal("Bridge not established on server1")
+	}
+
+	// Switch to server2 via API
+	resp, err := http.Post(ts.URL+"/api/servers/srv2/select", "", nil)
+	if err != nil {
+		t.Fatalf("Switch API call failed: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("Switch API returned %d", resp.StatusCode)
+	}
+
+	// Wait for switch to propagate
+	time.Sleep(100 * time.Millisecond)
+
+	// Player should receive SessionEnd
+	data = readBinary(t, player, 2*time.Second)
+	if readMagic(data) != kSessionEndMagic {
+		t.Fatalf("Expected SessionEnd after switch, got 0x%08X", readMagic(data))
+	}
+
+	// Server1 should receive player_detached
+	detachedID := readPlayerDetached(t, server1)
+	if detachedID != sessionID {
+		t.Fatalf("Expected detach for %s, got %s", sessionID, detachedID)
+	}
+
+	// Server2 should receive player_attached
+	attachedID := readPlayerAttached(t, server2)
+	if attachedID != sessionID {
+		t.Fatalf("Expected attach for %s on server2, got %s", sessionID, attachedID)
+	}
+
+	d.mu.Lock()
+	active := d.activeServer
+	d.mu.Unlock()
+
+	if active != "srv2" {
+		t.Fatalf("Expected active server srv2, got %s", active)
+	}
+
+	t.Log("Server switch successful: player received SessionEnd, sessions migrated")
+}
+
+func TestActiveServerFallbackOnDisconnect(t *testing.T) {
+	d, ts := startTestDaemon(t)
+
+	// Connect two servers
+	server1 := connectFakeServerSideband(t, ts, "game-alpha")
+	server2 := connectFakeServerSideband(t, ts, "game-beta")
+	defer server2.sideband.CloseNow()
+
+	// Disconnect server1 (the active one)
+	server1.sideband.CloseNow()
+	time.Sleep(100 * time.Millisecond)
+
+	d.mu.Lock()
+	active := d.activeServer
+	numServers := len(d.servers)
+	d.mu.Unlock()
+
+	if numServers != 1 {
+		t.Fatalf("Expected 1 server after disconnect, got %d", numServers)
+	}
+
+	// Server2 should become active
+	if active != "srv2" {
+		t.Fatalf("Expected active server srv2 after srv1 disconnect, got %s", active)
+	}
+
+	t.Log("Active server fell back to srv2 after srv1 disconnect")
+}
+
+func TestServerInfoMultiServer(t *testing.T) {
+	d, ts := startTestDaemon(t)
+	_ = ts
+
+	// Connect two servers
+	server1 := connectFakeServerSideband(t, ts, "game-alpha")
+	defer server1.sideband.CloseNow()
+	server2 := connectFakeServerSideband(t, ts, "game-beta")
+	defer server2.sideband.CloseNow()
+
+	info := d.ServerInfo()
+	servers, ok := info["servers"].([]map[string]any)
+	if !ok {
+		t.Fatalf("Expected servers array in info, got %T", info["servers"])
+	}
+	if len(servers) != 2 {
+		t.Fatalf("Expected 2 servers in info, got %d", len(servers))
+	}
+
+	// Check that connected is true
+	if !info["connected"].(bool) {
+		t.Fatal("Expected connected=true")
+	}
+
+	t.Logf("ServerInfo returned %d servers", len(servers))
+}
+
+func TestSingleServerBackwardCompat(t *testing.T) {
+	_, ts := startTestDaemon(t)
+
+	// Single server scenario — should work exactly as before
+	server := connectFakeServerSideband(t, ts, "test-game")
+	defer server.sideband.CloseNow()
+
+	player := connectFakePlayer(t, ts)
+	defer player.CloseNow()
+
+	sessionID := readPlayerAttached(t, server)
+	wire := connectSessionWire(t, ts, sessionID)
+	defer wire.CloseNow()
+
+	data := readBinary(t, wire, 2*time.Second)
+	if readMagic(data) != kDeviceInfoMagic {
+		t.Fatal("Bridge not established in single-server mode")
+	}
+
+	ctx := context.Background()
+	cmd := makeMessage(kWireCommandMagic, []byte("hello"))
+	if err := wire.Write(ctx, websocket.MessageBinary, cmd); err != nil {
+		t.Fatal(err)
+	}
+
+	data = readBinary(t, player, 2*time.Second)
+	if readMagic(data) != kWireCommandMagic {
+		t.Fatal("Wire forwarding failed in single-server mode")
+	}
+
+	t.Log("Single server backward compatibility works")
 }

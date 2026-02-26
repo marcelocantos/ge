@@ -43,6 +43,21 @@ func (d *Daemon) registerDashboard(mux *http.ServeMux) {
 		json.NewEncoder(w).Encode(info)
 	})
 
+	// Select active server
+	mux.HandleFunc("POST /api/servers/{id}/select", func(w http.ResponseWriter, r *http.Request) {
+		serverID := r.PathValue("id")
+		if serverID == "" {
+			http.Error(w, `{"error":"missing server ID"}`, 400)
+			return
+		}
+		if d.SwitchServer(serverID) {
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"ok":true}`)
+		} else {
+			http.Error(w, `{"error":"server not found"}`, 404)
+		}
+	})
+
 	// Tweaks
 	mux.HandleFunc("GET /api/tweaks", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -71,19 +86,39 @@ func (d *Daemon) registerDashboard(mux *http.ServeMux) {
 		}
 	})
 
-	// Stop server
+	// Stop server (optional ?server= param to target a specific server)
 	mux.HandleFunc("POST /api/stop", func(w http.ResponseWriter, r *http.Request) {
-		d.mu.Lock()
-		server := d.server
-		d.mu.Unlock()
+		targetID := r.URL.Query().Get("server")
 
-		if server != nil && server.PID > 0 {
-			slog.Info("Stop requested from dashboard", "pid", server.PID)
-			syscall.Kill(server.PID, syscall.SIGINT)
-			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprint(w, `{"ok":true}`)
+		d.mu.Lock()
+		if targetID != "" {
+			// Stop a specific server
+			if sc, ok := d.servers[targetID]; ok && sc.PID > 0 {
+				d.mu.Unlock()
+				slog.Info("Stop requested from dashboard", "server", targetID, "pid", sc.PID)
+				syscall.Kill(sc.PID, syscall.SIGINT)
+				w.Header().Set("Content-Type", "application/json")
+				fmt.Fprint(w, `{"ok":true}`)
+			} else {
+				d.mu.Unlock()
+				http.Error(w, `{"error":"server not found"}`, 404)
+			}
 		} else {
-			http.Error(w, `{"error":"no server connected"}`, 503)
+			// Stop active server (backward compat)
+			var sc *ServerConn
+			if d.activeServer != "" {
+				sc = d.servers[d.activeServer]
+			}
+			d.mu.Unlock()
+
+			if sc != nil && sc.PID > 0 {
+				slog.Info("Stop requested from dashboard", "pid", sc.PID)
+				syscall.Kill(sc.PID, syscall.SIGINT)
+				w.Header().Set("Content-Type", "application/json")
+				fmt.Fprint(w, `{"ok":true}`)
+			} else {
+				http.Error(w, `{"error":"no server connected"}`, 503)
+			}
 		}
 	})
 

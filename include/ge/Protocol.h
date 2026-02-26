@@ -27,6 +27,7 @@ constexpr uint32_t kStateRequestMagic = 0x47453251;  // "GE2Q" — server → pl
 constexpr uint32_t kStateDataMagic = 0x47453250;      // "GE2P" — player → server: raw DB bytes
 constexpr uint32_t kSqlpipeMsgMagic = 0x47453254;     // "GE2T" — bidirectional sqlpipe messages
 
+// TODO: Consider semver or min/max range for backwards-compatible changes.
 constexpr uint16_t kProtocolVersion = 3;
 constexpr size_t kMaxMessageSize = 512 * 1024 * 1024;  // 512MB (initial resource uploads can be large)
 

@@ -3,7 +3,6 @@
 
 #include "Player.h"
 #include <cstring>
-#include <fstream>
 #include <spdlog/spdlog.h>
 #include <string>
 
@@ -18,21 +17,6 @@ void parseHostPort(const char* arg, std::string& host, uint16_t& port) {
     } else {
         host = s;
     }
-}
-
-// Try reading the port from .geport (written by the server on startup).
-// Checks ./.geport first (same directory as server), then /tmp/.geport
-// (readable by iOS Simulator).
-bool readPortFile(uint16_t& port) {
-    for (auto* path : {".geport", "/tmp/.geport"}) {
-        std::ifstream f(path);
-        int p = 0;
-        if (f >> p && p > 0 && p <= 65535) {
-            port = static_cast<uint16_t>(p);
-            return true;
-        }
-    }
-    return false;
 }
 
 } // namespace
@@ -60,9 +44,6 @@ int main(int argc, char* argv[]) {
     }
     if (pos < argc) {
         parseHostPort(argv[pos++], host, port);
-    } else {
-        // No address given — try .geport for auto-discovery
-        readPortFile(port);
     }
     if (pos < argc) width = std::stoi(argv[pos++]);
     if (pos < argc) height = std::stoi(argv[pos++]);

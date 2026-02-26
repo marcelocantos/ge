@@ -47,16 +47,29 @@ function formatTimestamp(ts: string): string {
   return ts;
 }
 
+interface StateServer {
+  id: string;
+  name: string;
+  pid: number;
+  active: boolean;
+}
+
+interface StateMessage {
+  type: "state";
+  buildId?: string;
+  servers: StateServer[];
+  sessions: string[];
+}
+
 interface Props {
   onConnectionChange: (connected: boolean) => void;
   sessionFilter: string | null;
-  onSessionAdd: (sessionId: string) => void;
-  onSessionRemove: (sessionId: string) => void;
+  onState: (state: StateMessage) => void;
 }
 
 let nextId = 0;
 
-function LogViewer({ onConnectionChange, sessionFilter, onSessionAdd, onSessionRemove }: Props) {
+function LogViewer({ onConnectionChange, sessionFilter, onState }: Props) {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const bottomRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -96,7 +109,9 @@ function LogViewer({ onConnectionChange, sessionFilter, onSessionAdd, onSessionR
       ws = new WebSocket(wsUrl);
 
       ws.onopen = () => {
-        if (!disposed) onConnectionChange(true);
+        if (!disposed) {
+          onConnectionChange(true);
+        }
       };
 
       ws.onclose = () => {
@@ -114,13 +129,8 @@ function LogViewer({ onConnectionChange, sessionFilter, onSessionAdd, onSessionR
         try {
           const data = JSON.parse(event.data);
 
-          // Handle session lifecycle events
-          if (data.type === "session_add") {
-            onSessionAdd(data.session);
-            return;
-          }
-          if (data.type === "session_remove") {
-            onSessionRemove(data.session);
+          if (data.type === "state") {
+            onState(data as StateMessage);
             return;
           }
 
@@ -150,7 +160,7 @@ function LogViewer({ onConnectionChange, sessionFilter, onSessionAdd, onSessionR
       }
       onConnectionChange(false);
     };
-  }, [onConnectionChange, onSessionAdd, onSessionRemove]);
+  }, [onConnectionChange, onState]);
 
   return (
     <div className="log-viewer" ref={containerRef} onScroll={handleScroll}>
@@ -192,3 +202,4 @@ function LogViewer({ onConnectionChange, sessionFilter, onSessionAdd, onSessionR
 }
 
 export default LogViewer;
+export type { StateMessage };

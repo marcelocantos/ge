@@ -1,9 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import QRCode from "./QRCode";
 import LogViewer from "./LogViewer";
+import type { StateMessage } from "./LogViewer";
+
+declare const __GE_BUILD_ID__: string;
 import TweakPanel from "./TweakPanel";
 import PhonePreview from "./PhonePreview";
 import SessionList from "./SessionList";
+import ServerList from "./ServerList";
+import type { Server } from "./ServerList";
 
 interface SessionInfo {
   id: string;
@@ -22,30 +27,39 @@ function App() {
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [selectedSession, setSelectedSession] = useState<string | null>(null);
 
-  const handleSessionAdd = useCallback((sessionId: string) => {
-    setSessions((prev) => {
-      const existing = prev.find((s) => s.id === sessionId);
-      if (existing) {
-        return prev.map((s) => (s.id === sessionId ? { ...s, active: true } : s));
-      }
-      return [...prev, { id: sessionId, active: true }];
-    });
+  const [servers, setServers] = useState<Server[]>([]);
+
+  const handleState = useCallback((state: StateMessage) => {
+    // Reload if ged is serving a newer dashboard build
+    if (state.buildId && state.buildId !== __GE_BUILD_ID__) {
+      location.reload();
+      return;
+    }
+
+    const newServers: Server[] = state.servers.map((s) => ({
+      id: s.id,
+      name: s.name,
+      pid: s.pid,
+      active: s.active,
+    }));
+    setServers(newServers);
+
+    const sessionSet = new Set(state.sessions);
+    setSessions(state.sessions.map((id) => ({ id, active: true })));
+    setSelectedSession((prev) => (prev !== null && !sessionSet.has(prev) ? null : prev));
+
+    const active = state.servers.find((s) => s.active);
+    if (active) {
+      setAppName(active.name);
+      const port = window.location.port;
+      document.title = port ? `${active.name} :${port}` : active.name;
+    } else {
+      setAppName("ge");
+    }
   }, []);
 
-  const handleSessionRemove = useCallback((sessionId: string) => {
-    setSessions((prev) =>
-      prev.map((s) => (s.id === sessionId ? { ...s, active: false } : s))
-    );
-  }, []);
-
-  useEffect(() => {
-    fetch("/api/info").then(r => r.json()).then(d => {
-      if (d.name) {
-        setAppName(d.name);
-        const port = window.location.port;
-        document.title = port ? `${d.name} :${port}` : d.name;
-      }
-    }).catch(() => {});
+  const handleServerSelect = useCallback((id: string) => {
+    fetch(`/api/servers/${id}/select`, { method: "POST" }).catch(() => {});
   }, []);
 
   const doStop = useCallback(() => {
@@ -106,6 +120,7 @@ function App() {
       <div className="layout">
         <aside className="sidebar">
           <QRCode />
+          <ServerList servers={servers} onSelect={handleServerSelect} />
           <SessionList
             sessions={sessions}
             selected={selectedSession}
@@ -117,8 +132,7 @@ function App() {
           <LogViewer
             onConnectionChange={setConnected}
             sessionFilter={selectedSession}
-            onSessionAdd={handleSessionAdd}
-            onSessionRemove={handleSessionRemove}
+            onState={handleState}
           />
         </main>
         <aside className="preview-column">

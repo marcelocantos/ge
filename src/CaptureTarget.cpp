@@ -84,10 +84,15 @@ std::vector<uint8_t> CaptureTarget::readPixels(wgpu::Device device, wgpu::Queue 
     }
 
     // Map buffer
+    wgpu::MapAsyncStatus mapStatus = wgpu::MapAsyncStatus::Success;
+    wgpu::StringView mapMessage;
     stagingBuffer.MapAsync(
         wgpu::MapMode::Read, 0, bufferSize,
         wgpu::CallbackMode::AllowSpontaneous,
-        [](wgpu::MapAsyncStatus, wgpu::StringView) {});
+        [&mapStatus, &mapMessage](wgpu::MapAsyncStatus status, wgpu::StringView message) {
+            mapStatus = status;
+            mapMessage = message;
+        });
 
     // Poll until buffer is mapped
     for (int i = 0; i < 100000; ++i) {
@@ -98,7 +103,11 @@ std::vector<uint8_t> CaptureTarget::readPixels(wgpu::Device device, wgpu::Queue 
     }
 
     if (stagingBuffer.GetMapState() != wgpu::BufferMapState::Mapped) {
-        throw std::runtime_error("Failed to map staging buffer");
+        std::string errorMsg = "Failed to map staging buffer";
+        if (mapStatus != wgpu::MapAsyncStatus::Success) {
+            errorMsg += " (status: " + std::to_string(static_cast<int>(mapStatus)) + ", message: " + std::string(mapMessage.data, mapMessage.length) + ")";
+        }
+        throw std::runtime_error(errorMsg);
     }
 
     // Copy data, removing row padding

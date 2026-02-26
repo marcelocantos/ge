@@ -34,12 +34,20 @@ func (d *Daemon) handleServer(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var hello struct {
-		Type string `json:"type"`
-		Name string `json:"name"`
-		PID  int    `json:"pid"`
+		Type    string `json:"type"`
+		Name    string `json:"name"`
+		PID     int    `json:"pid"`
+		Version int    `json:"version"`
 	}
 	if err := json.Unmarshal(data, &hello); err != nil || hello.Type != "hello" {
 		slog.Error("Server hello: invalid message", "err", err)
+		return
+	}
+	// TODO: Consider semver or min/max range for backwards-compatible changes.
+	if hello.Version != protocolVersion {
+		slog.Error("Server protocol version mismatch",
+			"server", hello.Version, "ged", protocolVersion,
+			"name", hello.Name, "pid", hello.PID)
 		return
 	}
 
@@ -49,8 +57,8 @@ func (d *Daemon) handleServer(w http.ResponseWriter, r *http.Request) {
 		PID:  hello.PID,
 	}
 
-	d.SetServer(sc)
-	defer d.UnsetServer(sc)
+	d.AddServer(sc)
+	defer d.RemoveServer(sc)
 
 	// Sideband read loop: text frames carry JSON control messages,
 	// binary frames carry session-tagged JPEG preview data ("s1\0<JPEG>").
@@ -59,7 +67,7 @@ func (d *Daemon) handleServer(w http.ResponseWriter, r *http.Request) {
 		mt, data, err := conn.Read(ctx)
 		if err != nil {
 			if ctx.Err() == nil {
-				slog.Info("Server sideband disconnected", "name", hello.Name)
+				slog.Info("Server sideband disconnected", "id", sc.ID, "name", hello.Name)
 			}
 			return
 		}

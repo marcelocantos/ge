@@ -5,14 +5,20 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"log/slog"
+	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/coder/websocket"
 )
+
+// protocolVersion must match wire::kProtocolVersion in Protocol.h.
+const protocolVersion = 3
 
 func contextWithTimeout(d time.Duration) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), d)
@@ -26,6 +32,7 @@ type ServerConn struct {
 	Conn *websocket.Conn // sideband
 	Name string
 	PID  int
+	ID   string
 
 	// sendMu serializes writes to the sideband WebSocket.
 	sendMu sync.Mutex
@@ -40,8 +47,9 @@ type PlayerConn struct {
 // PlayerSession represents an active session between a player and the game server.
 // Each player gets its own session with a dedicated wire WS pair.
 type PlayerSession struct {
-	ID     string
-	Player *PlayerConn
+	ID       string
+	Player   *PlayerConn
+	ServerID string // which server this session is currently bridged to
 
 	// Per-session wire connection to the game server.
 	ServerWire *websocket.Conn
@@ -51,10 +59,12 @@ type PlayerSession struct {
 
 // Daemon is the central coordinator between game servers, players, and the dashboard.
 type Daemon struct {
-	mu       sync.Mutex
-	server   *ServerConn
-	sessions map[string]*PlayerSession // sessionID → session
-	nextID   int                       // incrementing session counter
+	mu           sync.Mutex
+	servers      map[string]*ServerConn   // serverID -> server
+	nextSrvID    int                      // incrementing server ID counter
+	activeServer string                   // server ID that new/switched players get assigned to
+	sessions     map[string]*PlayerSession // sessionID -> session
+	nextID       int                       // incrementing session counter
 
 	// Dashboard state
 	logHistory  []string        // JSON-encoded log entries (ring buffer)
@@ -68,6 +78,9 @@ type Daemon struct {
 	port       int
 	noOpen     bool // suppress browser open on first server connect
 	openedDash bool // true after first browser open
+
+	// Versioning
+	dashBuildID string // build ID from web dist (for staleness detection)
 }
 
 // wsClient wraps a dashboard WebSocket connection.
@@ -81,43 +94,56 @@ type wsClient struct {
 func NewDaemon(port int, noOpen bool) *Daemon {
 	ip := lanIP()
 	return &Daemon{
-		lanIP:    ip,
-		qrURL:    fmt.Sprintf("ge-remote://%s:%d", ip, port),
-		port:     port,
-		noOpen:   noOpen,
-		sessions: make(map[string]*PlayerSession),
+		lanIP:       ip,
+		qrURL:       fmt.Sprintf("ge-remote://%s:%d", ip, port),
+		port:        port,
+		noOpen:      noOpen,
+		servers:     make(map[string]*ServerConn),
+		sessions:    make(map[string]*PlayerSession),
+		dashBuildID: readDashBuildID(),
 	}
 }
 
-// SetServer registers a new game server.
-// Closes old server wire connections but keeps player sessions alive,
-// then notifies the new server about existing players.
-func (d *Daemon) SetServer(sc *ServerConn) {
+// readDashBuildID reads the dashboard build ID from disk or the embedded FS.
+func readDashBuildID() string {
+	// Try disk first (development mode)
+	if data, err := os.ReadFile("ge/web/dist/.build-id"); err == nil {
+		return strings.TrimSpace(string(data))
+	}
+	// Fall back to embedded FS
+	if data, err := fs.ReadFile(embeddedUI, "web/dist/.build-id"); err == nil {
+		return strings.TrimSpace(string(data))
+	}
+	slog.Warn("Dashboard build ID not found")
+	return ""
+}
+
+// AddServer registers a new game server.
+// Assigns a server ID, adds to the servers map, and if it's the first (or no active),
+// sets it as the active server. Broadcasts state to dashboard clients.
+func (d *Daemon) AddServer(sc *ServerConn) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	// Close server wire connections from old server (but keep player sessions)
-	for _, sess := range d.sessions {
-		if sess.ServerWire != nil {
-			sess.ServerWire.CloseNow()
-			sess.ServerWire = nil
+	d.nextSrvID++
+	sc.ID = "srv" + strconv.Itoa(d.nextSrvID)
+	d.servers[sc.ID] = sc
+
+	slog.Info("Server registered", "id", sc.ID, "name", sc.Name, "pid", sc.PID)
+
+	// If no active server, make this one active
+	if d.activeServer == "" {
+		d.activeServer = sc.ID
+
+		// Notify this server about all existing player sessions
+		for _, sess := range d.sessions {
+			sess.ServerID = sc.ID
+			msg := fmt.Sprintf(`{"type":"player_attached","session_id":"%s"}`, sess.ID)
+			d.sendToServerIDLocked(sc.ID, msg)
 		}
-		sess.bridged = false
 	}
 
-	// Close old server sideband connection
-	if d.server != nil {
-		d.server.Conn.CloseNow()
-	}
-
-	d.server = sc
-	slog.Info("Server registered", "name", sc.Name, "pid", sc.PID)
-
-	// Notify new server about existing player sessions
-	for _, sess := range d.sessions {
-		msg := fmt.Sprintf(`{"type":"player_attached","session_id":"%s"}`, sess.ID)
-		d.sendToServerLocked(msg)
-	}
+	d.broadcastStateLocked()
 
 	if !d.noOpen && !d.openedDash {
 		d.openedDash = true
@@ -128,30 +154,114 @@ func (d *Daemon) SetServer(sc *ServerConn) {
 	}
 }
 
-// UnsetServer removes the current game server.
-func (d *Daemon) UnsetServer(sc *ServerConn) {
+// RemoveServer removes a game server. Sends SessionEnd to all sessions on that server.
+// If it was the active server, picks another or clears. Sessions on the removed server
+// get re-assigned to the new active server if one exists.
+func (d *Daemon) RemoveServer(sc *ServerConn) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	if d.server != sc {
-		return // stale unset
+	if _, ok := d.servers[sc.ID]; !ok {
+		return // already removed
 	}
 
-	// Notify all players that the server is gone and close server wires
+	slog.Info("Server disconnected", "id", sc.ID, "name", sc.Name)
+
+	// Collect sessions that belong to this server
+	var affected []*PlayerSession
 	for _, sess := range d.sessions {
-		d.sendSessionEndLocked(sess.Player.Conn)
+		if sess.ServerID == sc.ID {
+			affected = append(affected, sess)
+		}
+	}
+
+	// Close server wire connections and send SessionEnd to affected players
+	for _, sess := range affected {
 		if sess.ServerWire != nil {
 			sess.ServerWire.CloseNow()
 			sess.ServerWire = nil
 		}
 		sess.bridged = false
+		d.sendSessionEndLocked(sess.Player.Conn)
 	}
 
-	d.server = nil
-	slog.Info("Server disconnected")
+	delete(d.servers, sc.ID)
+
+	// If this was the active server, pick another
+	if d.activeServer == sc.ID {
+		d.activeServer = ""
+		for id := range d.servers {
+			d.activeServer = id
+			break
+		}
+
+		if d.activeServer != "" {
+			// Re-assign affected sessions to the new active server
+			for _, sess := range affected {
+				sess.ServerID = d.activeServer
+				msg := fmt.Sprintf(`{"type":"player_attached","session_id":"%s"}`, sess.ID)
+				d.sendToServerIDLocked(d.activeServer, msg)
+			}
+		}
+	}
+
+	d.broadcastStateLocked()
 }
 
-// AddPlayer registers a new player, assigns a session ID, and notifies the server.
+// SwitchServer changes the active server and migrates all sessions to it.
+// For each session currently on a different server: closes server wire, sends SessionEnd
+// to the player, updates the session's ServerID, and notifies the new server.
+func (d *Daemon) SwitchServer(serverID string) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if _, ok := d.servers[serverID]; !ok {
+		return false
+	}
+	if d.activeServer == serverID {
+		return true // already active
+	}
+
+	oldActive := d.activeServer
+	d.activeServer = serverID
+
+	slog.Info("Switching active server", "from", oldActive, "to", serverID)
+
+	// Migrate all sessions that are on a different server
+	for _, sess := range d.sessions {
+		if sess.ServerID == serverID {
+			continue // already on the target server
+		}
+
+		oldServerID := sess.ServerID
+
+		// Close old server wire
+		if sess.ServerWire != nil {
+			sess.ServerWire.CloseNow()
+			sess.ServerWire = nil
+		}
+		sess.bridged = false
+
+		// Send SessionEnd to the player
+		d.sendSessionEndLocked(sess.Player.Conn)
+
+		// Notify old server about detach
+		if oldServerID != "" {
+			d.sendToServerIDLocked(oldServerID, fmt.Sprintf(`{"type":"player_detached","session_id":"%s"}`, sess.ID))
+		}
+
+		// Update session's server assignment
+		sess.ServerID = serverID
+
+		// Notify new server about attach
+		d.sendToServerIDLocked(serverID, fmt.Sprintf(`{"type":"player_attached","session_id":"%s"}`, sess.ID))
+	}
+
+	d.broadcastStateLocked()
+	return true
+}
+
+// AddPlayer registers a new player, assigns a session ID, and notifies the active server.
 // Returns the session ID.
 func (d *Daemon) AddPlayer(pc *PlayerConn) string {
 	d.mu.Lock()
@@ -161,22 +271,20 @@ func (d *Daemon) AddPlayer(pc *PlayerConn) string {
 	sessionID := "s" + strconv.Itoa(d.nextID)
 
 	sess := &PlayerSession{
-		ID:     sessionID,
-		Player: pc,
+		ID:       sessionID,
+		Player:   pc,
+		ServerID: d.activeServer,
 	}
 	d.sessions[sessionID] = sess
-	slog.Info("Player connected", "session", sessionID)
+	slog.Info("Player connected", "session", sessionID, "server", d.activeServer)
 
-	// Notify the game server that a new player has attached
-	if d.server != nil {
+	// Notify the active game server that a new player has attached
+	if d.activeServer != "" {
 		msg := fmt.Sprintf(`{"type":"player_attached","session_id":"%s"}`, sessionID)
-		d.sendToServerLocked(msg)
+		d.sendToServerIDLocked(d.activeServer, msg)
 	}
 
-	// Notify dashboard log clients about the new session
-	d.broadcastToClients(&d.logClients, websocket.MessageText,
-		[]byte(fmt.Sprintf(`{"type":"session_add","session":"%s"}`, sessionID)))
-
+	d.broadcastStateLocked()
 	return sessionID
 }
 
@@ -198,15 +306,13 @@ func (d *Daemon) RemovePlayer(sessionID string) {
 	delete(d.sessions, sessionID)
 	slog.Info("Player disconnected", "session", sessionID)
 
-	// Notify the game server
-	if d.server != nil {
+	// Notify the session's server
+	if sess.ServerID != "" {
 		msg := fmt.Sprintf(`{"type":"player_detached","session_id":"%s"}`, sessionID)
-		d.sendToServerLocked(msg)
+		d.sendToServerIDLocked(sess.ServerID, msg)
 	}
 
-	// Notify dashboard log clients about the removed session
-	d.broadcastToClients(&d.logClients, websocket.MessageText,
-		[]byte(fmt.Sprintf(`{"type":"session_remove","session":"%s"}`, sessionID)))
+	d.broadcastStateLocked()
 }
 
 // SetSessionWire associates a wire WebSocket with a session and bridges it.
@@ -297,17 +403,18 @@ func (d *Daemon) ForwardToServerWire(sessionID string, mt websocket.MessageType,
 	_ = sess.ServerWire.Write(ctx, mt, data)
 }
 
-// sendToServerLocked sends a text message to the current server's sideband.
+// sendToServerIDLocked sends a text message to a specific server's sideband.
 // Must be called with d.mu held.
-func (d *Daemon) sendToServerLocked(msg string) {
-	if d.server == nil {
+func (d *Daemon) sendToServerIDLocked(serverID string, msg string) {
+	sc, ok := d.servers[serverID]
+	if !ok {
 		return
 	}
-	d.server.sendMu.Lock()
-	defer d.server.sendMu.Unlock()
+	sc.sendMu.Lock()
+	defer sc.sendMu.Unlock()
 	ctx, cancel := contextWithTimeout(2 * time.Second)
 	defer cancel()
-	_ = d.server.Conn.Write(ctx, websocket.MessageText, []byte(msg))
+	_ = sc.Conn.Write(ctx, websocket.MessageText, []byte(msg))
 }
 
 // BroadcastLog sends a log entry to all dashboard /ws/logs clients.
@@ -357,18 +464,16 @@ func (d *Daemon) SetPreviewSession(c *wsClient, sessionID string) {
 	c.selectedSession = sessionID
 }
 
-// AddLogClient adds a dashboard log WebSocket client, replaying history.
+// AddLogClient adds a dashboard log WebSocket client, sending current state + log history.
 func (d *Daemon) AddLogClient(c *wsClient) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	// Replay current session list so the dashboard knows existing sessions
-	for _, sess := range d.sessions {
-		msg := fmt.Sprintf(`{"type":"session_add","session":"%s"}`, sess.ID)
-		ctx, cancel := contextWithTimeout(5 * time.Second)
-		_ = c.conn.Write(ctx, websocket.MessageText, []byte(msg))
-		cancel()
-	}
+	// Send current state snapshot
+	snapshot := d.stateSnapshotLocked()
+	ctx, cancel := contextWithTimeout(5 * time.Second)
+	_ = c.conn.Write(ctx, websocket.MessageText, snapshot)
+	cancel()
 
 	// Replay log history
 	for _, msg := range d.logHistory {
@@ -378,6 +483,53 @@ func (d *Daemon) AddLogClient(c *wsClient) {
 	}
 
 	d.logClients = append(d.logClients, c)
+}
+
+// broadcastStateLocked sends the full state snapshot to all dashboard clients.
+// Must be called with d.mu held.
+func (d *Daemon) broadcastStateLocked() {
+	d.broadcastToClients(&d.logClients, websocket.MessageText, d.stateSnapshotLocked())
+}
+
+// stateSnapshotLocked builds a JSON state message with all servers and sessions.
+// Must be called with d.mu held.
+func (d *Daemon) stateSnapshotLocked() []byte {
+	type serverInfo struct {
+		ID     string `json:"id"`
+		Name   string `json:"name"`
+		PID    int    `json:"pid"`
+		Active bool   `json:"active"`
+	}
+
+	servers := make([]serverInfo, 0, len(d.servers))
+	for _, sc := range d.servers {
+		servers = append(servers, serverInfo{
+			ID:     sc.ID,
+			Name:   sc.Name,
+			PID:    sc.PID,
+			Active: sc.ID == d.activeServer,
+		})
+	}
+
+	sessions := make([]string, 0, len(d.sessions))
+	for _, sess := range d.sessions {
+		sessions = append(sessions, sess.ID)
+	}
+
+	msg := struct {
+		Type     string       `json:"type"`
+		BuildID  string       `json:"buildId,omitempty"`
+		Servers  []serverInfo `json:"servers"`
+		Sessions []string     `json:"sessions"`
+	}{
+		Type:     "state",
+		BuildID:  d.dashBuildID,
+		Servers:  servers,
+		Sessions: sessions,
+	}
+
+	data, _ := json.Marshal(msg)
+	return data
 }
 
 // RemoveLogClient removes a dashboard log WebSocket client.
@@ -418,29 +570,54 @@ func (d *Daemon) GetTweakState() json.RawMessage {
 	return d.tweakState
 }
 
-// SendTweakToServer forwards a tweak command to the game server.
+// SendTweakToServer forwards a tweak command to the active game server.
 func (d *Daemon) SendTweakToServer(msg string) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if d.server == nil {
+	if d.activeServer == "" {
 		return false
 	}
-	d.sendToServerLocked(msg)
+	d.sendToServerIDLocked(d.activeServer, msg)
 	return true
 }
 
 // ServerInfo returns current server info for the dashboard API.
+// Returns an array of all servers with session counts and active flag.
 func (d *Daemon) ServerInfo() map[string]any {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+
+	// Count sessions per server
+	sessionCounts := make(map[string]int)
+	for _, sess := range d.sessions {
+		sessionCounts[sess.ServerID]++
+	}
+
+	servers := make([]map[string]any, 0, len(d.servers))
+	for _, sc := range d.servers {
+		servers = append(servers, map[string]any{
+			"id":       sc.ID,
+			"name":     sc.Name,
+			"pid":      sc.PID,
+			"sessions": sessionCounts[sc.ID],
+			"active":   sc.ID == d.activeServer,
+		})
+	}
+
 	info := map[string]any{
-		"connected": d.server != nil,
+		"connected": len(d.servers) > 0,
+		"servers":   servers,
 		"sessions":  len(d.sessions),
 	}
-	if d.server != nil {
-		info["name"] = d.server.Name
-		info["pid"] = d.server.PID
+
+	// Backward compat: include name/pid of active server at top level
+	if d.activeServer != "" {
+		if sc, ok := d.servers[d.activeServer]; ok {
+			info["name"] = sc.Name
+			info["pid"] = sc.PID
+		}
 	}
+
 	return info
 }
 

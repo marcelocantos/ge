@@ -489,6 +489,11 @@ void WireSession::connect() {
     if (deviceInfo.magic != wire::kDeviceInfoMagic) {
         throw std::runtime_error("Invalid DeviceInfo magic");
     }
+    if (deviceInfo.version != wire::kProtocolVersion) {
+        SPDLOG_ERROR("Protocol version mismatch: player={}, server={}",
+                     deviceInfo.version, wire::kProtocolVersion);
+        throw std::runtime_error("Protocol version mismatch");
+    }
 
     SPDLOG_INFO("Player: {}x{} @ {}x, format={}",
                 deviceInfo.width, deviceInfo.height,
