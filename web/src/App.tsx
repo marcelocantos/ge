@@ -6,14 +6,8 @@ import type { StateMessage } from "./LogViewer";
 declare const __GE_BUILD_ID__: string;
 import TweakPanel from "./TweakPanel";
 import PhonePreview from "./PhonePreview";
-import SessionList from "./SessionList";
-import ServerList from "./ServerList";
-import type { Server } from "./ServerList";
-
-interface SessionInfo {
-  id: string;
-  active: boolean;
-}
+import PlayerList from "./PlayerList";
+import type { Server, SessionInfo } from "./PlayerList";
 
 function App() {
   const [connected, setConnected] = useState(false);
@@ -44,8 +38,8 @@ function App() {
     }));
     setServers(newServers);
 
-    const sessionSet = new Set(state.sessions);
-    setSessions(state.sessions.map((id) => ({ id, active: true })));
+    const sessionSet = new Set(state.sessions.map((s) => s.id));
+    setSessions(state.sessions.map((s) => ({ id: s.id, serverID: s.serverID })));
     setSelectedSession((prev) => (prev !== null && !sessionSet.has(prev) ? null : prev));
 
     const active = state.servers.find((s) => s.active);
@@ -58,8 +52,12 @@ function App() {
     }
   }, []);
 
-  const handleServerSelect = useCallback((id: string) => {
-    fetch(`/api/servers/${id}/select`, { method: "POST" }).catch(() => {});
+  const handleSwitchAll = useCallback((serverID: string) => {
+    fetch(`/api/servers/${serverID}/select`, { method: "POST" }).catch(() => {});
+  }, []);
+
+  const handleSwitchSession = useCallback((sessionID: string, serverID: string) => {
+    fetch(`/api/sessions/${sessionID}/server/${serverID}`, { method: "POST" }).catch(() => {});
   }, []);
 
   const doStop = useCallback(() => {
@@ -120,11 +118,13 @@ function App() {
       <div className="layout">
         <aside className="sidebar">
           <QRCode />
-          <ServerList servers={servers} onSelect={handleServerSelect} />
-          <SessionList
+          <PlayerList
             sessions={sessions}
-            selected={selectedSession}
-            onSelect={setSelectedSession}
+            servers={servers}
+            selectedSession={selectedSession}
+            onSelectSession={setSelectedSession}
+            onSwitchAll={handleSwitchAll}
+            onSwitchSession={handleSwitchSession}
           />
           <TweakPanel />
         </aside>

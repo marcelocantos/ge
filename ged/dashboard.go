@@ -58,6 +58,22 @@ func (d *Daemon) registerDashboard(mux *http.ServeMux) {
 		}
 	})
 
+	// Switch a single session to a specific server
+	mux.HandleFunc("POST /api/sessions/{sessionID}/server/{serverID}", func(w http.ResponseWriter, r *http.Request) {
+		sessionID := r.PathValue("sessionID")
+		serverID := r.PathValue("serverID")
+		if sessionID == "" || serverID == "" {
+			http.Error(w, `{"error":"missing session or server ID"}`, 400)
+			return
+		}
+		if d.SwitchSession(sessionID, serverID) {
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"ok":true}`)
+		} else {
+			http.Error(w, `{"error":"session or server not found"}`, 404)
+		}
+	})
+
 	// Tweaks
 	mux.HandleFunc("GET /api/tweaks", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

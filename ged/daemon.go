@@ -261,6 +261,52 @@ func (d *Daemon) SwitchServer(serverID string) bool {
 	return true
 }
 
+// SwitchSession moves a single session to a different server.
+// Does NOT change activeServer.
+func (d *Daemon) SwitchSession(sessionID, serverID string) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	sess, ok := d.sessions[sessionID]
+	if !ok {
+		return false
+	}
+	if _, ok := d.servers[serverID]; !ok {
+		return false
+	}
+	if sess.ServerID == serverID {
+		return true // already there
+	}
+
+	oldServerID := sess.ServerID
+
+	// Close old server wire
+	if sess.ServerWire != nil {
+		sess.ServerWire.CloseNow()
+		sess.ServerWire = nil
+	}
+	sess.bridged = false
+
+	// Send SessionEnd to the player
+	d.sendSessionEndLocked(sess.Player.Conn)
+
+	// Notify old server about detach
+	if oldServerID != "" {
+		d.sendToServerIDLocked(oldServerID,
+			fmt.Sprintf(`{"type":"player_detached","session_id":"%s"}`, sess.ID))
+	}
+
+	// Update session's server assignment
+	sess.ServerID = serverID
+
+	// Notify new server about attach
+	d.sendToServerIDLocked(serverID,
+		fmt.Sprintf(`{"type":"player_attached","session_id":"%s"}`, sess.ID))
+
+	d.broadcastStateLocked()
+	return true
+}
+
 // AddPlayer registers a new player, assigns a session ID, and notifies the active server.
 // Returns the session ID.
 func (d *Daemon) AddPlayer(pc *PlayerConn) string {
@@ -511,16 +557,24 @@ func (d *Daemon) stateSnapshotLocked() []byte {
 		})
 	}
 
-	sessions := make([]string, 0, len(d.sessions))
+	type sessionInfo struct {
+		ID       string `json:"id"`
+		ServerID string `json:"serverID"`
+	}
+
+	sessions := make([]sessionInfo, 0, len(d.sessions))
 	for _, sess := range d.sessions {
-		sessions = append(sessions, sess.ID)
+		sessions = append(sessions, sessionInfo{
+			ID:       sess.ID,
+			ServerID: sess.ServerID,
+		})
 	}
 
 	msg := struct {
-		Type     string       `json:"type"`
-		BuildID  string       `json:"buildId,omitempty"`
-		Servers  []serverInfo `json:"servers"`
-		Sessions []string     `json:"sessions"`
+		Type     string        `json:"type"`
+		BuildID  string        `json:"buildId,omitempty"`
+		Servers  []serverInfo  `json:"servers"`
+		Sessions []sessionInfo `json:"sessions"`
 	}{
 		Type:     "state",
 		BuildID:  d.dashBuildID,

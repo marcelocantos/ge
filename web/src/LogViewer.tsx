@@ -54,11 +54,16 @@ interface StateServer {
   active: boolean;
 }
 
+interface StateSession {
+  id: string;
+  serverID: string;
+}
+
 interface StateMessage {
   type: "state";
   buildId?: string;
   servers: StateServer[];
-  sessions: string[];
+  sessions: StateSession[];
 }
 
 interface Props {

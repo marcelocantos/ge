@@ -108,6 +108,9 @@ static std::string jsonObjectValue(const std::string& json, const std::string& k
 }
 
 void SessionHost::run(Factory factory) {
+    // Ignore SIGPIPE — broken socket writes must return EPIPE, not kill us.
+    signal(SIGPIPE, SIG_IGN);
+
     // Connect sideband WS to ged
     SPDLOG_INFO("SessionHost: connecting to ged at {}:{}...",
                 m->daemonHost, m->daemonPort);
@@ -155,15 +158,42 @@ void SessionHost::run(Factory factory) {
     // ── Sideband poll loop ──
     SPDLOG_INFO("SessionHost: entering sideband poll loop");
 
+    int backoffMs = 100;
+
     while (!g_stopRequested.load(std::memory_order_relaxed)) {
-        // Check sideband connection
-        if (!m->sidebandConn->isOpen()) {
-            SPDLOG_WARN("SessionHost: sideband connection lost");
-            break;
+        // Check sideband connection — reconnect with exponential backoff
+        if (!m->sidebandConn || !m->sidebandConn->isOpen()) {
+            SPDLOG_WARN("SessionHost: sideband connection lost, reconnecting in {}ms...", backoffMs);
+            SDL_Delay(backoffMs);
+            backoffMs = std::min(static_cast<int>(backoffMs * 1.2), 5000);
+
+            if (g_stopRequested.load(std::memory_order_relaxed)) break;
+
+            m->sidebandConn = connectWebSocket(
+                m->daemonHost, m->daemonPort, "/ws/server");
+            if (!m->sidebandConn) continue;
+
+            // Re-register with ged
+            char hello[256];
+            snprintf(hello, sizeof(hello),
+                     R"({"type":"hello","name":"%s","pid":%d,"version":%d})",
+                     getprogname(), getpid(), wire::kProtocolVersion);
+            m->sidebandConn->sendText(std::string(hello));
+
+            // Re-attach daemon log sink to new connection
+            m->daemonSink->setConnection(m->sidebandConn);
+
+            // Re-send tweak state
+            std::string tweakMsg = R"({"type":"tweaks","data":)" + tweak::toJson() + "}";
+            m->sidebandConn->sendText(tweakMsg);
+            m->lastTweakGen = tweak::generation().load(std::memory_order_relaxed);
+
+            backoffMs = 100;
+            SPDLOG_INFO("SessionHost: reconnected to ged");
         }
 
         // Poll sideband for messages
-        while (m->sidebandConn->available() > 0) {
+        while (m->sidebandConn && m->sidebandConn->available() > 0) {
             std::vector<char> sbData;
             if (!m->sidebandConn->recvBinary(sbData)) break;
             std::string msg(sbData.begin(), sbData.end());
@@ -227,7 +257,7 @@ void SessionHost::run(Factory factory) {
 
         // Send updated tweak state if generation changed
         auto gen = tweak::generation().load(std::memory_order_relaxed);
-        if (gen != m->lastTweakGen) {
+        if (gen != m->lastTweakGen && m->sidebandConn && m->sidebandConn->isOpen()) {
             m->lastTweakGen = gen;
             std::string tweakMsg = R"({"type":"tweaks","data":)" + tweak::toJson() + "}";
             try { m->sidebandConn->sendText(tweakMsg); } catch (...) {}

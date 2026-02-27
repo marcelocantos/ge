@@ -83,6 +83,17 @@ func startTestDaemon(t *testing.T) (*Daemon, *httptest.Server) {
 		}
 	})
 
+	mux.HandleFunc("POST /api/sessions/{sessionID}/server/{serverID}", func(w http.ResponseWriter, r *http.Request) {
+		sessionID := r.PathValue("sessionID")
+		serverID := r.PathValue("serverID")
+		if d.SwitchSession(sessionID, serverID) {
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"ok":true}`)
+		} else {
+			http.Error(w, `{"error":"not found"}`, 404)
+		}
+	})
+
 	ts := httptest.NewServer(mux)
 	t.Cleanup(ts.Close)
 	return d, ts
@@ -665,6 +676,90 @@ func TestServerInfoMultiServer(t *testing.T) {
 	}
 
 	t.Logf("ServerInfo returned %d servers", len(servers))
+}
+
+func TestSwitchSingleSession(t *testing.T) {
+	d, ts := startTestDaemon(t)
+
+	// Connect two servers
+	server1 := connectFakeServerSideband(t, ts, "game-alpha")
+	defer server1.sideband.CloseNow()
+
+	server2 := connectFakeServerSideband(t, ts, "game-beta")
+	defer server2.sideband.CloseNow()
+
+	// Connect two players — both route to server1 (active)
+	player1 := connectFakePlayer(t, ts)
+	defer player1.CloseNow()
+	session1 := readPlayerAttached(t, server1)
+	wire1 := connectSessionWire(t, ts, session1)
+	defer wire1.CloseNow()
+	data := readBinary(t, wire1, 2*time.Second)
+	if readMagic(data) != kDeviceInfoMagic {
+		t.Fatal("Bridge 1 not established")
+	}
+
+	player2 := connectFakePlayer(t, ts)
+	defer player2.CloseNow()
+	session2 := readPlayerAttached(t, server1)
+	wire2 := connectSessionWire(t, ts, session2)
+	defer wire2.CloseNow()
+	data = readBinary(t, wire2, 2*time.Second)
+	if readMagic(data) != kDeviceInfoMagic {
+		t.Fatal("Bridge 2 not established")
+	}
+
+	// Switch only session1 to server2 via per-session API
+	resp, err := http.Post(ts.URL+"/api/sessions/"+session1+"/server/srv2", "", nil)
+	if err != nil {
+		t.Fatalf("Switch session API call failed: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("Switch session API returned %d", resp.StatusCode)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	// Player1 should receive SessionEnd
+	data = readBinary(t, player1, 2*time.Second)
+	if readMagic(data) != kSessionEndMagic {
+		t.Fatalf("Expected SessionEnd for player1, got 0x%08X", readMagic(data))
+	}
+
+	// Server1 should receive player_detached for session1
+	detachedID := readPlayerDetached(t, server1)
+	if detachedID != session1 {
+		t.Fatalf("Expected detach for %s, got %s", session1, detachedID)
+	}
+
+	// Server2 should receive player_attached for session1
+	attachedID := readPlayerAttached(t, server2)
+	if attachedID != session1 {
+		t.Fatalf("Expected attach for %s on server2, got %s", session1, attachedID)
+	}
+
+	// activeServer should still be srv1 (SwitchSession doesn't change it)
+	d.mu.Lock()
+	active := d.activeServer
+	d.mu.Unlock()
+	if active != "srv1" {
+		t.Fatalf("Expected activeServer to remain srv1, got %s", active)
+	}
+
+	// Player2 should NOT have received SessionEnd (still on server1)
+	// Verify by sending a command on wire2 and confirming player2 receives it
+	ctx := context.Background()
+	cmd := makeMessage(kWireCommandMagic, []byte("still-on-server1"))
+	if err := wire2.Write(ctx, websocket.MessageBinary, cmd); err != nil {
+		t.Fatalf("Wire2 write failed: %v", err)
+	}
+	data = readBinary(t, player2, 2*time.Second)
+	if readMagic(data) != kWireCommandMagic {
+		t.Fatalf("Expected player2 to still receive commands, got 0x%08X", readMagic(data))
+	}
+
+	t.Logf("Single session switch: %s moved to srv2, %s stayed on srv1", session1, session2)
 }
 
 func TestSingleServerBackwardCompat(t *testing.T) {

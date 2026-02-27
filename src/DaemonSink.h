@@ -23,6 +23,11 @@ public:
     explicit DaemonSink(std::shared_ptr<ge::WsConnection> conn)
         : conn_(std::move(conn)) {}
 
+    void setConnection(std::shared_ptr<ge::WsConnection> conn) {
+        std::lock_guard lock(this->mutex_);
+        conn_ = std::move(conn);
+    }
+
 protected:
     void sink_it_(const spdlog::details::log_msg& msg) override {
         if (!conn_ || !conn_->isOpen()) return;
