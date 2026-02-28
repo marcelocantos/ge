@@ -118,6 +118,22 @@ function App() {
       <div className="layout">
         <aside className="sidebar">
           <QRCode />
+          {servers.length > 0 && (
+            <div className="player-list">
+              <h2 className="player-title">Servers</h2>
+              <div className="player-items">
+                {servers.map((s) => (
+                  <div key={s.id} className="player-row">
+                    <span className="player-label" style={{ cursor: "default" }}>
+                      <span className={`player-dot ${s.active ? "active" : ""}`} />
+                      <span>{s.name}</span>
+                    </span>
+                    <span className="server-pid">pid {s.pid}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
           <PlayerList
             sessions={sessions}
             servers={servers}

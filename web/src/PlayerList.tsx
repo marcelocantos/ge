@@ -77,6 +77,31 @@ function PlayerList({
     }
   }, []);
 
+  // Position dropdown so the .current item overlaps the trigger text exactly.
+  const positionDropdown = useCallback((node: HTMLDivElement | null) => {
+    if (!node) return;
+    requestAnimationFrame(() => {
+      const trigger = node.parentElement;
+      if (!trigger) { node.style.opacity = "1"; return; }
+      const item = node.querySelector(".server-dropdown-item.current") as HTMLElement | null;
+      if (!item) { node.style.opacity = "1"; return; }
+
+      const tRect = trigger.getBoundingClientRect();
+      const iRect = item.getBoundingClientRect();
+      const tStyle = getComputedStyle(trigger);
+      const iStyle = getComputedStyle(item);
+
+      // Align text origins (top-left of text content area)
+      const dx = (tRect.left + parseFloat(tStyle.paddingLeft))
+               - (iRect.left + parseFloat(iStyle.paddingLeft));
+      const dy = (tRect.top + parseFloat(tStyle.paddingTop))
+               - (iRect.top + parseFloat(iStyle.paddingTop));
+
+      node.style.transform = `translate(${dx}px, ${dy}px)`;
+      node.style.opacity = "1";
+    });
+  }, []);
+
   if (sessions.length === 0) return null;
 
   return (
@@ -104,6 +129,8 @@ function PlayerList({
             {openDropdown === "all" && (
               <div
                 className="server-dropdown"
+                ref={positionDropdown}
+                style={{ opacity: 0 }}
                 onMouseEnter={handleDropdownEnter}
                 onMouseLeave={handleMouseLeave}
               >
@@ -147,6 +174,8 @@ function PlayerList({
               {openDropdown === sess.id && (
                 <div
                   className="server-dropdown"
+                  ref={positionDropdown}
+                  style={{ opacity: 0 }}
                   onMouseEnter={handleDropdownEnter}
                   onMouseLeave={handleMouseLeave}
                 >
