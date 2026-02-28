@@ -3,6 +3,7 @@ import { useCallback, useRef, useState } from "react";
 interface SessionInfo {
   id: string;
   serverID: string;
+  name: string;
 }
 
 interface Server {
@@ -134,7 +135,7 @@ function PlayerList({
               onClick={() => onSelectSession(sess.id)}
             >
               <span className="player-dot active" />
-              <span>{sess.id}</span>
+              <span>{sess.name || sess.id}</span>
             </button>
             <span className="player-arrow">&rarr;</span>
             <div

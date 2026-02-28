@@ -508,6 +508,7 @@ struct Player::M {
     bool headless = false;
     int maxRetries = -1;  // -1 = unlimited
     std::string profile = "default";
+    std::string name;
 
     // Persistent state DB for sqlpipe sync
     std::string dbPath;
@@ -570,7 +571,7 @@ struct Player::M {
 
 Player::Player(std::string host, uint16_t port, int width, int height,
                    bool maximized, int maxRetries, bool headless,
-                   std::string profile)
+                   std::string profile, std::string name)
     : m(std::make_unique<M>()) {
     m->host = std::move(host);
     m->port = port;
@@ -580,6 +581,7 @@ Player::Player(std::string host, uint16_t port, int width, int height,
     m->headless = headless;
     m->maxRetries = maxRetries;
     m->profile = std::move(profile);
+    m->name = std::move(name);
 
     // Store profile base directory — DB opened when kStateRequestMagic arrives
     const char* home = std::getenv("HOME");
@@ -732,7 +734,8 @@ std::shared_ptr<ge::WsConnection> Player::M::connectWithUI(bool& quit) {
     std::shared_ptr<ge::WsConnection> result;
     std::atomic<bool> done{false};
     std::thread connThread([&] {
-        result = ge::connectWebSocket(host, port, "/ws/wire");
+        auto wsPath = name.empty() ? "/ws/wire" : "/ws/wire?name=" + name;
+        result = ge::connectWebSocket(host, port, wsPath);
         done.store(true, std::memory_order_release);
     });
 
@@ -1317,7 +1320,7 @@ ConnectionResult Player::M::connectAndRun() {
     return ConnectionResult::Disconnected;
 }
 
-int playerLoop(std::function<ge::ScanResult()> discover) {
+int playerLoop(std::function<ge::ScanResult()> discover, std::string name) {
     for (;;) {
         auto addr = discover();
         if (addr.host.empty()) {
@@ -1327,7 +1330,7 @@ int playerLoop(std::function<ge::ScanResult()> discover) {
         uint16_t port = addr.port ? addr.port : kDefaultPort;
         SPDLOG_INFO("Target: {}:{}", addr.host, port);
 
-        Player player(addr.host, port, kDefaultWidth, kDefaultHeight, false, 0);
+        Player player(addr.host, port, kDefaultWidth, kDefaultHeight, false, 0, false, "default", name);
         int result = player.run();
         if (result != 0) return result;
 

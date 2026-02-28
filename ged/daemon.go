@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -50,6 +51,7 @@ type PlayerSession struct {
 	ID       string
 	Player   *PlayerConn
 	ServerID string // which server this session is currently bridged to
+	Name     string // platform name from player (e.g. "mac", "ios", "android")
 
 	// Per-session wire connection to the game server.
 	ServerWire *websocket.Conn
@@ -309,7 +311,7 @@ func (d *Daemon) SwitchSession(sessionID, serverID string) bool {
 
 // AddPlayer registers a new player, assigns a session ID, and notifies the active server.
 // Returns the session ID.
-func (d *Daemon) AddPlayer(pc *PlayerConn) string {
+func (d *Daemon) AddPlayer(pc *PlayerConn, name string) string {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
@@ -320,9 +322,10 @@ func (d *Daemon) AddPlayer(pc *PlayerConn) string {
 		ID:       sessionID,
 		Player:   pc,
 		ServerID: d.activeServer,
+		Name:     name,
 	}
 	d.sessions[sessionID] = sess
-	slog.Info("Player connected", "session", sessionID, "server", d.activeServer)
+	slog.Info("Player connected", "session", sessionID, "name", name, "server", d.activeServer)
 
 	// Notify the active game server that a new player has attached
 	if d.activeServer != "" {
@@ -560,6 +563,37 @@ func (d *Daemon) stateSnapshotLocked() []byte {
 	type sessionInfo struct {
 		ID       string `json:"id"`
 		ServerID string `json:"serverID"`
+		Name     string `json:"name"`
+	}
+
+	// Compute display names: single instance gets bare name,
+	// duplicates get " 1", " 2" suffix ordered by session ID.
+	nameCounts := make(map[string]int)
+	for _, sess := range d.sessions {
+		nameCounts[sess.Name]++
+	}
+
+	// Collect and sort session IDs for stable numbering
+	sortedIDs := make([]string, 0, len(d.sessions))
+	for id := range d.sessions {
+		sortedIDs = append(sortedIDs, id)
+	}
+	sort.Strings(sortedIDs)
+
+	// Assign display names
+	nameCounters := make(map[string]int)
+	displayNames := make(map[string]string, len(d.sessions))
+	for _, id := range sortedIDs {
+		sess := d.sessions[id]
+		base := sess.Name
+		if base == "" {
+			displayNames[id] = sess.ID
+		} else if nameCounts[base] == 1 {
+			displayNames[id] = base
+		} else {
+			nameCounters[base]++
+			displayNames[id] = fmt.Sprintf("%s %d", base, nameCounters[base])
+		}
 	}
 
 	sessions := make([]sessionInfo, 0, len(d.sessions))
@@ -567,6 +601,7 @@ func (d *Daemon) stateSnapshotLocked() []byte {
 		sessions = append(sessions, sessionInfo{
 			ID:       sess.ID,
 			ServerID: sess.ServerID,
+			Name:     displayNames[sess.ID],
 		})
 	}
 

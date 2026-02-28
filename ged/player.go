@@ -35,8 +35,9 @@ func (d *Daemon) handlePlayer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	name := r.URL.Query().Get("name")
 	pc := &PlayerConn{Conn: conn, DeviceInfo: deviceInfo}
-	sessionID := d.AddPlayer(pc)
+	sessionID := d.AddPlayer(pc, name)
 	defer d.RemovePlayer(sessionID)
 
 	// Forward remaining frames to the server's wire connection for this session.

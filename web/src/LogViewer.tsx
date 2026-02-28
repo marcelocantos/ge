@@ -57,6 +57,7 @@ interface StateServer {
 interface StateSession {
   id: string;
   serverID: string;
+  name: string;
 }
 
 interface StateMessage {

@@ -39,7 +39,7 @@ function App() {
     setServers(newServers);
 
     const sessionSet = new Set(state.sessions.map((s) => s.id));
-    setSessions(state.sessions.map((s) => ({ id: s.id, serverID: s.serverID })));
+    setSessions(state.sessions.map((s) => ({ id: s.id, serverID: s.serverID, name: s.name })));
     setSelectedSession((prev) => (prev !== null && !sessionSet.has(prev) ? null : prev));
 
     const active = state.servers.find((s) => s.active);
