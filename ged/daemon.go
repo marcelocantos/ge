@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
-	"os"
 	"os/exec"
 	"sort"
 	"strconv"
@@ -106,13 +105,8 @@ func NewDaemon(port int, noOpen bool) *Daemon {
 	}
 }
 
-// readDashBuildID reads the dashboard build ID from disk or the embedded FS.
+// readDashBuildID reads the dashboard build ID from the embedded FS.
 func readDashBuildID() string {
-	// Try disk first (development mode)
-	if data, err := os.ReadFile("ge/web/dist/.build-id"); err == nil {
-		return strings.TrimSpace(string(data))
-	}
-	// Fall back to embedded FS
 	if data, err := fs.ReadFile(embeddedUI, "web/dist/.build-id"); err == nil {
 		return strings.TrimSpace(string(data))
 	}
