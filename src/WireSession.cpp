@@ -522,19 +522,25 @@ void WireSession::connect() {
     m->serializer->sendMessage(wire::kSessionInitMagic, &sessionInit, sizeof(sessionInit));
     SPDLOG_INFO("Sent SessionInit");
 
-    // Wait for SessionReady
+    // Wait for SessionReady — drain any stale frames forwarded from a
+    // previous server session (the player may still be sending wire
+    // responses from the old session when ged bridges the new wire).
     wire::MessageHeader readyHdr{};
     std::vector<char> readyPayload;
-    if (!m->serializer->recvMessage(readyHdr, readyPayload) ||
-        readyPayload.size() < sizeof(wire::SessionReady)) {
-        throw std::runtime_error("Failed to receive SessionReady");
+    int staleCount = 0;
+    for (;;) {
+        if (!m->serializer->recvMessage(readyHdr, readyPayload)) {
+            throw std::runtime_error("Failed to receive SessionReady");
+        }
+        if (readyPayload.size() >= sizeof(wire::SessionReady)) {
+            wire::SessionReady probe{};
+            std::memcpy(&probe, readyPayload.data(), sizeof(probe));
+            if (probe.magic == wire::kSessionReadyMagic) break;
+        }
+        ++staleCount;
     }
-
-    wire::SessionReady sessionReady{};
-    std::memcpy(&sessionReady, readyPayload.data(), sizeof(sessionReady));
-
-    if (sessionReady.magic != wire::kSessionReadyMagic) {
-        throw std::runtime_error("Invalid SessionReady magic");
+    if (staleCount > 0) {
+        SPDLOG_INFO("Drained {} stale frame(s) before SessionReady", staleCount);
     }
 
     SPDLOG_INFO("Session ready");

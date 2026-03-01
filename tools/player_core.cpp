@@ -1304,18 +1304,19 @@ ConnectionResult Player::M::connectAndRun() {
     // Destroy the WireServer before potentially creating a new one
     wireServer.reset();
 
-    if (!serverSwitched) return exitResult;
+    if (serverSwitched) {
+        // Server switch: reconnect immediately to get a fresh session.
+        // The reconnect path (~200ms) is faster and more reliable than
+        // trying to reuse the existing WebSocket connection, which has
+        // subtle race conditions with stale wire data.
+        SPDLOG_INFO("Server switched — reconnecting");
+        backoffMs = 10;
+        return ConnectionResult::Disconnected;
+    }
 
-    // Reset replica for the new server session
-    replica.reset();
+    return exitResult;
 
-    // AudioPlayer and MipTracker are destroyed by going out of scope here
-    // and recreated on the next iteration of the outer loop.
-
-    SDL_SetWindowTitle(window, "ge player \xe2\x80\x94 Switching...");
-    SPDLOG_INFO("Server switch — waiting for new SessionInit");
-
-    } // end outer server-switch loop
+    } // end outer server-switch loop (unused — we reconnect on switch)
 
     return ConnectionResult::Disconnected;
 }

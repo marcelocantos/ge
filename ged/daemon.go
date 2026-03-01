@@ -373,14 +373,20 @@ func (d *Daemon) SetSessionWire(sessionID string, wireConn *websocket.Conn) bool
 	return true
 }
 
-// UnsetSessionWire clears the wire connection for a session.
-func (d *Daemon) UnsetSessionWire(sessionID string) {
+// UnsetSessionWire clears the wire connection for a session, but only if it
+// still points to the given connection. This prevents a stale goroutine's
+// deferred cleanup from clobbering a newer wire established by SwitchServer.
+func (d *Daemon) UnsetSessionWire(sessionID string, conn *websocket.Conn) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
 	sess, ok := d.sessions[sessionID]
 	if !ok {
 		return
+	}
+
+	if sess.ServerWire != conn {
+		return // wire was already replaced by a newer connection
 	}
 
 	sess.bridged = false
@@ -432,18 +438,19 @@ func (d *Daemon) ForwardToPlayer(sessionID string, data []byte) {
 func (d *Daemon) ForwardToServerWire(sessionID string, mt websocket.MessageType, data []byte) {
 	d.mu.Lock()
 	sess, ok := d.sessions[sessionID]
-	d.mu.Unlock()
-
-	if !ok || sess.ServerWire == nil {
+	if !ok || !sess.bridged || sess.ServerWire == nil {
+		d.mu.Unlock()
 		return
 	}
+	wire := sess.ServerWire // snapshot under lock
+	d.mu.Unlock()
 
 	sess.wireMu.Lock()
 	defer sess.wireMu.Unlock()
 
 	ctx, cancel := contextWithTimeout(5 * time.Second)
 	defer cancel()
-	_ = sess.ServerWire.Write(ctx, mt, data)
+	_ = wire.Write(ctx, mt, data)
 }
 
 // sendToServerIDLocked sends a text message to a specific server's sideband.

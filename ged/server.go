@@ -113,7 +113,7 @@ func (d *Daemon) handleServerSessionWire(w http.ResponseWriter, r *http.Request)
 		slog.Error("Server session wire: unknown session", "session", sessionID)
 		return
 	}
-	defer d.UnsetSessionWire(sessionID)
+	defer d.UnsetSessionWire(sessionID, conn)
 
 	slog.Info("Server session wire connected", "session", sessionID)
 
