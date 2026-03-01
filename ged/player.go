@@ -36,12 +36,14 @@ func (d *Daemon) handlePlayer(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Extract server preference from extended DeviceInfo frame.
-	// Standard frame: 8-byte header + 18-byte struct = 26 bytes.
-	// Extended frame: 26 bytes + UTF-8 preference string.
+	// Frame layout: [8-byte MessageHeader][20-byte DeviceInfo struct][optional preference]
+	// The DeviceInfo struct is 20 bytes (sizeof includes 2 bytes of alignment padding
+	// before the uint32_t preferredFormat field).
+	const deviceInfoFrameSize = 8 + 20 // MessageHeader + DeviceInfo
 	var preference string
-	if len(deviceInfo) > 26 {
-		preference = string(deviceInfo[26:])
-		deviceInfo = deviceInfo[:26] // strip preference before storing
+	if len(deviceInfo) > deviceInfoFrameSize {
+		preference = string(deviceInfo[deviceInfoFrameSize:])
+		deviceInfo = deviceInfo[:deviceInfoFrameSize] // strip preference before storing
 	}
 
 	name := r.URL.Query().Get("name")

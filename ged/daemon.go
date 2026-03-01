@@ -707,17 +707,19 @@ func (d *Daemon) resolveServerPreferenceLocked(pref string) string {
 	return ""
 }
 
-// pickAnyServerLocked returns the alphabetically first connected server ID,
-// or "" if none. Deterministic ordering ensures consistent default routing.
+// pickAnyServerLocked returns the ID of the server with the alphabetically
+// first Name. Deterministic ordering ensures consistent default routing
+// regardless of server registration order.
 // Must be called with d.mu held.
 func (d *Daemon) pickAnyServerLocked() string {
-	var best string
-	for id := range d.servers {
-		if best == "" || id < best {
-			best = id
+	var bestID, bestName string
+	for id, sc := range d.servers {
+		if bestID == "" || sc.Name < bestName {
+			bestID = id
+			bestName = sc.Name
 		}
 	}
-	return best
+	return bestID
 }
 
 // sendServerAssignedLocked sends a kServerAssignedMagic message to a player

@@ -26,22 +26,25 @@ const (
 
 // makeDeviceInfo constructs a wire DeviceInfo frame: MessageHeader + DeviceInfo struct.
 func makeDeviceInfo(width, height, pixelRatio uint16, format uint32) []byte {
-	// DeviceInfo: magic(4) + version(2) + width(2) + height(2) + pixelRatio(2) + reserved(2) + preferredFormat(4) = 18 bytes
-	const deviceInfoSize = 18
+	// DeviceInfo struct layout (matches C++ sizeof = 20 with alignment padding):
+	//   magic(4) + version(2) + width(2) + height(2) + pixelRatio(2) +
+	//   reserved(2) + padding(2) + preferredFormat(4) = 20 bytes
+	const deviceInfoSize = 20
 	buf := make([]byte, 8+deviceInfoSize) // MessageHeader + DeviceInfo
 
 	// MessageHeader
 	binary.LittleEndian.PutUint32(buf[0:4], kDeviceInfoMagic)
 	binary.LittleEndian.PutUint32(buf[4:8], deviceInfoSize)
 
-	// DeviceInfo struct
+	// DeviceInfo struct (with padding matching C++ struct layout)
 	binary.LittleEndian.PutUint32(buf[8:12], kDeviceInfoMagic)  // magic
 	binary.LittleEndian.PutUint16(buf[12:14], kProtocolVersion) // version
 	binary.LittleEndian.PutUint16(buf[14:16], width)
 	binary.LittleEndian.PutUint16(buf[16:18], height)
 	binary.LittleEndian.PutUint16(buf[18:20], pixelRatio)
 	binary.LittleEndian.PutUint16(buf[20:22], 0) // reserved
-	binary.LittleEndian.PutUint32(buf[22:26], format)
+	// buf[22:24] is alignment padding (zero)
+	binary.LittleEndian.PutUint32(buf[24:28], format)
 
 	return buf
 }
