@@ -325,7 +325,9 @@ func (d *Daemon) RemovePlayer(sessionID string) {
 	d.broadcastStateLocked()
 }
 
-// SetSessionWire associates a wire WebSocket with a session and bridges it.
+// SetSessionWire associates a wire WebSocket with a session.
+// Does not trigger bridging — the caller is responsible for calling
+// TryBridgeSession after the read loop is ready.
 func (d *Daemon) SetSessionWire(sessionID string, wireConn *websocket.Conn) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -336,8 +338,17 @@ func (d *Daemon) SetSessionWire(sessionID string, wireConn *websocket.Conn) bool
 	}
 
 	sess.ServerWire = wireConn
-	d.tryBridgeSessionLocked(sess)
 	return true
+}
+
+// TryBridgeSession attempts to bridge a session (send DeviceInfo to server wire).
+func (d *Daemon) TryBridgeSession(sessionID string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if sess, ok := d.sessions[sessionID]; ok {
+		d.tryBridgeSessionLocked(sess)
+	}
 }
 
 // UnsetSessionWire clears the wire connection for a session, but only if it
