@@ -7,8 +7,6 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -82,8 +80,9 @@ func (d *Daemon) registerDashboard(mux *http.ServeMux) {
 
 	mux.HandleFunc("POST /api/tweaks", func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
+		serverID := r.URL.Query().Get("server")
 		msg := fmt.Sprintf(`{"type":"tweak_set","data":%s}`, string(body))
-		if d.SendTweakToServer(msg) {
+		if d.SendTweakToServer(msg, serverID) {
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(w, `{"ok":true}`)
 		} else {
@@ -93,8 +92,9 @@ func (d *Daemon) registerDashboard(mux *http.ServeMux) {
 
 	mux.HandleFunc("POST /api/tweaks/reset", func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
+		serverID := r.URL.Query().Get("server")
 		msg := fmt.Sprintf(`{"type":"tweak_reset","data":%s}`, string(body))
-		if d.SendTweakToServer(msg) {
+		if d.SendTweakToServer(msg, serverID) {
 			w.Header().Set("Content-Type", "application/json")
 			w.Write(d.GetTweakState())
 		} else {
@@ -120,16 +120,20 @@ func (d *Daemon) registerDashboard(mux *http.ServeMux) {
 				http.Error(w, `{"error":"server not found"}`, 404)
 			}
 		} else {
-			// Stop active server (backward compat)
-			var sc *ServerConn
-			if d.activeServer != "" {
-				sc = d.servers[d.activeServer]
+			// Stop all servers
+			var pids []int
+			for _, sc := range d.servers {
+				if sc.PID > 0 {
+					pids = append(pids, sc.PID)
+				}
 			}
 			d.mu.Unlock()
 
-			if sc != nil && sc.PID > 0 {
-				slog.Info("Stop requested from dashboard", "pid", sc.PID)
-				syscall.Kill(sc.PID, syscall.SIGINT)
+			if len(pids) > 0 {
+				for _, pid := range pids {
+					slog.Info("Stop requested from dashboard", "pid", pid)
+					syscall.Kill(pid, syscall.SIGINT)
+				}
 				w.Header().Set("Content-Type", "application/json")
 				fmt.Fprint(w, `{"ok":true}`)
 			} else {
@@ -214,50 +218,22 @@ func (d *Daemon) registerDashboard(mux *http.ServeMux) {
 	d.registerStaticFiles(mux)
 }
 
-// registerStaticFiles serves the dashboard SPA from ge/web/dist.
+// registerStaticFiles serves the dashboard SPA from the embedded FS.
 func (d *Daemon) registerStaticFiles(mux *http.ServeMux) {
-	// Try to find the web dist directory relative to the binary or cwd
-	candidates := []string{
-		"ge/web/dist",
-		filepath.Join(filepath.Dir(os.Args[0]), "..", "ge", "web", "dist"),
+	sub, err := fs.Sub(embeddedUI, "web/dist")
+	if err != nil {
+		slog.Warn("Dashboard UI not found (embedded FS error)")
+		return
 	}
-
-	var distDir string
-	for _, c := range candidates {
-		if info, err := os.Stat(c); err == nil && info.IsDir() {
-			distDir = c
-			break
-		}
+	if _, err := fs.Stat(sub, "index.html"); err != nil {
+		slog.Warn("Dashboard UI not found (embedded FS empty)")
+		return
 	}
-
-	var fileServer http.Handler
-	var checkFileExists func(path string) bool
-
-	if distDir != "" {
-		slog.Info("Serving dashboard UI", "dir", distDir)
-		fileServer = http.FileServer(http.Dir(distDir))
-		checkFileExists = func(path string) bool {
-			_, err := os.Stat(filepath.Join(distDir, filepath.Clean(path)))
-			return err == nil
-		}
-	} else {
-		// Fall back to embedded UI
-		sub, err := fs.Sub(embeddedUI, "web/dist")
-		if err != nil {
-			slog.Warn("Dashboard UI not found (no disk or embedded files)")
-			return
-		}
-		// Verify embedded FS has content
-		if _, err := fs.Stat(sub, "index.html"); err != nil {
-			slog.Warn("Dashboard UI not found (embedded FS empty)")
-			return
-		}
-		slog.Info("Serving dashboard UI", "dir", "(embedded)")
-		fileServer = http.FileServer(http.FS(sub))
-		checkFileExists = func(path string) bool {
-			_, err := fs.Stat(sub, strings.TrimPrefix(path, "/"))
-			return err == nil
-		}
+	slog.Info("Serving dashboard UI", "dir", "(embedded)")
+	fileServer := http.FileServer(http.FS(sub))
+	checkFileExists := func(path string) bool {
+		_, err := fs.Stat(sub, strings.TrimPrefix(path, "/"))
+		return err == nil
 	}
 
 	// Use Handle (not HandleFunc with method prefix) to avoid conflicts

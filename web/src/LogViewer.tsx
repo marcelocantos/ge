@@ -51,12 +51,12 @@ interface StateServer {
   id: string;
   name: string;
   pid: number;
-  active: boolean;
 }
 
 interface StateSession {
   id: string;
   serverID: string;
+  name: string;
 }
 
 interface StateMessage {

@@ -508,6 +508,8 @@ struct Player::M {
     bool headless = false;
     int maxRetries = -1;  // -1 = unlimited
     std::string profile = "default";
+    std::string name;
+    std::string serverPreference; // preferred server name (persisted)
 
     // Persistent state DB for sqlpipe sync
     std::string dbPath;
@@ -570,7 +572,7 @@ struct Player::M {
 
 Player::Player(std::string host, uint16_t port, int width, int height,
                    bool maximized, int maxRetries, bool headless,
-                   std::string profile)
+                   std::string profile, std::string name)
     : m(std::make_unique<M>()) {
     m->host = std::move(host);
     m->port = port;
@@ -580,11 +582,21 @@ Player::Player(std::string host, uint16_t port, int width, int height,
     m->headless = headless;
     m->maxRetries = maxRetries;
     m->profile = std::move(profile);
+    m->name = std::move(name);
 
     // Store profile base directory — DB opened when kStateRequestMagic arrives
     const char* home = std::getenv("HOME");
     if (!home) home = "/tmp";
     m->dbPath = (fs::path(home) / ".cache" / "ge" / "profiles" / m->profile).string();
+
+    // Load server preference
+    auto prefPath = fs::path(m->dbPath) / "server-preference";
+    std::ifstream prefFile(prefPath);
+    if (prefFile.is_open()) {
+        std::getline(prefFile, m->serverPreference);
+        if (!m->serverPreference.empty())
+            SPDLOG_INFO("Loaded server preference: {}", m->serverPreference);
+    }
 }
 
 Player::~Player() = default;
@@ -732,7 +744,8 @@ std::shared_ptr<ge::WsConnection> Player::M::connectWithUI(bool& quit) {
     std::shared_ptr<ge::WsConnection> result;
     std::atomic<bool> done{false};
     std::thread connThread([&] {
-        result = ge::connectWebSocket(host, port, "/ws/wire");
+        auto wsPath = name.empty() ? "/ws/wire" : "/ws/wire?name=" + name;
+        result = ge::connectWebSocket(host, port, wsPath);
         done.store(true, std::memory_order_release);
     });
 
@@ -792,9 +805,31 @@ ConnectionResult Player::M::connectAndRun() {
     auto serializer = std::make_unique<ge::WebSocketSerializer>(
         wsConn, wire::kWireResponseMagic);
 
-    // Send DeviceInfo as a protocol message
-    serializer->sendMessage(wire::kDeviceInfoMagic, &deviceInfo, sizeof(deviceInfo));
-    SPDLOG_INFO("Sent DeviceInfo");
+    // Send DeviceInfo as a protocol message, with server preference appended
+    if (serverPreference.empty()) {
+        serializer->sendMessage(wire::kDeviceInfoMagic, &deviceInfo, sizeof(deviceInfo));
+    } else {
+        std::vector<char> diWithPref(sizeof(deviceInfo) + serverPreference.size());
+        std::memcpy(diWithPref.data(), &deviceInfo, sizeof(deviceInfo));
+        std::memcpy(diWithPref.data() + sizeof(deviceInfo),
+                     serverPreference.data(), serverPreference.size());
+        serializer->sendMessage(wire::kDeviceInfoMagic, diWithPref.data(), diWithPref.size());
+    }
+    SPDLOG_INFO("Sent DeviceInfo (preference={})", serverPreference);
+
+    // Helper to update and persist server preference
+    auto savePreference = [&](const std::string& name) {
+        if (name == serverPreference) return;
+        serverPreference = name;
+        std::error_code ec;
+        fs::create_directories(dbPath, ec);
+        auto prefPath = fs::path(dbPath) / "server-preference";
+        std::ofstream out(prefPath, std::ios::trunc);
+        if (out.is_open()) {
+            out << serverPreference;
+            SPDLOG_INFO("Saved server preference: {}", serverPreference);
+        }
+    };
 
     // On Android, SDL blocks the native thread when the app is backgrounded
     // (SDL_HINT_ANDROID_BLOCK_ON_PAUSE defaults to true). Lifecycle events are
@@ -852,8 +887,21 @@ ConnectionResult Player::M::connectAndRun() {
                 SDL_SetWindowTitle(window, "ge player");
                 return ConnectionResult::Disconnected;
             }
+            if (initHdr.magic == wire::kServerAssignedMagic) {
+                std::string assigned(initPayload.begin(), initPayload.end());
+                SPDLOG_INFO("Server assigned: {}", assigned);
+                savePreference(assigned);
+                sessionWaitStart = SDL_GetTicks(); // reset timeout
+                continue;
+            }
             if (initHdr.magic == wire::kSessionEndMagic) {
-                SPDLOG_INFO("Server session ended while waiting for SessionInit");
+                if (!initPayload.empty()) {
+                    std::string target(initPayload.begin(), initPayload.end());
+                    SPDLOG_INFO("Server switch directed to: {}", target);
+                    savePreference(target);
+                } else {
+                    SPDLOG_INFO("Server session ended while waiting for SessionInit");
+                }
                 // Stay in outer loop — another server may attach
                 continue;
             }
@@ -1242,7 +1290,13 @@ ConnectionResult Player::M::connectAndRun() {
                 serializer->sendMessage(wire::kFrameReadyMagic);
                 break; // yield to SDL event polling
             } else if (header.magic == wire::kSessionEndMagic) {
-                SPDLOG_INFO("Server session ended — switching server");
+                if (!payload.empty()) {
+                    std::string target(payload.begin(), payload.end());
+                    SPDLOG_INFO("Server switch directed to: {}", target);
+                    savePreference(target);
+                } else {
+                    SPDLOG_INFO("Server session ended — switching server");
+                }
                 serverSwitched = true;
                 break;
             } else {
@@ -1301,23 +1355,24 @@ ConnectionResult Player::M::connectAndRun() {
     // Destroy the WireServer before potentially creating a new one
     wireServer.reset();
 
-    if (!serverSwitched) return exitResult;
+    if (serverSwitched) {
+        // Server switch: reconnect immediately to get a fresh session.
+        // The reconnect path (~200ms) is faster and more reliable than
+        // trying to reuse the existing WebSocket connection, which has
+        // subtle race conditions with stale wire data.
+        SPDLOG_INFO("Server switched — reconnecting");
+        backoffMs = 10;
+        return ConnectionResult::Disconnected;
+    }
 
-    // Reset replica for the new server session
-    replica.reset();
+    return exitResult;
 
-    // AudioPlayer and MipTracker are destroyed by going out of scope here
-    // and recreated on the next iteration of the outer loop.
-
-    SDL_SetWindowTitle(window, "ge player \xe2\x80\x94 Switching...");
-    SPDLOG_INFO("Server switch — waiting for new SessionInit");
-
-    } // end outer server-switch loop
+    } // end outer server-switch loop (unused — we reconnect on switch)
 
     return ConnectionResult::Disconnected;
 }
 
-int playerLoop(std::function<ge::ScanResult()> discover) {
+int playerLoop(std::function<ge::ScanResult()> discover, std::string name) {
     for (;;) {
         auto addr = discover();
         if (addr.host.empty()) {
@@ -1327,7 +1382,7 @@ int playerLoop(std::function<ge::ScanResult()> discover) {
         uint16_t port = addr.port ? addr.port : kDefaultPort;
         SPDLOG_INFO("Target: {}:{}", addr.host, port);
 
-        Player player(addr.host, port, kDefaultWidth, kDefaultHeight, false, 0);
+        Player player(addr.host, port, kDefaultWidth, kDefaultHeight, false, 0, false, "default", name);
         int result = player.run();
         if (result != 0) return result;
 

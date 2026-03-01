@@ -7,19 +7,28 @@
 namespace ge {
 
 std::string resource(const std::string& relativePath) {
-#if (defined(__APPLE__) && TARGET_OS_IOS) || defined(__ANDROID__)
-    // Already absolute — don't prepend base path again
+    // Already absolute — return unchanged.
     if (!relativePath.empty() && relativePath[0] == '/') {
         return relativePath;
     }
+
     static const std::string base = [] {
         auto p = SDL_GetBasePath();
-        return p ? std::string(p) : std::string();
-    }();
-    return base + relativePath;
+        if (!p) return std::string();
+        std::string dir(p);
+#if (defined(__APPLE__) && TARGET_OS_IOS) || defined(__ANDROID__)
+        // SDL_GetBasePath() returns the app bundle Resources/ directory.
+        return dir;
 #else
-    return relativePath;
+        // SDL_GetBasePath() returns the binary's directory, e.g. "/path/to/bin/".
+        // Go up one level to the project root (convention: binary lives in bin/).
+        if (dir.size() > 1 && dir.back() == '/') dir.pop_back();
+        auto pos = dir.rfind('/');
+        return pos != std::string::npos ? dir.substr(0, pos + 1) : std::string();
 #endif
+    }();
+
+    return base + relativePath;
 }
 
 } // namespace ge

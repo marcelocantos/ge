@@ -54,6 +54,6 @@ int main(int argc, char* argv[]) {
                 headless ? " (headless)" : "",
                 profile);
 
-    Player player(host, port, width, height, maximized, -1, headless, profile);
+    Player player(host, port, width, height, maximized, -1, headless, profile, "mac");
     return player.run();
 }

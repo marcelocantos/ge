@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
-	"os"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -47,9 +47,11 @@ type PlayerConn struct {
 // PlayerSession represents an active session between a player and the game server.
 // Each player gets its own session with a dedicated wire WS pair.
 type PlayerSession struct {
-	ID       string
-	Player   *PlayerConn
-	ServerID string // which server this session is currently bridged to
+	ID         string
+	Player     *PlayerConn
+	ServerID   string // which server this session is currently bridged to
+	Name       string // platform name from player (e.g. "mac", "ios", "android")
+	Preference string // server name preference from the player's DeviceInfo
 
 	// Per-session wire connection to the game server.
 	ServerWire *websocket.Conn
@@ -59,12 +61,11 @@ type PlayerSession struct {
 
 // Daemon is the central coordinator between game servers, players, and the dashboard.
 type Daemon struct {
-	mu           sync.Mutex
-	servers      map[string]*ServerConn   // serverID -> server
-	nextSrvID    int                      // incrementing server ID counter
-	activeServer string                   // server ID that new/switched players get assigned to
-	sessions     map[string]*PlayerSession // sessionID -> session
-	nextID       int                       // incrementing session counter
+	mu        sync.Mutex
+	servers   map[string]*ServerConn   // serverID -> server
+	nextSrvID int                      // incrementing server ID counter
+	sessions  map[string]*PlayerSession // sessionID -> session
+	nextID    int                       // incrementing session counter
 
 	// Dashboard state
 	logHistory  []string        // JSON-encoded log entries (ring buffer)
@@ -104,13 +105,8 @@ func NewDaemon(port int, noOpen bool) *Daemon {
 	}
 }
 
-// readDashBuildID reads the dashboard build ID from disk or the embedded FS.
+// readDashBuildID reads the dashboard build ID from the embedded FS.
 func readDashBuildID() string {
-	// Try disk first (development mode)
-	if data, err := os.ReadFile("ge/web/dist/.build-id"); err == nil {
-		return strings.TrimSpace(string(data))
-	}
-	// Fall back to embedded FS
 	if data, err := fs.ReadFile(embeddedUI, "web/dist/.build-id"); err == nil {
 		return strings.TrimSpace(string(data))
 	}
@@ -119,8 +115,9 @@ func readDashBuildID() string {
 }
 
 // AddServer registers a new game server.
-// Assigns a server ID, adds to the servers map, and if it's the first (or no active),
-// sets it as the active server. Broadcasts state to dashboard clients.
+// Assigns a server ID, adds to the servers map, and assigns any unattached
+// sessions (those with an empty ServerID) to this server. Broadcasts state
+// to dashboard clients.
 func (d *Daemon) AddServer(sc *ServerConn) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -131,16 +128,22 @@ func (d *Daemon) AddServer(sc *ServerConn) {
 
 	slog.Info("Server registered", "id", sc.ID, "name", sc.Name, "pid", sc.PID)
 
-	// If no active server, make this one active
-	if d.activeServer == "" {
-		d.activeServer = sc.ID
-
-		// Notify this server about all existing player sessions
-		for _, sess := range d.sessions {
-			sess.ServerID = sc.ID
-			msg := fmt.Sprintf(`{"type":"player_attached","session_id":"%s"}`, sess.ID)
-			d.sendToServerIDLocked(sc.ID, msg)
+	// Assign unattached sessions to this server if their preference matches
+	// (or they have no preference and no other server).
+	for _, sess := range d.sessions {
+		if sess.ServerID != "" {
+			continue // already assigned
 		}
+		target := d.resolveServerPreferenceLocked(sess.Preference)
+		if target == "" {
+			target = d.pickAnyServerLocked()
+		}
+		if target == "" {
+			continue
+		}
+		sess.ServerID = target
+		d.sendServerAssignedLocked(sess.Player.Conn, d.servers[target].Name)
+		d.sendToServerIDLocked(target, fmt.Sprintf(`{"type":"player_attached","session_id":"%s"}`, sess.ID))
 	}
 
 	d.broadcastStateLocked()
@@ -154,9 +157,9 @@ func (d *Daemon) AddServer(sc *ServerConn) {
 	}
 }
 
-// RemoveServer removes a game server. Sends SessionEnd to all sessions on that server.
-// If it was the active server, picks another or clears. Sessions on the removed server
-// get re-assigned to the new active server if one exists.
+// RemoveServer removes a game server. Closes wire connections, sends SessionEnd
+// to affected players, then tries to reassign each session using its preference
+// (falling back to any available server).
 func (d *Daemon) RemoveServer(sc *ServerConn) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -182,87 +185,58 @@ func (d *Daemon) RemoveServer(sc *ServerConn) {
 			sess.ServerWire = nil
 		}
 		sess.bridged = false
+		sess.ServerID = ""
 		d.sendSessionEndLocked(sess.Player.Conn)
 	}
 
 	delete(d.servers, sc.ID)
 
-	// If this was the active server, pick another
-	if d.activeServer == sc.ID {
-		d.activeServer = ""
-		for id := range d.servers {
-			d.activeServer = id
-			break
+	// Try to reassign affected sessions to another server
+	for _, sess := range affected {
+		target := d.resolveServerPreferenceLocked(sess.Preference)
+		if target == "" {
+			target = d.pickAnyServerLocked()
 		}
-
-		if d.activeServer != "" {
-			// Re-assign affected sessions to the new active server
-			for _, sess := range affected {
-				sess.ServerID = d.activeServer
-				msg := fmt.Sprintf(`{"type":"player_attached","session_id":"%s"}`, sess.ID)
-				d.sendToServerIDLocked(d.activeServer, msg)
-			}
+		if target == "" {
+			continue
 		}
+		sess.ServerID = target
+		d.sendServerAssignedLocked(sess.Player.Conn, d.servers[target].Name)
+		d.sendToServerIDLocked(target, fmt.Sprintf(`{"type":"player_attached","session_id":"%s"}`, sess.ID))
 	}
 
 	d.broadcastStateLocked()
 }
 
-// SwitchServer changes the active server and migrates all sessions to it.
-// For each session currently on a different server: closes server wire, sends SessionEnd
-// to the player, updates the session's ServerID, and notifies the new server.
+// SwitchServer tells all players not already on the target server to switch.
+// Sends SessionEnd-with-target so the player reconnects with the target as
+// its new preference. Does not update any global state — the player drives
+// server selection.
 func (d *Daemon) SwitchServer(serverID string) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	if _, ok := d.servers[serverID]; !ok {
+	sc, ok := d.servers[serverID]
+	if !ok {
 		return false
 	}
-	if d.activeServer == serverID {
-		return true // already active
-	}
 
-	oldActive := d.activeServer
-	d.activeServer = serverID
+	slog.Info("Switch all to server", "id", serverID, "name", sc.Name)
 
-	slog.Info("Switching active server", "from", oldActive, "to", serverID)
-
-	// Migrate all sessions that are on a different server
 	for _, sess := range d.sessions {
 		if sess.ServerID == serverID {
 			continue // already on the target server
 		}
-
-		oldServerID := sess.ServerID
-
-		// Close old server wire
-		if sess.ServerWire != nil {
-			sess.ServerWire.CloseNow()
-			sess.ServerWire = nil
-		}
-		sess.bridged = false
-
-		// Send SessionEnd to the player
-		d.sendSessionEndLocked(sess.Player.Conn)
-
-		// Notify old server about detach
-		if oldServerID != "" {
-			d.sendToServerIDLocked(oldServerID, fmt.Sprintf(`{"type":"player_detached","session_id":"%s"}`, sess.ID))
-		}
-
-		// Update session's server assignment
-		sess.ServerID = serverID
-
-		// Notify new server about attach
-		d.sendToServerIDLocked(serverID, fmt.Sprintf(`{"type":"player_attached","session_id":"%s"}`, sess.ID))
+		d.sendSessionEndWithTargetLocked(sess.Player.Conn, sc.Name)
 	}
 
 	d.broadcastStateLocked()
 	return true
 }
 
-// SwitchSession moves a single session to a different server.
-// Does NOT change activeServer.
+// SwitchSession tells a single player to switch to a different server by
+// sending SessionEnd-with-target. The player reconnects with the target
+// as its new preference.
 func (d *Daemon) SwitchSession(sessionID, serverID string) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -271,63 +245,53 @@ func (d *Daemon) SwitchSession(sessionID, serverID string) bool {
 	if !ok {
 		return false
 	}
-	if _, ok := d.servers[serverID]; !ok {
+	sc, ok := d.servers[serverID]
+	if !ok {
 		return false
 	}
 	if sess.ServerID == serverID {
 		return true // already there
 	}
 
-	oldServerID := sess.ServerID
-
-	// Close old server wire
-	if sess.ServerWire != nil {
-		sess.ServerWire.CloseNow()
-		sess.ServerWire = nil
-	}
-	sess.bridged = false
-
-	// Send SessionEnd to the player
-	d.sendSessionEndLocked(sess.Player.Conn)
-
-	// Notify old server about detach
-	if oldServerID != "" {
-		d.sendToServerIDLocked(oldServerID,
-			fmt.Sprintf(`{"type":"player_detached","session_id":"%s"}`, sess.ID))
-	}
-
-	// Update session's server assignment
-	sess.ServerID = serverID
-
-	// Notify new server about attach
-	d.sendToServerIDLocked(serverID,
-		fmt.Sprintf(`{"type":"player_attached","session_id":"%s"}`, sess.ID))
+	d.sendSessionEndWithTargetLocked(sess.Player.Conn, sc.Name)
 
 	d.broadcastStateLocked()
 	return true
 }
 
-// AddPlayer registers a new player, assigns a session ID, and notifies the active server.
-// Returns the session ID.
-func (d *Daemon) AddPlayer(pc *PlayerConn) string {
+// AddPlayer registers a new player, assigns a session ID, resolves the player's
+// server preference, and notifies the matched server. Returns the session ID.
+func (d *Daemon) AddPlayer(pc *PlayerConn, name, preference string) string {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
 	d.nextID++
 	sessionID := "s" + strconv.Itoa(d.nextID)
 
+	// Resolve preference → server ID, fall back to any server
+	target := d.resolveServerPreferenceLocked(preference)
+	if target == "" {
+		target = d.pickAnyServerLocked()
+	}
+
+	serverName := ""
+	if target != "" {
+		serverName = d.servers[target].Name
+	}
+
 	sess := &PlayerSession{
-		ID:       sessionID,
-		Player:   pc,
-		ServerID: d.activeServer,
+		ID:         sessionID,
+		Player:     pc,
+		ServerID:   target,
+		Name:       name,
+		Preference: preference,
 	}
 	d.sessions[sessionID] = sess
-	slog.Info("Player connected", "session", sessionID, "server", d.activeServer)
+	slog.Info("Player connected", "session", sessionID, "name", name, "preference", preference, "server", target)
 
-	// Notify the active game server that a new player has attached
-	if d.activeServer != "" {
-		msg := fmt.Sprintf(`{"type":"player_attached","session_id":"%s"}`, sessionID)
-		d.sendToServerIDLocked(d.activeServer, msg)
+	if target != "" {
+		d.sendServerAssignedLocked(pc.Conn, serverName)
+		d.sendToServerIDLocked(target, fmt.Sprintf(`{"type":"player_attached","session_id":"%s"}`, sessionID))
 	}
 
 	d.broadcastStateLocked()
@@ -361,7 +325,9 @@ func (d *Daemon) RemovePlayer(sessionID string) {
 	d.broadcastStateLocked()
 }
 
-// SetSessionWire associates a wire WebSocket with a session and bridges it.
+// SetSessionWire associates a wire WebSocket with a session.
+// Does not trigger bridging — the caller is responsible for calling
+// TryBridgeSession after the read loop is ready.
 func (d *Daemon) SetSessionWire(sessionID string, wireConn *websocket.Conn) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -372,18 +338,33 @@ func (d *Daemon) SetSessionWire(sessionID string, wireConn *websocket.Conn) bool
 	}
 
 	sess.ServerWire = wireConn
-	d.tryBridgeSessionLocked(sess)
 	return true
 }
 
-// UnsetSessionWire clears the wire connection for a session.
-func (d *Daemon) UnsetSessionWire(sessionID string) {
+// TryBridgeSession attempts to bridge a session (send DeviceInfo to server wire).
+func (d *Daemon) TryBridgeSession(sessionID string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if sess, ok := d.sessions[sessionID]; ok {
+		d.tryBridgeSessionLocked(sess)
+	}
+}
+
+// UnsetSessionWire clears the wire connection for a session, but only if it
+// still points to the given connection. This prevents a stale goroutine's
+// deferred cleanup from clobbering a newer wire established by SwitchServer.
+func (d *Daemon) UnsetSessionWire(sessionID string, conn *websocket.Conn) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
 	sess, ok := d.sessions[sessionID]
 	if !ok {
 		return
+	}
+
+	if sess.ServerWire != conn {
+		return // wire was already replaced by a newer connection
 	}
 
 	sess.bridged = false
@@ -435,18 +416,19 @@ func (d *Daemon) ForwardToPlayer(sessionID string, data []byte) {
 func (d *Daemon) ForwardToServerWire(sessionID string, mt websocket.MessageType, data []byte) {
 	d.mu.Lock()
 	sess, ok := d.sessions[sessionID]
-	d.mu.Unlock()
-
-	if !ok || sess.ServerWire == nil {
+	if !ok || !sess.bridged || sess.ServerWire == nil {
+		d.mu.Unlock()
 		return
 	}
+	wire := sess.ServerWire // snapshot under lock
+	d.mu.Unlock()
 
 	sess.wireMu.Lock()
 	defer sess.wireMu.Unlock()
 
 	ctx, cancel := contextWithTimeout(5 * time.Second)
 	defer cancel()
-	_ = sess.ServerWire.Write(ctx, mt, data)
+	_ = wire.Write(ctx, mt, data)
 }
 
 // sendToServerIDLocked sends a text message to a specific server's sideband.
@@ -541,25 +523,54 @@ func (d *Daemon) broadcastStateLocked() {
 // Must be called with d.mu held.
 func (d *Daemon) stateSnapshotLocked() []byte {
 	type serverInfo struct {
-		ID     string `json:"id"`
-		Name   string `json:"name"`
-		PID    int    `json:"pid"`
-		Active bool   `json:"active"`
+		ID   string `json:"id"`
+		Name string `json:"name"`
+		PID  int    `json:"pid"`
 	}
 
 	servers := make([]serverInfo, 0, len(d.servers))
 	for _, sc := range d.servers {
 		servers = append(servers, serverInfo{
-			ID:     sc.ID,
-			Name:   sc.Name,
-			PID:    sc.PID,
-			Active: sc.ID == d.activeServer,
+			ID:   sc.ID,
+			Name: sc.Name,
+			PID:  sc.PID,
 		})
 	}
 
 	type sessionInfo struct {
 		ID       string `json:"id"`
 		ServerID string `json:"serverID"`
+		Name     string `json:"name"`
+	}
+
+	// Compute display names: single instance gets bare name,
+	// duplicates get " 1", " 2" suffix ordered by session ID.
+	nameCounts := make(map[string]int)
+	for _, sess := range d.sessions {
+		nameCounts[sess.Name]++
+	}
+
+	// Collect and sort session IDs for stable numbering
+	sortedIDs := make([]string, 0, len(d.sessions))
+	for id := range d.sessions {
+		sortedIDs = append(sortedIDs, id)
+	}
+	sort.Strings(sortedIDs)
+
+	// Assign display names
+	nameCounters := make(map[string]int)
+	displayNames := make(map[string]string, len(d.sessions))
+	for _, id := range sortedIDs {
+		sess := d.sessions[id]
+		base := sess.Name
+		if base == "" {
+			displayNames[id] = sess.ID
+		} else if nameCounts[base] == 1 {
+			displayNames[id] = base
+		} else {
+			nameCounters[base]++
+			displayNames[id] = fmt.Sprintf("%s %d", base, nameCounters[base])
+		}
 	}
 
 	sessions := make([]sessionInfo, 0, len(d.sessions))
@@ -567,6 +578,7 @@ func (d *Daemon) stateSnapshotLocked() []byte {
 		sessions = append(sessions, sessionInfo{
 			ID:       sess.ID,
 			ServerID: sess.ServerID,
+			Name:     displayNames[sess.ID],
 		})
 	}
 
@@ -624,19 +636,30 @@ func (d *Daemon) GetTweakState() json.RawMessage {
 	return d.tweakState
 }
 
-// SendTweakToServer forwards a tweak command to the active game server.
-func (d *Daemon) SendTweakToServer(msg string) bool {
+// SendTweakToServer forwards a tweak command to game servers.
+// If serverID is non-empty, targets that specific server; otherwise broadcasts
+// to all connected servers.
+func (d *Daemon) SendTweakToServer(msg string, serverID string) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if d.activeServer == "" {
+	if len(d.servers) == 0 {
 		return false
 	}
-	d.sendToServerIDLocked(d.activeServer, msg)
+	if serverID != "" {
+		if _, ok := d.servers[serverID]; !ok {
+			return false
+		}
+		d.sendToServerIDLocked(serverID, msg)
+	} else {
+		for id := range d.servers {
+			d.sendToServerIDLocked(id, msg)
+		}
+	}
 	return true
 }
 
 // ServerInfo returns current server info for the dashboard API.
-// Returns an array of all servers with session counts and active flag.
+// Returns an array of all servers with session counts.
 func (d *Daemon) ServerInfo() map[string]any {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -654,25 +677,14 @@ func (d *Daemon) ServerInfo() map[string]any {
 			"name":     sc.Name,
 			"pid":      sc.PID,
 			"sessions": sessionCounts[sc.ID],
-			"active":   sc.ID == d.activeServer,
 		})
 	}
 
-	info := map[string]any{
+	return map[string]any{
 		"connected": len(d.servers) > 0,
 		"servers":   servers,
 		"sessions":  len(d.sessions),
 	}
-
-	// Backward compat: include name/pid of active server at top level
-	if d.activeServer != "" {
-		if sc, ok := d.servers[d.activeServer]; ok {
-			info["name"] = sc.Name
-			info["pid"] = sc.PID
-		}
-	}
-
-	return info
 }
 
 // broadcastToClients sends a message to all clients in the list, removing dead ones.
@@ -689,6 +701,69 @@ func (d *Daemon) broadcastToClients(clients *[]*wsClient, mt websocket.MessageTy
 		}
 	}
 	*clients = alive
+}
+
+// resolveServerPreferenceLocked finds a server whose Name matches the given
+// preference string. Returns the server ID, or "" if no match.
+// Must be called with d.mu held.
+func (d *Daemon) resolveServerPreferenceLocked(pref string) string {
+	if pref == "" {
+		return ""
+	}
+	for _, sc := range d.servers {
+		if sc.Name == pref {
+			return sc.ID
+		}
+	}
+	return ""
+}
+
+// pickAnyServerLocked returns the ID of the server with the alphabetically
+// first Name. Deterministic ordering ensures consistent default routing
+// regardless of server registration order.
+// Must be called with d.mu held.
+func (d *Daemon) pickAnyServerLocked() string {
+	var bestID, bestName string
+	for id, sc := range d.servers {
+		if bestID == "" || sc.Name < bestName {
+			bestID = id
+			bestName = sc.Name
+		}
+	}
+	return bestID
+}
+
+// sendServerAssignedLocked sends a kServerAssignedMagic message to a player
+// with the assigned server name as payload.
+// Must be called with d.mu held.
+func (d *Daemon) sendServerAssignedLocked(conn *websocket.Conn, serverName string) {
+	payload := []byte(serverName)
+	buf := make([]byte, 8+len(payload))
+	binary.LittleEndian.PutUint32(buf[0:4], 0x4745324E) // kServerAssignedMagic
+	binary.LittleEndian.PutUint32(buf[4:8], uint32(len(payload)))
+	copy(buf[8:], payload)
+	ctx, cancel := contextWithTimeout(2 * time.Second)
+	defer cancel()
+	if err := conn.Write(ctx, websocket.MessageBinary, buf); err != nil {
+		slog.Warn("Failed to send ServerAssigned to player", "err", err)
+	}
+}
+
+// sendSessionEndWithTargetLocked sends a kSessionEndMagic message with the
+// target server name as payload. The player uses this to update its preference
+// and reconnect to the specified server.
+// Must be called with d.mu held.
+func (d *Daemon) sendSessionEndWithTargetLocked(conn *websocket.Conn, targetName string) {
+	payload := []byte(targetName)
+	buf := make([]byte, 8+len(payload))
+	binary.LittleEndian.PutUint32(buf[0:4], 0x4745324D) // kSessionEndMagic
+	binary.LittleEndian.PutUint32(buf[4:8], uint32(len(payload)))
+	copy(buf[8:], payload)
+	ctx, cancel := contextWithTimeout(2 * time.Second)
+	defer cancel()
+	if err := conn.Write(ctx, websocket.MessageBinary, buf); err != nil {
+		slog.Warn("Failed to send SessionEnd to player", "err", err)
+	}
 }
 
 // sendSessionEndLocked sends a wire::kSessionEndMagic message to a player connection.

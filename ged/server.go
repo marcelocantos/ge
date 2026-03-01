@@ -113,12 +113,22 @@ func (d *Daemon) handleServerSessionWire(w http.ResponseWriter, r *http.Request)
 		slog.Error("Server session wire: unknown session", "session", sessionID)
 		return
 	}
-	defer d.UnsetSessionWire(sessionID)
+	defer d.UnsetSessionWire(sessionID, conn)
 
 	slog.Info("Server session wire connected", "session", sessionID)
 
+	// Bridge asynchronously: wait for the read loop to start before sending
+	// DeviceInfo. This avoids a race where ged writes DeviceInfo before the
+	// server's C++ side has started reading the WebSocket.
+	ready := make(chan struct{})
+	go func() {
+		<-ready
+		d.TryBridgeSession(sessionID)
+	}()
+
 	// Read loop: forward binary frames to the session's player
 	ctx := r.Context()
+	close(ready) // signal bridge goroutine just before entering read loop
 	for {
 		mt, data, err := conn.Read(ctx)
 		if err != nil {

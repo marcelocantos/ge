@@ -1,4 +1,5 @@
 #include <ge/FileIO.h>
+#include <ge/Resource.h>
 #include <SDL3/SDL_iostream.h>
 #include <spdlog/spdlog.h>
 #include <streambuf>
@@ -78,13 +79,9 @@ private:
 } // namespace
 
 std::unique_ptr<std::istream> openFile(const std::string& path, bool binary) {
-    // SDL_IOFromFile transparently handles platform-specific asset locations:
-    // - Android: reads from APK assets via AAssetManager
-    // - iOS: reads from app bundle (NSBundle) for relative paths
-    // - Desktop: reads from filesystem relative to CWD
-    // Absolute paths are opened directly on all platforms.
+    auto resolved = ge::resource(path);
     const char* mode = binary ? "rb" : "r";
-    SDL_IOStream* io = SDL_IOFromFile(path.c_str(), mode);
+    SDL_IOStream* io = SDL_IOFromFile(resolved.c_str(), mode);
     if (!io) {
         SPDLOG_ERROR("Failed to open file: {} ({})", path, SDL_GetError());
         auto stream = std::make_unique<std::istream>(nullptr);

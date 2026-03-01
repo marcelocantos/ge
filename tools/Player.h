@@ -15,7 +15,7 @@ class Player {
 public:
     Player(std::string host, uint16_t port, int width, int height,
            bool maximized = false, int maxRetries = -1, bool headless = false,
-           std::string profile = "default");
+           std::string profile = "default", std::string name = "");
     ~Player();
     int run();
 
@@ -26,4 +26,4 @@ private:
 
 // Mobile reconnect loop: calls discover() to get a server address, connects,
 // and loops back to discovery on disconnect. Returns non-zero on fatal error.
-int playerLoop(std::function<ge::ScanResult()> discover);
+int playerLoop(std::function<ge::ScanResult()> discover, std::string name = "");

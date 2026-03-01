@@ -52,5 +52,5 @@ int main(int argc, char* argv[]) {
         }
         if (isEmulator()) return ge::ScanResult{"10.0.2.2", kDefaultPort};
         return ge::scanQRCode();
-    });
+    }, "android");
 }
