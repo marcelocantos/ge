@@ -10,7 +10,6 @@ interface Server {
   id: string;
   name: string;
   pid: number;
-  active: boolean;
 }
 
 interface Props {

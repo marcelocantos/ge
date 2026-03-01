@@ -26,6 +26,7 @@ constexpr uint32_t kAudioCommandMagic = 0x47453242;  // "GE2B" — server → pl
 constexpr uint32_t kStateRequestMagic = 0x47453251;  // "GE2Q" — server → player: send your DB
 constexpr uint32_t kStateDataMagic = 0x47453250;      // "GE2P" — player → server: raw DB bytes
 constexpr uint32_t kSqlpipeMsgMagic = 0x47453254;     // "GE2T" — bidirectional sqlpipe messages
+constexpr uint32_t kServerAssignedMagic = 0x4745324E;  // "GE2N" — ged → player: assigned server name
 
 // TODO: Consider semver or min/max range for backwards-compatible changes.
 constexpr uint16_t kProtocolVersion = 3;

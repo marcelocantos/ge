@@ -16,11 +16,12 @@ import (
 
 // Wire protocol constants (matching Protocol.h)
 const (
-	kDeviceInfoMagic  = 0x47453244
-	kSessionEndMagic  = 0x4745324D
-	kFrameReadyMagic  = 0x47453247
-	kWireCommandMagic = 0x47453243
-	kProtocolVersion  = 3
+	kDeviceInfoMagic      = 0x47453244
+	kSessionEndMagic      = 0x4745324D
+	kServerAssignedMagic  = 0x4745324E
+	kFrameReadyMagic      = 0x47453247
+	kWireCommandMagic     = 0x47453243
+	kProtocolVersion      = 3
 )
 
 // makeDeviceInfo constructs a wire DeviceInfo frame: MessageHeader + DeviceInfo struct.
@@ -52,6 +53,20 @@ func makeMessage(magic uint32, payload []byte) []byte {
 	binary.LittleEndian.PutUint32(buf[4:8], uint32(len(payload)))
 	copy(buf[8:], payload)
 	return buf
+}
+
+// makeDeviceInfoWithPref constructs a wire DeviceInfo frame with a server preference appended.
+func makeDeviceInfoWithPref(width, height, pixelRatio uint16, format uint32, pref string) []byte {
+	base := makeDeviceInfo(width, height, pixelRatio, format)
+	return append(base, []byte(pref)...)
+}
+
+// readPayload extracts the payload (after the 8-byte header) from a wire message.
+func readPayload(data []byte) string {
+	if len(data) <= 8 {
+		return ""
+	}
+	return string(data[8:])
 }
 
 // readMagic extracts the magic number from a binary WebSocket frame.
@@ -223,6 +238,30 @@ func connectFakePlayer(t *testing.T, ts *httptest.Server) *websocket.Conn {
 	return conn
 }
 
+// connectFakePlayerWithPref connects a fake player with a server preference.
+func connectFakePlayerWithPref(t *testing.T, ts *httptest.Server, pref string) *websocket.Conn {
+	t.Helper()
+	conn := dial(t, wsURL(ts, "/ws/wire"))
+	deviceInfo := makeDeviceInfoWithPref(1080, 2400, 1, 22, pref)
+	ctx := context.Background()
+	if err := conn.Write(ctx, websocket.MessageBinary, deviceInfo); err != nil {
+		t.Fatalf("Player DeviceInfo write failed: %v", err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	return conn
+}
+
+// readServerAssigned reads a ServerAssigned binary frame and returns the server name.
+func readServerAssigned(t *testing.T, conn *websocket.Conn) string {
+	t.Helper()
+	data := readBinary(t, conn, 2*time.Second)
+	magic := readMagic(data)
+	if magic != kServerAssignedMagic {
+		t.Fatalf("Expected ServerAssignedMagic 0x%08X, got 0x%08X", kServerAssignedMagic, magic)
+	}
+	return readPayload(data)
+}
+
 // --- Tests ---
 
 func TestBridgeEstablishment(t *testing.T) {
@@ -289,6 +328,13 @@ func TestSessionEndOnServerDisconnect(t *testing.T) {
 	defer player.CloseNow()
 
 	server := connectFakeServerSideband(t, ts, "test-game")
+
+	// Player receives ServerAssigned when server registers and claims unattached session
+	assigned := readServerAssigned(t, player)
+	if assigned != "test-game" {
+		t.Fatalf("Expected ServerAssigned 'test-game', got %q", assigned)
+	}
+
 	sessionID := readPlayerAttached(t, server)
 	wire := connectSessionWire(t, ts, sessionID)
 
@@ -302,7 +348,7 @@ func TestSessionEndOnServerDisconnect(t *testing.T) {
 	wire.CloseNow()
 	server.sideband.CloseNow()
 
-	// Player should receive SessionEnd
+	// Player should receive SessionEnd (no target — server is gone)
 	data = readBinary(t, player, 2*time.Second)
 	magic := readMagic(data)
 	if magic != kSessionEndMagic {
@@ -320,6 +366,10 @@ func TestWireFrameForwarding(t *testing.T) {
 
 	server := connectFakeServerSideband(t, ts, "test-game")
 	defer server.sideband.CloseNow()
+
+	// Drain ServerAssigned from player
+	readServerAssigned(t, player)
+
 	sessionID := readPlayerAttached(t, server)
 	wire := connectSessionWire(t, ts, sessionID)
 	defer wire.CloseNow()
@@ -398,15 +448,17 @@ func TestMultiplePlayers(t *testing.T) {
 	server := connectFakeServerSideband(t, ts, "test-game")
 	defer server.sideband.CloseNow()
 
-	// Connect two players
+	// Connect two players — each gets ServerAssigned during AddPlayer
 	player1 := connectFakePlayer(t, ts)
 	defer player1.CloseNow()
+	readServerAssigned(t, player1)
 	session1 := readPlayerAttached(t, server)
 	wire1 := connectSessionWire(t, ts, session1)
 	defer wire1.CloseNow()
 
 	player2 := connectFakePlayer(t, ts)
 	defer player2.CloseNow()
+	readServerAssigned(t, player2)
 	session2 := readPlayerAttached(t, server)
 	wire2 := connectSessionWire(t, ts, session2)
 	defer wire2.CloseNow()
@@ -455,6 +507,10 @@ func TestServerRestart(t *testing.T) {
 
 	// First server
 	server1 := connectFakeServerSideband(t, ts, "game-v1")
+
+	// Player receives ServerAssigned when server registers
+	readServerAssigned(t, player)
+
 	session1 := readPlayerAttached(t, server1)
 	wire1 := connectSessionWire(t, ts, session1)
 	data := readBinary(t, wire1, 2*time.Second)
@@ -466,10 +522,10 @@ func TestServerRestart(t *testing.T) {
 	wire1.CloseNow()
 	server1.sideband.CloseNow()
 
-	// Player receives SessionEnd
+	// Player receives SessionEnd (no target — no other servers)
 	data = readBinary(t, player, 2*time.Second)
 	if readMagic(data) != kSessionEndMagic {
-		t.Fatal("Expected SessionEnd after first server disconnect")
+		t.Fatalf("Expected SessionEnd after first server disconnect, got 0x%08X", readMagic(data))
 	}
 
 	// Give player time to be cleaned up
@@ -480,9 +536,12 @@ func TestServerRestart(t *testing.T) {
 	player = connectFakePlayer(t, ts)
 	defer player.CloseNow()
 
-	// Second server connects
+	// Second server connects — claims unattached player session
 	server2 := connectFakeServerSideband(t, ts, "game-v2")
 	defer server2.sideband.CloseNow()
+
+	// Player receives ServerAssigned
+	readServerAssigned(t, player)
 
 	session2 := readPlayerAttached(t, server2)
 	wire2 := connectSessionWire(t, ts, session2)
@@ -512,64 +571,110 @@ func TestMultiServerRegistration(t *testing.T) {
 
 	d.mu.Lock()
 	numServers := len(d.servers)
-	activeID := d.activeServer
 	d.mu.Unlock()
 
 	if numServers != 2 {
 		t.Fatalf("Expected 2 servers, got %d", numServers)
 	}
 
-	// First server should be active
-	if activeID != "srv1" {
-		t.Fatalf("Expected active server srv1, got %s", activeID)
-	}
-
-	t.Logf("Two servers registered, active=%s", activeID)
+	t.Log("Two servers registered")
 }
 
-func TestMultiServerPlayerRoutesToActive(t *testing.T) {
+func TestPlayerRoutesToServer(t *testing.T) {
+	_, ts := startTestDaemon(t)
+
+	// Connect server first, then player
+	server := connectFakeServerSideband(t, ts, "game-alpha")
+	defer server.sideband.CloseNow()
+
+	player := connectFakePlayer(t, ts)
+	defer player.CloseNow()
+
+	// Player should receive ServerAssigned
+	assigned := readServerAssigned(t, player)
+	if assigned != "game-alpha" {
+		t.Fatalf("Expected ServerAssigned 'game-alpha', got %q", assigned)
+	}
+
+	sessionID := readPlayerAttached(t, server)
+
+	wire := connectSessionWire(t, ts, sessionID)
+	defer wire.CloseNow()
+
+	data := readBinary(t, wire, 2*time.Second)
+	if readMagic(data) != kDeviceInfoMagic {
+		t.Fatal("Bridge not established")
+	}
+
+	t.Logf("Player routed to server, session=%s", sessionID)
+}
+
+func TestPreferenceRouting(t *testing.T) {
 	_, ts := startTestDaemon(t)
 
 	// Connect two servers
 	server1 := connectFakeServerSideband(t, ts, "game-alpha")
 	defer server1.sideband.CloseNow()
-
 	server2 := connectFakeServerSideband(t, ts, "game-beta")
 	defer server2.sideband.CloseNow()
 
-	// Connect a player — should route to server1 (active)
-	player := connectFakePlayer(t, ts)
+	// Connect player with preference for game-beta
+	player := connectFakePlayerWithPref(t, ts, "game-beta")
 	defer player.CloseNow()
 
-	// Server1 should get player_attached
-	sessionID := readPlayerAttached(t, server1)
+	// Player should receive ServerAssigned for game-beta
+	assigned := readServerAssigned(t, player)
+	if assigned != "game-beta" {
+		t.Fatalf("Expected ServerAssigned 'game-beta', got %q", assigned)
+	}
 
-	// Connect wire on server1
+	// Server2 (game-beta) should get the player_attached
+	sessionID := readPlayerAttached(t, server2)
+
 	wire := connectSessionWire(t, ts, sessionID)
 	defer wire.CloseNow()
 
-	// Server1 should receive DeviceInfo
 	data := readBinary(t, wire, 2*time.Second)
 	if readMagic(data) != kDeviceInfoMagic {
-		t.Fatal("Bridge not established on active server")
+		t.Fatal("Bridge not established on preferred server")
 	}
 
-	t.Logf("Player routed to active server, session=%s", sessionID)
+	t.Logf("Player routed to preferred server game-beta, session=%s", sessionID)
+}
+
+func TestPreferenceFallback(t *testing.T) {
+	_, ts := startTestDaemon(t)
+
+	// Connect one server
+	server := connectFakeServerSideband(t, ts, "game-alpha")
+	defer server.sideband.CloseNow()
+
+	// Connect player with preference for non-existent server
+	player := connectFakePlayerWithPref(t, ts, "game-nonexistent")
+	defer player.CloseNow()
+
+	// Player should fall back to game-alpha
+	assigned := readServerAssigned(t, player)
+	if assigned != "game-alpha" {
+		t.Fatalf("Expected ServerAssigned fallback 'game-alpha', got %q", assigned)
+	}
+
+	sessionID := readPlayerAttached(t, server)
+	t.Logf("Player with invalid preference fell back to available server, session=%s", sessionID)
 }
 
 func TestSwitchServer(t *testing.T) {
-	d, ts := startTestDaemon(t)
+	_, ts := startTestDaemon(t)
 
-	// Connect two servers
+	// Connect server1, then player (assigned to server1)
 	server1 := connectFakeServerSideband(t, ts, "game-alpha")
 	defer server1.sideband.CloseNow()
 
-	server2 := connectFakeServerSideband(t, ts, "game-beta")
-	defer server2.sideband.CloseNow()
-
-	// Connect a player — routes to server1
 	player := connectFakePlayer(t, ts)
 	defer player.CloseNow()
+
+	// Drain ServerAssigned
+	readServerAssigned(t, player)
 
 	sessionID := readPlayerAttached(t, server1)
 	wire1 := connectSessionWire(t, ts, sessionID)
@@ -580,7 +685,11 @@ func TestSwitchServer(t *testing.T) {
 		t.Fatal("Bridge not established on server1")
 	}
 
-	// Switch to server2 via API
+	// Now connect server2
+	server2 := connectFakeServerSideband(t, ts, "game-beta")
+	defer server2.sideband.CloseNow()
+
+	// Switch all to server2 via API
 	resp, err := http.Post(ts.URL+"/api/servers/srv2/select", "", nil)
 	if err != nil {
 		t.Fatalf("Switch API call failed: %v", err)
@@ -590,65 +699,69 @@ func TestSwitchServer(t *testing.T) {
 		t.Fatalf("Switch API returned %d", resp.StatusCode)
 	}
 
-	// Wait for switch to propagate
-	time.Sleep(100 * time.Millisecond)
-
-	// Player should receive SessionEnd
+	// Player should receive SessionEnd-with-target containing "game-beta"
 	data = readBinary(t, player, 2*time.Second)
 	if readMagic(data) != kSessionEndMagic {
 		t.Fatalf("Expected SessionEnd after switch, got 0x%08X", readMagic(data))
 	}
-
-	// Server1 should receive player_detached
-	detachedID := readPlayerDetached(t, server1)
-	if detachedID != sessionID {
-		t.Fatalf("Expected detach for %s, got %s", sessionID, detachedID)
+	target := readPayload(data)
+	if target != "game-beta" {
+		t.Fatalf("Expected SessionEnd target 'game-beta', got %q", target)
 	}
 
-	// Server2 should receive player_attached
-	attachedID := readPlayerAttached(t, server2)
-	if attachedID != sessionID {
-		t.Fatalf("Expected attach for %s on server2, got %s", sessionID, attachedID)
-	}
-
-	d.mu.Lock()
-	active := d.activeServer
-	d.mu.Unlock()
-
-	if active != "srv2" {
-		t.Fatalf("Expected active server srv2, got %s", active)
-	}
-
-	t.Log("Server switch successful: player received SessionEnd, sessions migrated")
+	t.Log("Server switch: player received SessionEnd-with-target")
 }
 
-func TestActiveServerFallbackOnDisconnect(t *testing.T) {
-	d, ts := startTestDaemon(t)
+func TestServerDisconnectReassignment(t *testing.T) {
+	_, ts := startTestDaemon(t)
 
-	// Connect two servers
+	// Connect server1, then player
 	server1 := connectFakeServerSideband(t, ts, "game-alpha")
+
+	player := connectFakePlayer(t, ts)
+	defer player.CloseNow()
+
+	// Drain ServerAssigned from initial assignment
+	readServerAssigned(t, player)
+
+	sessionID := readPlayerAttached(t, server1)
+	wire1 := connectSessionWire(t, ts, sessionID)
+
+	data := readBinary(t, wire1, 2*time.Second)
+	if readMagic(data) != kDeviceInfoMagic {
+		t.Fatal("Bridge not established")
+	}
+
+	// Connect server2 as alternative
 	server2 := connectFakeServerSideband(t, ts, "game-beta")
 	defer server2.sideband.CloseNow()
 
-	// Disconnect server1 (the active one)
+	// Disconnect server1 — sessions should be reassigned to server2
+	wire1.CloseNow()
 	server1.sideband.CloseNow()
-	time.Sleep(100 * time.Millisecond)
 
-	d.mu.Lock()
-	active := d.activeServer
-	numServers := len(d.servers)
-	d.mu.Unlock()
-
-	if numServers != 1 {
-		t.Fatalf("Expected 1 server after disconnect, got %d", numServers)
+	// Player receives SessionEnd (no target — server gone)
+	data = readBinary(t, player, 2*time.Second)
+	if readMagic(data) != kSessionEndMagic {
+		t.Fatalf("Expected SessionEnd, got 0x%08X", readMagic(data))
+	}
+	if readPayload(data) != "" {
+		t.Fatalf("Expected empty SessionEnd payload, got %q", readPayload(data))
 	}
 
-	// Server2 should become active
-	if active != "srv2" {
-		t.Fatalf("Expected active server srv2 after srv1 disconnect, got %s", active)
+	// Player receives ServerAssigned for the reassigned server
+	assigned := readServerAssigned(t, player)
+	if assigned != "game-beta" {
+		t.Fatalf("Expected reassignment to 'game-beta', got %q", assigned)
 	}
 
-	t.Log("Active server fell back to srv2 after srv1 disconnect")
+	// Server2 should receive player_attached for the reassigned session
+	attachedID := readPlayerAttached(t, server2)
+	if attachedID != sessionID {
+		t.Fatalf("Expected player_attached for %s on server2, got %s", sessionID, attachedID)
+	}
+
+	t.Log("Session reassigned to remaining server after disconnect")
 }
 
 func TestServerInfoMultiServer(t *testing.T) {
@@ -675,22 +788,26 @@ func TestServerInfoMultiServer(t *testing.T) {
 		t.Fatal("Expected connected=true")
 	}
 
+	// Verify no "active" field in server entries
+	for _, s := range servers {
+		if _, ok := s["active"]; ok {
+			t.Fatal("Server info should not contain 'active' field")
+		}
+	}
+
 	t.Logf("ServerInfo returned %d servers", len(servers))
 }
 
 func TestSwitchSingleSession(t *testing.T) {
-	d, ts := startTestDaemon(t)
+	_, ts := startTestDaemon(t)
 
-	// Connect two servers
+	// Connect server1, then two players (both get server1)
 	server1 := connectFakeServerSideband(t, ts, "game-alpha")
 	defer server1.sideband.CloseNow()
 
-	server2 := connectFakeServerSideband(t, ts, "game-beta")
-	defer server2.sideband.CloseNow()
-
-	// Connect two players — both route to server1 (active)
 	player1 := connectFakePlayer(t, ts)
 	defer player1.CloseNow()
+	readServerAssigned(t, player1)
 	session1 := readPlayerAttached(t, server1)
 	wire1 := connectSessionWire(t, ts, session1)
 	defer wire1.CloseNow()
@@ -701,6 +818,7 @@ func TestSwitchSingleSession(t *testing.T) {
 
 	player2 := connectFakePlayer(t, ts)
 	defer player2.CloseNow()
+	readServerAssigned(t, player2)
 	session2 := readPlayerAttached(t, server1)
 	wire2 := connectSessionWire(t, ts, session2)
 	defer wire2.CloseNow()
@@ -708,6 +826,10 @@ func TestSwitchSingleSession(t *testing.T) {
 	if readMagic(data) != kDeviceInfoMagic {
 		t.Fatal("Bridge 2 not established")
 	}
+
+	// Connect server2
+	server2 := connectFakeServerSideband(t, ts, "game-beta")
+	defer server2.sideband.CloseNow()
 
 	// Switch only session1 to server2 via per-session API
 	resp, err := http.Post(ts.URL+"/api/sessions/"+session1+"/server/srv2", "", nil)
@@ -719,32 +841,14 @@ func TestSwitchSingleSession(t *testing.T) {
 		t.Fatalf("Switch session API returned %d", resp.StatusCode)
 	}
 
-	time.Sleep(100 * time.Millisecond)
-
-	// Player1 should receive SessionEnd
+	// Player1 should receive SessionEnd-with-target
 	data = readBinary(t, player1, 2*time.Second)
 	if readMagic(data) != kSessionEndMagic {
 		t.Fatalf("Expected SessionEnd for player1, got 0x%08X", readMagic(data))
 	}
-
-	// Server1 should receive player_detached for session1
-	detachedID := readPlayerDetached(t, server1)
-	if detachedID != session1 {
-		t.Fatalf("Expected detach for %s, got %s", session1, detachedID)
-	}
-
-	// Server2 should receive player_attached for session1
-	attachedID := readPlayerAttached(t, server2)
-	if attachedID != session1 {
-		t.Fatalf("Expected attach for %s on server2, got %s", session1, attachedID)
-	}
-
-	// activeServer should still be srv1 (SwitchSession doesn't change it)
-	d.mu.Lock()
-	active := d.activeServer
-	d.mu.Unlock()
-	if active != "srv1" {
-		t.Fatalf("Expected activeServer to remain srv1, got %s", active)
+	target := readPayload(data)
+	if target != "game-beta" {
+		t.Fatalf("Expected SessionEnd target 'game-beta', got %q", target)
 	}
 
 	// Player2 should NOT have received SessionEnd (still on server1)
@@ -759,7 +863,7 @@ func TestSwitchSingleSession(t *testing.T) {
 		t.Fatalf("Expected player2 to still receive commands, got 0x%08X", readMagic(data))
 	}
 
-	t.Logf("Single session switch: %s moved to srv2, %s stayed on srv1", session1, session2)
+	t.Logf("Single session switch: %s got SessionEnd-with-target, %s unaffected", session1, session2)
 }
 
 func TestSingleServerBackwardCompat(t *testing.T) {
@@ -771,6 +875,9 @@ func TestSingleServerBackwardCompat(t *testing.T) {
 
 	player := connectFakePlayer(t, ts)
 	defer player.CloseNow()
+
+	// Drain ServerAssigned
+	readServerAssigned(t, player)
 
 	sessionID := readPlayerAttached(t, server)
 	wire := connectSessionWire(t, ts, sessionID)

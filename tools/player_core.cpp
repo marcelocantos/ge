@@ -509,6 +509,7 @@ struct Player::M {
     int maxRetries = -1;  // -1 = unlimited
     std::string profile = "default";
     std::string name;
+    std::string serverPreference; // preferred server name (persisted)
 
     // Persistent state DB for sqlpipe sync
     std::string dbPath;
@@ -587,6 +588,15 @@ Player::Player(std::string host, uint16_t port, int width, int height,
     const char* home = std::getenv("HOME");
     if (!home) home = "/tmp";
     m->dbPath = (fs::path(home) / ".cache" / "ge" / "profiles" / m->profile).string();
+
+    // Load server preference
+    auto prefPath = fs::path(m->dbPath) / "server-preference";
+    std::ifstream prefFile(prefPath);
+    if (prefFile.is_open()) {
+        std::getline(prefFile, m->serverPreference);
+        if (!m->serverPreference.empty())
+            SPDLOG_INFO("Loaded server preference: {}", m->serverPreference);
+    }
 }
 
 Player::~Player() = default;
@@ -795,9 +805,31 @@ ConnectionResult Player::M::connectAndRun() {
     auto serializer = std::make_unique<ge::WebSocketSerializer>(
         wsConn, wire::kWireResponseMagic);
 
-    // Send DeviceInfo as a protocol message
-    serializer->sendMessage(wire::kDeviceInfoMagic, &deviceInfo, sizeof(deviceInfo));
-    SPDLOG_INFO("Sent DeviceInfo");
+    // Send DeviceInfo as a protocol message, with server preference appended
+    if (serverPreference.empty()) {
+        serializer->sendMessage(wire::kDeviceInfoMagic, &deviceInfo, sizeof(deviceInfo));
+    } else {
+        std::vector<char> diWithPref(sizeof(deviceInfo) + serverPreference.size());
+        std::memcpy(diWithPref.data(), &deviceInfo, sizeof(deviceInfo));
+        std::memcpy(diWithPref.data() + sizeof(deviceInfo),
+                     serverPreference.data(), serverPreference.size());
+        serializer->sendMessage(wire::kDeviceInfoMagic, diWithPref.data(), diWithPref.size());
+    }
+    SPDLOG_INFO("Sent DeviceInfo (preference={})", serverPreference);
+
+    // Helper to update and persist server preference
+    auto savePreference = [&](const std::string& name) {
+        if (name == serverPreference) return;
+        serverPreference = name;
+        std::error_code ec;
+        fs::create_directories(dbPath, ec);
+        auto prefPath = fs::path(dbPath) / "server-preference";
+        std::ofstream out(prefPath, std::ios::trunc);
+        if (out.is_open()) {
+            out << serverPreference;
+            SPDLOG_INFO("Saved server preference: {}", serverPreference);
+        }
+    };
 
     // On Android, SDL blocks the native thread when the app is backgrounded
     // (SDL_HINT_ANDROID_BLOCK_ON_PAUSE defaults to true). Lifecycle events are
@@ -855,8 +887,21 @@ ConnectionResult Player::M::connectAndRun() {
                 SDL_SetWindowTitle(window, "ge player");
                 return ConnectionResult::Disconnected;
             }
+            if (initHdr.magic == wire::kServerAssignedMagic) {
+                std::string assigned(initPayload.begin(), initPayload.end());
+                SPDLOG_INFO("Server assigned: {}", assigned);
+                savePreference(assigned);
+                sessionWaitStart = SDL_GetTicks(); // reset timeout
+                continue;
+            }
             if (initHdr.magic == wire::kSessionEndMagic) {
-                SPDLOG_INFO("Server session ended while waiting for SessionInit");
+                if (!initPayload.empty()) {
+                    std::string target(initPayload.begin(), initPayload.end());
+                    SPDLOG_INFO("Server switch directed to: {}", target);
+                    savePreference(target);
+                } else {
+                    SPDLOG_INFO("Server session ended while waiting for SessionInit");
+                }
                 // Stay in outer loop — another server may attach
                 continue;
             }
@@ -1245,7 +1290,13 @@ ConnectionResult Player::M::connectAndRun() {
                 serializer->sendMessage(wire::kFrameReadyMagic);
                 break; // yield to SDL event polling
             } else if (header.magic == wire::kSessionEndMagic) {
-                SPDLOG_INFO("Server session ended — switching server");
+                if (!payload.empty()) {
+                    std::string target(payload.begin(), payload.end());
+                    SPDLOG_INFO("Server switch directed to: {}", target);
+                    savePreference(target);
+                } else {
+                    SPDLOG_INFO("Server session ended — switching server");
+                }
                 serverSwitched = true;
                 break;
             } else {

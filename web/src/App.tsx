@@ -34,7 +34,6 @@ function App() {
       id: s.id,
       name: s.name,
       pid: s.pid,
-      active: s.active,
     }));
     setServers(newServers);
 
@@ -42,11 +41,11 @@ function App() {
     setSessions(state.sessions.map((s) => ({ id: s.id, serverID: s.serverID, name: s.name })));
     setSelectedSession((prev) => (prev !== null && !sessionSet.has(prev) ? null : prev));
 
-    const active = state.servers.find((s) => s.active);
-    if (active) {
-      setAppName(active.name);
+    const first = state.servers[0];
+    if (first) {
+      setAppName(first.name);
       const port = window.location.port;
-      document.title = port ? `${active.name} :${port}` : active.name;
+      document.title = port ? `${first.name} :${port}` : first.name;
     } else {
       setAppName("ge");
     }
@@ -84,7 +83,7 @@ function App() {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "c" && (e.ctrlKey || e.metaKey)) {
+      if (e.key === "c" && e.ctrlKey && !e.metaKey) {
         e.preventDefault();
         if (stopped) return;
         if (showConfirm && ctrlCTriggered.current) {
@@ -125,7 +124,7 @@ function App() {
                 {servers.map((s) => (
                   <div key={s.id} className="player-row">
                     <span className="player-label" style={{ cursor: "default" }}>
-                      <span className={`player-dot ${s.active ? "active" : ""}`} />
+                      <span className="player-dot" />
                       <span>{s.name}</span>
                     </span>
                     <span className="server-pid">pid {s.pid}</span>

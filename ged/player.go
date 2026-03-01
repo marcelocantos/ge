@@ -35,9 +35,18 @@ func (d *Daemon) handlePlayer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Extract server preference from extended DeviceInfo frame.
+	// Standard frame: 8-byte header + 18-byte struct = 26 bytes.
+	// Extended frame: 26 bytes + UTF-8 preference string.
+	var preference string
+	if len(deviceInfo) > 26 {
+		preference = string(deviceInfo[26:])
+		deviceInfo = deviceInfo[:26] // strip preference before storing
+	}
+
 	name := r.URL.Query().Get("name")
 	pc := &PlayerConn{Conn: conn, DeviceInfo: deviceInfo}
-	sessionID := d.AddPlayer(pc, name)
+	sessionID := d.AddPlayer(pc, name, preference)
 	defer d.RemovePlayer(sessionID)
 
 	// Forward remaining frames to the server's wire connection for this session.

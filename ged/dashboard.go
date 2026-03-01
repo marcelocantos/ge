@@ -80,8 +80,9 @@ func (d *Daemon) registerDashboard(mux *http.ServeMux) {
 
 	mux.HandleFunc("POST /api/tweaks", func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
+		serverID := r.URL.Query().Get("server")
 		msg := fmt.Sprintf(`{"type":"tweak_set","data":%s}`, string(body))
-		if d.SendTweakToServer(msg) {
+		if d.SendTweakToServer(msg, serverID) {
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(w, `{"ok":true}`)
 		} else {
@@ -91,8 +92,9 @@ func (d *Daemon) registerDashboard(mux *http.ServeMux) {
 
 	mux.HandleFunc("POST /api/tweaks/reset", func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
+		serverID := r.URL.Query().Get("server")
 		msg := fmt.Sprintf(`{"type":"tweak_reset","data":%s}`, string(body))
-		if d.SendTweakToServer(msg) {
+		if d.SendTweakToServer(msg, serverID) {
 			w.Header().Set("Content-Type", "application/json")
 			w.Write(d.GetTweakState())
 		} else {
@@ -118,16 +120,20 @@ func (d *Daemon) registerDashboard(mux *http.ServeMux) {
 				http.Error(w, `{"error":"server not found"}`, 404)
 			}
 		} else {
-			// Stop active server (backward compat)
-			var sc *ServerConn
-			if d.activeServer != "" {
-				sc = d.servers[d.activeServer]
+			// Stop all servers
+			var pids []int
+			for _, sc := range d.servers {
+				if sc.PID > 0 {
+					pids = append(pids, sc.PID)
+				}
 			}
 			d.mu.Unlock()
 
-			if sc != nil && sc.PID > 0 {
-				slog.Info("Stop requested from dashboard", "pid", sc.PID)
-				syscall.Kill(sc.PID, syscall.SIGINT)
+			if len(pids) > 0 {
+				for _, pid := range pids {
+					slog.Info("Stop requested from dashboard", "pid", pid)
+					syscall.Kill(pid, syscall.SIGINT)
+				}
 				w.Header().Set("Content-Type", "application/json")
 				fmt.Fprint(w, `{"ok":true}`)
 			} else {
