@@ -157,9 +157,9 @@ func (d *Daemon) AddServer(sc *ServerConn) {
 	}
 }
 
-// RemoveServer removes a game server. Closes wire connections, sends SessionEnd
-// to affected players, then tries to reassign each session using its preference
-// (falling back to any available server).
+// RemoveServer removes a game server. Closes wire connections and sends
+// SessionEnd to affected players. Players remain unattached (waiting for
+// the dashboard to reassign them) rather than auto-switching to another server.
 func (d *Daemon) RemoveServer(sc *ServerConn) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -170,16 +170,13 @@ func (d *Daemon) RemoveServer(sc *ServerConn) {
 
 	slog.Info("Server disconnected", "id", sc.ID, "name", sc.Name)
 
-	// Collect sessions that belong to this server
-	var affected []*PlayerSession
+	// Close server wire connections and send SessionEnd to affected players.
+	// Leave sessions unattached (ServerID="") so the player shows a waiting
+	// screen. The dashboard or a new AddServer call can reassign them later.
 	for _, sess := range d.sessions {
-		if sess.ServerID == sc.ID {
-			affected = append(affected, sess)
+		if sess.ServerID != sc.ID {
+			continue
 		}
-	}
-
-	// Close server wire connections and send SessionEnd to affected players
-	for _, sess := range affected {
 		if sess.ServerWire != nil {
 			sess.ServerWire.CloseNow()
 			sess.ServerWire = nil
@@ -190,21 +187,6 @@ func (d *Daemon) RemoveServer(sc *ServerConn) {
 	}
 
 	delete(d.servers, sc.ID)
-
-	// Try to reassign affected sessions to another server
-	for _, sess := range affected {
-		target := d.resolveServerPreferenceLocked(sess.Preference)
-		if target == "" {
-			target = d.pickAnyServerLocked()
-		}
-		if target == "" {
-			continue
-		}
-		sess.ServerID = target
-		d.sendServerAssignedLocked(sess.Player.Conn, d.servers[target].Name)
-		d.sendToServerIDLocked(target, fmt.Sprintf(`{"type":"player_attached","session_id":"%s"}`, sess.ID))
-	}
-
 	d.broadcastStateLocked()
 }
 
@@ -778,6 +760,27 @@ func (d *Daemon) sendSessionEndLocked(conn *websocket.Conn) {
 	if err := conn.Write(ctx, websocket.MessageBinary, buf[:]); err != nil {
 		slog.Warn("Failed to send SessionEnd to player", "err", err)
 	}
+}
+
+// startPing spawns a goroutine that sends WebSocket pings every 15 seconds.
+// Returns a cancel function that stops the goroutine.
+func startPing(ctx context.Context, conn *websocket.Conn) context.CancelFunc {
+	ctx, cancel := context.WithCancel(ctx)
+	go func() {
+		ticker := time.NewTicker(15 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				if err := conn.Ping(ctx); err != nil {
+					return
+				}
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return cancel
 }
 
 func removeClient(clients []*wsClient, target *wsClient) []*wsClient {

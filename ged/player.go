@@ -46,6 +46,9 @@ func (d *Daemon) handlePlayer(w http.ResponseWriter, r *http.Request) {
 		deviceInfo = deviceInfo[:deviceInfoFrameSize] // strip preference before storing
 	}
 
+	cancelPing := startPing(ctx, conn)
+	defer cancelPing()
+
 	name := r.URL.Query().Get("name")
 	pc := &PlayerConn{Conn: conn, DeviceInfo: deviceInfo}
 	sessionID := d.AddPlayer(pc, name, preference)

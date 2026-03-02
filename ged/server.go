@@ -63,6 +63,10 @@ func (d *Daemon) handleServer(w http.ResponseWriter, r *http.Request) {
 	// Sideband read loop: text frames carry JSON control messages,
 	// binary frames carry session-tagged JPEG preview data ("s1\0<JPEG>").
 	ctx := r.Context()
+
+	cancelPing := startPing(ctx, conn)
+	defer cancelPing()
+
 	for {
 		mt, data, err := conn.Read(ctx)
 		if err != nil {
@@ -128,6 +132,9 @@ func (d *Daemon) handleServerSessionWire(w http.ResponseWriter, r *http.Request)
 
 	// Read loop: forward binary frames to the session's player
 	ctx := r.Context()
+
+	cancelPing := startPing(ctx, conn)
+	defer cancelPing()
 	close(ready) // signal bridge goroutine just before entering read loop
 	for {
 		mt, data, err := conn.Read(ctx)

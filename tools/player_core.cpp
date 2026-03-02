@@ -867,17 +867,10 @@ ConnectionResult Player::M::connectAndRun() {
     SDL_SetWindowTitle(window, ("ge player \xe2\x80\x94 Waiting for " + host + "...").c_str());
     wire::MessageHeader initHdr{};
     std::vector<char> initPayload;
-    auto sessionWaitStart = SDL_GetTicks();
     bool gotSessionInit = false;
     while (true) {
         if (!wsConn->isOpen()) {
             SPDLOG_WARN("Connection lost waiting for SessionInit");
-            SDL_SetWindowTitle(window, "ge player");
-            return ConnectionResult::Disconnected;
-        }
-        // Timeout: if no SessionInit within 5s, reconnect.
-        if (SDL_GetTicks() - sessionWaitStart > 5000) {
-            SPDLOG_WARN("SessionInit timeout — reconnecting");
             SDL_SetWindowTitle(window, "ge player");
             return ConnectionResult::Disconnected;
         }
@@ -891,7 +884,6 @@ ConnectionResult Player::M::connectAndRun() {
                 std::string assigned(initPayload.begin(), initPayload.end());
                 SPDLOG_INFO("Server assigned: {}", assigned);
                 savePreference(assigned);
-                sessionWaitStart = SDL_GetTicks(); // reset timeout
                 continue;
             }
             if (initHdr.magic == wire::kSessionEndMagic) {
@@ -1356,10 +1348,9 @@ ConnectionResult Player::M::connectAndRun() {
     wireServer.reset();
 
     if (serverSwitched) {
-        // Server switch: reconnect immediately to get a fresh session.
-        // The reconnect path (~200ms) is faster and more reliable than
-        // trying to reuse the existing WebSocket connection, which has
-        // subtle race conditions with stale wire data.
+        // Reconnect to get a clean WebSocket — the WireServer destructor
+        // may have flushed stale wire responses that would confuse the
+        // next server's WireClient.
         SPDLOG_INFO("Server switched — reconnecting");
         backoffMs = 10;
         return ConnectionResult::Disconnected;
@@ -1367,7 +1358,7 @@ ConnectionResult Player::M::connectAndRun() {
 
     return exitResult;
 
-    } // end outer server-switch loop (unused — we reconnect on switch)
+    } // end outer while (wsConn->isOpen()) loop
 
     return ConnectionResult::Disconnected;
 }
