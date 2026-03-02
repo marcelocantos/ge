@@ -1,0 +1,5 @@
+#!/bin/sh
+# Run TLC model checker on a .tla spec.
+# Usage: ./ge/formal/tlc SpecName
+#        ./ge/formal/tlc SpecName.tla
+exec java -XX:+UseParallelGC -cp "$(dirname "$0")/tla2tools.jar" tlc2.TLC -config "$(dirname "$0")/${1%.tla}.cfg" "$(dirname "$0")/${1%.tla}.tla" "${@:2}"
