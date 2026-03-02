@@ -21,6 +21,7 @@
 #include <chrono>
 #include <csignal>
 #include <cstdlib>
+#include <mutex>
 #include <optional>
 #include <queue>
 #include <span>
@@ -447,6 +448,9 @@ struct WireSession::M {
     uint16_t daemonPort = 42069;
     std::string sessionId;
     std::shared_ptr<DaemonSink> daemonSink;  // kept alive; SessionHost owns removal
+
+    // Per-session mip streaming timer (avoids static shared state across threads)
+    std::chrono::steady_clock::time_point lastMipTime = std::chrono::steady_clock::now();
 };
 
 WireSession::WireSession(const std::string& daemonHost, uint16_t daemonPort,
@@ -506,7 +510,10 @@ void WireSession::connect() {
     };
     m->wireClient = std::make_unique<dawn::wire::WireClient>(clientDesc);
 
-    dawnProcSetProcs(&dawn::wire::client::GetProcs());
+    static std::once_flag procFlag;
+    std::call_once(procFlag, [] {
+        dawnProcSetProcs(&dawn::wire::client::GetProcs());
+    });
 
     // Reserve handles
     auto instanceReservation = m->wireClient->ReserveInstance();
@@ -811,15 +818,14 @@ bool WireSession::run(RunConfig config) {
                     const char* e = std::getenv("GE_MIP_DELAY_MS");
                     return (e && e[0]) ? std::atoi(e) : 0;
                 }();
-                static auto lastMipTime = std::chrono::steady_clock::now();
                 auto now = std::chrono::steady_clock::now();
                 auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-                    now - lastMipTime).count();
+                    now - m->lastMipTime).count();
 
                 if (mipDelayMs <= 0 || elapsed >= mipDelayMs) {
                     try {
                         m->serializer->streamNextDeferredMip();
-                        lastMipTime = now;
+                        m->lastMipTime = now;
                     } catch (const std::exception& e) {
                         SPDLOG_WARN("Disconnect during mip streaming: {}", e.what());
                         return true;

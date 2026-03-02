@@ -976,10 +976,11 @@ ConnectionResult Player::M::connectAndRun() {
     // (so the wire-created device can flush VkSurfaceKHR deletion).
     ConnectionResult exitResult = ConnectionResult::Disconnected;
     bool exitLoop = false;
-    bool serverSwitched = false;
+    bool serverSwitched = false;  // directed switch (SessionEnd with target)
+    bool sessionEnded = false;    // server died (SessionEnd without target)
     bool serverSentCleanup = false;  // set when we process UnregisterObject commands
 
-    while (!exitLoop && !serverSwitched) {
+    while (!exitLoop && !serverSwitched && !sessionEnded) {
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
             switch (event.type) {
@@ -1286,10 +1287,11 @@ ConnectionResult Player::M::connectAndRun() {
                     std::string target(payload.begin(), payload.end());
                     SPDLOG_INFO("Server switch directed to: {}", target);
                     savePreference(target);
+                    serverSwitched = true;
                 } else {
-                    SPDLOG_INFO("Server session ended — switching server");
+                    SPDLOG_INFO("Server session ended — waiting for reassignment");
+                    sessionEnded = true;
                 }
-                serverSwitched = true;
                 break;
             } else {
                 SPDLOG_WARN("Unknown message magic: 0x{:08X}", header.magic);
@@ -1348,12 +1350,21 @@ ConnectionResult Player::M::connectAndRun() {
     wireServer.reset();
 
     if (serverSwitched) {
-        // Reconnect to get a clean WebSocket — the WireServer destructor
-        // may have flushed stale wire responses that would confuse the
-        // next server's WireClient.
+        // Directed switch: reconnect to get a clean WebSocket — the
+        // WireServer destructor may have flushed stale wire responses
+        // that would confuse the next server's WireClient.
         SPDLOG_INFO("Server switched — reconnecting");
         backoffMs = 10;
         return ConnectionResult::Disconnected;
+    }
+
+    if (sessionEnded) {
+        // Server died: stay connected to ged so our session persists.
+        // Loop back to wait for SessionInit from a new server.
+        // Stale wire responses from the WireServer destructor are safe —
+        // ged drops them (bridged=false) before the new bridge is up.
+        SPDLOG_INFO("Session ended — staying connected for reassignment");
+        continue;
     }
 
     return exitResult;

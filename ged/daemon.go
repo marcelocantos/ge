@@ -157,9 +157,10 @@ func (d *Daemon) AddServer(sc *ServerConn) {
 	}
 }
 
-// RemoveServer removes a game server. Closes wire connections and sends
-// SessionEnd to affected players. Players remain unattached (waiting for
-// the dashboard to reassign them) rather than auto-switching to another server.
+// RemoveServer removes a game server. Closes wire connections, sends
+// SessionEnd to affected players, and tries to reassign them to remaining
+// servers. If no servers remain, players stay unattached until a new server
+// connects (AddServer assigns unattached sessions) or the dashboard reassigns.
 func (d *Daemon) RemoveServer(sc *ServerConn) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -171,8 +172,6 @@ func (d *Daemon) RemoveServer(sc *ServerConn) {
 	slog.Info("Server disconnected", "id", sc.ID, "name", sc.Name)
 
 	// Close server wire connections and send SessionEnd to affected players.
-	// Leave sessions unattached (ServerID="") so the player shows a waiting
-	// screen. The dashboard or a new AddServer call can reassign them later.
 	for _, sess := range d.sessions {
 		if sess.ServerID != sc.ID {
 			continue
@@ -187,6 +186,24 @@ func (d *Daemon) RemoveServer(sc *ServerConn) {
 	}
 
 	delete(d.servers, sc.ID)
+
+	// Try to reassign unattached sessions to remaining servers.
+	for _, sess := range d.sessions {
+		if sess.ServerID != "" {
+			continue
+		}
+		target := d.resolveServerPreferenceLocked(sess.Preference)
+		if target == "" {
+			target = d.pickAnyServerLocked()
+		}
+		if target == "" {
+			continue
+		}
+		sess.ServerID = target
+		d.sendServerAssignedLocked(sess.Player.Conn, d.servers[target].Name)
+		d.sendToServerIDLocked(target, fmt.Sprintf(`{"type":"player_attached","session_id":"%s"}`, sess.ID))
+	}
+
 	d.broadcastStateLocked()
 }
 
