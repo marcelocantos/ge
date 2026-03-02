@@ -10,6 +10,10 @@
 
 namespace platform {
 
+void activateApp() {
+    // No-op on Android. Only needed on macOS for Cocoa activation.
+}
+
 SDL_WindowFlags windowFlags() {
     return SDL_WINDOW_VULKAN;
 }

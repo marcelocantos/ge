@@ -24,6 +24,6 @@ private:
     std::unique_ptr<M> m;
 };
 
-// Mobile reconnect loop: calls discover() to get a server address, connects,
+// Reconnect loop: calls discover() to get a server address, connects,
 // and loops back to discovery on disconnect. Returns non-zero on fatal error.
 int playerLoop(std::function<ge::ScanResult()> discover, std::string name = "");

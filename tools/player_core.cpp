@@ -1373,7 +1373,7 @@ int playerLoop(std::function<ge::ScanResult()> discover, std::string name) {
         uint16_t port = addr.port ? addr.port : kDefaultPort;
         SPDLOG_INFO("Target: {}:{}", addr.host, port);
 
-        Player player(addr.host, port, kDefaultWidth, kDefaultHeight, false, 0, false, "default", name);
+        Player player(addr.host, port, kDefaultWidth, kDefaultHeight, false, -1, false, "default", name);
         int result = player.run();
         if (result != 0) return result;
 
