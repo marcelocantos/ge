@@ -41,6 +41,9 @@ public:
     // Device pixel ratio (e.g. 3 for 3x retina). Available after connect().
     int pixelRatio() const;
 
+    // Device class (0=unknown, 1=phone, 2=tablet, 3=desktop). Available after connect().
+    uint8_t deviceClass() const;
+
     // Flush wire commands to receiver and process responses.
     void flush();
 

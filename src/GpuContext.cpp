@@ -223,8 +223,8 @@ void GpuContext::present() {
 }
 
 void GpuContext::resize(linalg::vec<int,2> size) {
-    // Reconfigure surface - don't update cached dimensions here,
-    // they'll be updated from the actual texture in currentFrameView()
+    m->width = size.x;
+    m->height = size.y;
     wgpu::SurfaceConfiguration config{
         .device = m->device,
         .format = m->swapChainFormat,

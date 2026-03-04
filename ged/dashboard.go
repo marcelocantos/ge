@@ -207,6 +207,36 @@ func (d *Daemon) registerDashboard(mux *http.ServeMux) {
 		}
 	})
 
+	// WebSocket: H.264 video stream (per-session)
+	mux.HandleFunc("/ws/stream/{sessionID}", func(w http.ResponseWriter, r *http.Request) {
+		sessionID := r.PathValue("sessionID")
+		if sessionID == "" {
+			http.Error(w, "missing session ID", 400)
+			return
+		}
+
+		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
+			InsecureSkipVerify: true,
+		})
+		if err != nil {
+			slog.Error("Stream WebSocket accept failed", "err", err, "session", sessionID)
+			return
+		}
+		defer conn.CloseNow()
+
+		client := &wsClient{conn: conn}
+		d.AddStreamClient(sessionID, client)
+		defer d.RemoveStreamClient(sessionID, client)
+
+		// Block until client disconnects.
+		for {
+			_, _, err := conn.Read(r.Context())
+			if err != nil {
+				return
+			}
+		}
+	})
+
 	// WebSocket: wire (player connection)
 	mux.HandleFunc("/ws/wire", d.handlePlayer)
 

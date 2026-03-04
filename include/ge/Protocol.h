@@ -27,9 +27,12 @@ constexpr uint32_t kStateRequestMagic = 0x47453251;  // "GE2Q" — server → pl
 constexpr uint32_t kStateDataMagic = 0x47453250;      // "GE2P" — player → server: raw DB bytes
 constexpr uint32_t kSqlpipeMsgMagic = 0x47453254;     // "GE2T" — bidirectional sqlpipe messages
 constexpr uint32_t kServerAssignedMagic = 0x4745324E;  // "GE2N" — ged → player: assigned server name
+constexpr uint32_t kVideoStreamMagic  = 0x47453256;   // "GE2V" — player → ged: H.264 NALs
+constexpr uint32_t kStreamStartMagic  = 0x47453257;   // "GE2W" — ged → player: start streaming
+constexpr uint32_t kStreamStopMagic   = 0x47453258;   // "GE2X" — ged → player: stop streaming
 
 // TODO: Consider semver or min/max range for backwards-compatible changes.
-constexpr uint16_t kProtocolVersion = 3;
+constexpr uint16_t kProtocolVersion = 4;
 constexpr size_t kMaxMessageSize = 512 * 1024 * 1024;  // 512MB (initial resource uploads can be large)
 
 // Sent by player after connecting to game server
@@ -39,7 +42,8 @@ struct DeviceInfo {
     uint16_t width;           // Device width in pixels (e.g., 390 for iPhone 14 Pro)
     uint16_t height;          // Device height in pixels (e.g., 844)
     uint16_t pixelRatio;      // Device pixel ratio (e.g., 3 for retina)
-    uint16_t reserved = 0;
+    uint8_t deviceClass = 0;  // 0=unknown, 1=phone, 2=tablet, 3=desktop
+    uint8_t orientation = 0;  // SDL_DisplayOrientation value (0-4)
     uint32_t preferredFormat; // wgpu::TextureFormat value
 };
 

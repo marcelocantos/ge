@@ -57,13 +57,15 @@ ge/SRC = \
 	ge/src/WireTransport.cpp \
 	ge/src/WireSession.cpp \
 	ge/src/SessionHost.cpp \
-	ge/src/WebSocketClient.cpp
+	ge/src/WebSocketClient.cpp \
+	ge/src/VideoEncoder_apple.mm
 
 # Session backend objects (linked by the parent, not part of libge.a)
 ge/SESSION_WIRE_OBJ = $(BUILD_DIR)/ge/src/SessionWire.o
 ge/SESSION_DIRECT_OBJ = $(BUILD_DIR)/ge/src/SessionDirect.o
 
-ge/OBJ = $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(ge/SRC))
+ge/OBJ = $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(filter %.cpp,$(ge/SRC))) \
+         $(patsubst %.mm,$(BUILD_DIR)/%.o,$(filter %.mm,$(ge/SRC)))
 ge/LIB = $(BUILD_DIR)/libge.a
 
 # Texture encoder (used by precompute tools, NOT part of libge.a)
@@ -90,8 +92,10 @@ ge/VENDOR_CPP_SRC = ge/vendor/src/sqlift.cpp ge/vendor/src/sqlpipe.cpp
 ge/VENDOR_CPP_OBJ = $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(ge/VENDOR_CPP_SRC))
 
 # Player tool (standalone binary)
-ge/PLAYER_SRC = ge/tools/player.cpp ge/tools/player_core.cpp ge/tools/player_platform_apple.cpp ge/tools/AudioPlayer.cpp
-ge/PLAYER_OBJ = $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(ge/PLAYER_SRC))
+ge/PLAYER_SRC = ge/tools/player.cpp ge/tools/player_core.cpp ge/tools/player_platform_apple.cpp ge/tools/AudioPlayer.cpp \
+	ge/tools/player_capture_apple.mm
+ge/PLAYER_OBJ = $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(filter %.cpp,$(ge/PLAYER_SRC))) \
+                $(patsubst %.mm,$(BUILD_DIR)/%.o,$(filter %.mm,$(ge/PLAYER_SRC)))
 ge/PLAYER = bin/player
 
 # Framework libraries (Dawn WebGPU)
@@ -116,6 +120,11 @@ ge/DEPGRAPH_DEPS = $(ge/SRC) $(wildcard ge/include/ge/*.h) ge/tools/depgraph.py
 
 # Engine objects
 $(BUILD_DIR)/ge/src/%.o: ge/src/%.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) $(SDL_CFLAGS) -MMD -MP -c $< -o $@
+
+# Engine ObjC++ objects (.mm)
+$(BUILD_DIR)/ge/src/%.o: ge/src/%.mm
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) $(SDL_CFLAGS) -MMD -MP -c $< -o $@
 
@@ -146,6 +155,11 @@ $(ge/TRIANGLE_OBJ): $(ge/TRIANGLE_SRC)
 
 # Player objects
 $(BUILD_DIR)/ge/tools/%.o: ge/tools/%.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) $(SDL_CFLAGS) -MMD -MP -c $< -o $@
+
+# Player ObjC++ objects (.mm)
+$(BUILD_DIR)/ge/tools/%.o: ge/tools/%.mm
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) $(SDL_CFLAGS) -MMD -MP -c $< -o $@
 

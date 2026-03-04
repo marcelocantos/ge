@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/binary"
 	"log/slog"
 	"net/http"
 
@@ -62,6 +63,17 @@ func (d *Daemon) handlePlayer(w http.ResponseWriter, r *http.Request) {
 				slog.Info("Player disconnected", "session", sessionID)
 			}
 			return
+		}
+
+		// Intercept video stream frames (player -> ged).
+		if mt == websocket.MessageBinary && len(data) >= 8 {
+			magic := binary.LittleEndian.Uint32(data[:4])
+			if magic == 0x47453256 { // kVideoStreamMagic
+				if len(data) > 8 {
+					d.HandleVideoFrame(sessionID, data[8:])
+				}
+				continue // don't forward to server
+			}
 		}
 
 		d.ForwardToServerWire(sessionID, mt, data)

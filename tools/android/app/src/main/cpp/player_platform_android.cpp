@@ -42,4 +42,8 @@ void syncDrawableSize(SDL_Window* window, int* w, int* h) {
     SDL_GetWindowSizeInPixels(window, w, h);
 }
 
+uint8_t deviceClass() {
+    return 1; // phone (Android tablet detection is future work)
+}
+
 } // namespace platform

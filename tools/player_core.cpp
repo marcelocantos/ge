@@ -14,6 +14,7 @@
 #include <webgpu/webgpu_cpp.h>
 
 #include <ge/Protocol.h>
+#include <ge/VideoEncoder.h>
 #include <sqlite3.h>
 #include <sqlpipe.h>
 
@@ -635,8 +636,17 @@ void Player::M::initWindow() {
 
     SPDLOG_INFO("SDL3 initialized");
 
-    // Allow all orientations on mobile so the player can rotate freely
-    SDL_SetHint(SDL_HINT_ORIENTATIONS, "Portrait LandscapeLeft LandscapeRight PortraitUpsideDown");
+    // Set allowed orientations based on device class
+    switch (platform::deviceClass()) {
+        case 1: // phone: portrait only
+            SDL_SetHint(SDL_HINT_ORIENTATIONS, "Portrait");
+            break;
+        case 2: // tablet: all orientations
+            SDL_SetHint(SDL_HINT_ORIENTATIONS, "Portrait LandscapeLeft LandscapeRight PortraitUpsideDown");
+            break;
+        default: // desktop: no hint needed
+            break;
+    }
 
     SDL_WindowFlags flags = platform::windowFlags();
     if (maximized) flags |= SDL_WINDOW_MAXIMIZED | SDL_WINDOW_RESIZABLE;
@@ -799,6 +809,9 @@ ConnectionResult Player::M::connectAndRun() {
     deviceInfo.width = static_cast<uint16_t>(pixelWidth);
     deviceInfo.height = static_cast<uint16_t>(pixelHeight);
     deviceInfo.pixelRatio = static_cast<uint16_t>(width > 0 ? pixelWidth / width : 2);
+    deviceInfo.deviceClass = platform::deviceClass();
+    deviceInfo.orientation = static_cast<uint8_t>(
+        SDL_GetCurrentDisplayOrientation(SDL_GetPrimaryDisplay()));
     deviceInfo.preferredFormat = static_cast<uint32_t>(swapChainFormat);
 
     // Create serializer for sending responses back to the server
@@ -965,6 +978,14 @@ ConnectionResult Player::M::connectAndRun() {
 
     AudioPlayer audioPlayer;
     bool firstFrameLogged = false;
+
+    // Video streaming state
+    bool streamingEnabled = false;
+    bool captureLayerEnabled = false;
+    int captureCounter = 0;
+    std::unique_ptr<ge::VideoEncoder> videoEncoder;
+    std::vector<uint8_t> captureBuffer;
+    bool sentParameterSets = false;
 
     std::vector<char> commandBuffer;
     commandBuffer.reserve(64 * 1024);
@@ -1280,8 +1301,86 @@ ConnectionResult Player::M::connectAndRun() {
                     SPDLOG_INFO("First frame rendered — streaming video");
                     firstFrameLogged = true;
                 }
+
+                // Video capture for streaming (every 6th frame when enabled)
+                if (streamingEnabled && platform::captureReady() && ++captureCounter % 6 == 0) {
+                    int capW = pixelWidth;
+                    int capH = pixelHeight;
+                    // Scale down to ~480p for preview stream
+                    constexpr int TARGET_HEIGHT = 480;
+                    if (capH > TARGET_HEIGHT) {
+                        float scale = float(TARGET_HEIGHT) / capH;
+                        capW = int(capW * scale) & ~1; // even width for H.264
+                        capH = TARGET_HEIGHT;
+                    }
+                    capW = capW & ~1; // ensure even width
+                    size_t capBytesPerRow = capW * 4;
+                    captureBuffer.resize(capBytesPerRow * capH);
+
+                    if (platform::captureFrame(captureBuffer.data(), capW, capH, capBytesPerRow)) {
+                        if (!videoEncoder) {
+                            sentParameterSets = false;
+                            videoEncoder = std::make_unique<ge::VideoEncoder>(capW, capH, 10,
+                                [&](ge::VideoEncoder::NALUnit nal) {
+                                    // Wire format: [1-byte flags] [optional SPS/PPS] [NAL data]
+                                    // flags: bit 0 = keyframe, bit 1 = has parameter sets
+                                    uint8_t flags = 0;
+                                    if (nal.isKeyframe) flags |= 0x01;
+
+                                    bool includeParams = !sentParameterSets && !videoEncoder->sps().empty();
+                                    if (includeParams) flags |= 0x02;
+
+                                    std::vector<char> msg;
+                                    msg.reserve(1 + (includeParams ? 4 + videoEncoder->sps().size() + videoEncoder->pps().size() : 0) + nal.size);
+                                    msg.push_back(static_cast<char>(flags));
+
+                                    if (includeParams) {
+                                        auto& sps = videoEncoder->sps();
+                                        auto& pps = videoEncoder->pps();
+                                        uint16_t spsLen = static_cast<uint16_t>(sps.size());
+                                        uint16_t ppsLen = static_cast<uint16_t>(pps.size());
+                                        msg.push_back(static_cast<char>(spsLen & 0xFF));
+                                        msg.push_back(static_cast<char>((spsLen >> 8) & 0xFF));
+                                        msg.insert(msg.end(), reinterpret_cast<const char*>(sps.data()),
+                                                   reinterpret_cast<const char*>(sps.data() + sps.size()));
+                                        msg.push_back(static_cast<char>(ppsLen & 0xFF));
+                                        msg.push_back(static_cast<char>((ppsLen >> 8) & 0xFF));
+                                        msg.insert(msg.end(), reinterpret_cast<const char*>(pps.data()),
+                                                   reinterpret_cast<const char*>(pps.data() + pps.size()));
+                                        sentParameterSets = true;
+                                    }
+
+                                    msg.insert(msg.end(), reinterpret_cast<const char*>(nal.data),
+                                               reinterpret_cast<const char*>(nal.data + nal.size));
+
+                                    try {
+                                        serializer->sendMessage(wire::kVideoStreamMagic, msg.data(), msg.size());
+                                    } catch (const std::exception&) {
+                                        SPDLOG_WARN("Failed to send video NAL");
+                                    }
+                                });
+                            SPDLOG_INFO("Video encoder created: {}x{} @ 10fps", capW, capH);
+                        }
+                        videoEncoder->encode(captureBuffer.data(), capBytesPerRow);
+                    }
+                }
+
                 serializer->sendMessage(wire::kFrameReadyMagic);
                 break; // yield to SDL event polling
+            } else if (header.magic == wire::kStreamStartMagic) {
+                SPDLOG_INFO("Stream start requested");
+                streamingEnabled = true;
+                if (!captureLayerEnabled) {
+                    platform::enableCapture();
+                    captureLayerEnabled = true;
+                }
+            } else if (header.magic == wire::kStreamStopMagic) {
+                SPDLOG_INFO("Stream stop requested");
+                streamingEnabled = false;
+                if (videoEncoder) {
+                    videoEncoder->flush();
+                    videoEncoder.reset();
+                }
             } else if (header.magic == wire::kSessionEndMagic) {
                 if (!payload.empty()) {
                     std::string target(payload.begin(), payload.end());

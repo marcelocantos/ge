@@ -2,6 +2,7 @@
 // Creates a Metal-backed WebGPU surface via SDL3.
 
 #include "player_platform.h"
+#include "player_capture_apple.h"
 
 #include <SDL3/SDL_metal.h>
 #include <QuartzCore/CAMetalLayer.h>
@@ -101,6 +102,32 @@ void syncDrawableSize(SDL_Window* window, int* w, int* h) {
 
     *w = pw;
     *h = ph;
+}
+
+SDL_MetalView metalView() {
+    return g_metalView;
+}
+
+void enableCapture() {
+    capture::enableCapture(g_metalView);
+}
+
+bool captureFrame(uint8_t* dst, int w, int h, size_t bytesPerRow) {
+    return capture::readLastFrame(dst, w, h, bytesPerRow);
+}
+
+bool captureReady() {
+    return capture::hasDrawable();
+}
+
+uint8_t deviceClass() {
+#if TARGET_OS_IPHONE
+    if ([[UIDevice currentDevice] userInterfaceIdiom] == UIUserInterfaceIdiomPad)
+        return 2; // tablet
+    return 1; // phone
+#else
+    return 3; // desktop
+#endif
 }
 
 } // namespace platform

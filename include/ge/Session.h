@@ -43,6 +43,7 @@ public:
     void connect();
     GpuContext& gpu();
     int pixelRatio() const;
+    uint8_t deviceClass() const;
     void flush();
 
     // Render loop configuration.

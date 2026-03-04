@@ -8,8 +8,6 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-
-	"github.com/grandcat/zeroconf"
 )
 
 var version = "dev"
@@ -44,16 +42,6 @@ func main() {
 	// Set up HTTP routes
 	mux := http.NewServeMux()
 	d.registerDashboard(mux)
-
-	// mDNS advertisement
-	hostname, _ := os.Hostname()
-	mdns, err := zeroconf.Register(hostname, "_ge._tcp", "local.", *port, nil, nil)
-	if err != nil {
-		slog.Warn("mDNS registration failed", "err", err)
-	} else {
-		defer mdns.Shutdown()
-		slog.Info("mDNS registered", "service", "_ge._tcp", "port", *port)
-	}
 
 	// Handle signals
 	sigCh := make(chan os.Signal, 1)

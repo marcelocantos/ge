@@ -18,7 +18,7 @@ import (
 )
 
 // protocolVersion must match wire::kProtocolVersion in Protocol.h.
-const protocolVersion = 3
+const protocolVersion = 4
 
 func contextWithTimeout(d time.Duration) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), d)
@@ -73,6 +73,10 @@ type Daemon struct {
 	prevClients []*wsClient     // /ws/preview subscribers
 	tweakState  json.RawMessage // cached tweak JSON from server
 
+	// Video stream state
+	streamMuxers  map[string]*StreamMuxer // sessionID -> muxer
+	streamClients map[string][]*wsClient  // sessionID -> browser stream clients
+
 	// Network
 	lanIP      string
 	qrURL      string
@@ -99,9 +103,11 @@ func NewDaemon(port int, noOpen bool) *Daemon {
 		qrURL:       fmt.Sprintf("ge-remote://%s:%d", ip, port),
 		port:        port,
 		noOpen:      noOpen,
-		servers:     make(map[string]*ServerConn),
-		sessions:    make(map[string]*PlayerSession),
-		dashBuildID: readDashBuildID(),
+		servers:       make(map[string]*ServerConn),
+		sessions:      make(map[string]*PlayerSession),
+		streamMuxers:  make(map[string]*StreamMuxer),
+		streamClients: make(map[string][]*wsClient),
+		dashBuildID:   readDashBuildID(),
 	}
 }
 
@@ -313,6 +319,11 @@ func (d *Daemon) RemovePlayer(sessionID string) {
 	}
 
 	delete(d.sessions, sessionID)
+
+	// Clean up stream state for this session.
+	delete(d.streamMuxers, sessionID)
+	delete(d.streamClients, sessionID)
+
 	slog.Info("Player disconnected", "session", sessionID)
 
 	// Notify the session's server
@@ -798,6 +809,160 @@ func startPing(ctx context.Context, conn *websocket.Conn) context.CancelFunc {
 		}
 	}()
 	return cancel
+}
+
+// HandleVideoFrame processes an H.264 NAL frame from a player.
+// Frame format: [1-byte flags][optional SPS/PPS][NAL data]
+// Flags bit 0: keyframe, bit 1: has parameter sets.
+func (d *Daemon) HandleVideoFrame(sessionID string, payload []byte) {
+	if len(payload) < 1 {
+		return
+	}
+
+	flags := payload[0]
+	data := payload[1:]
+	hasParams := flags&0x02 != 0
+	isKeyframe := flags&0x01 != 0
+
+	d.mu.Lock()
+	muxer, ok := d.streamMuxers[sessionID]
+	if !ok {
+		muxer = NewStreamMuxer(10) // 10 fps capture rate
+		d.streamMuxers[sessionID] = muxer
+	}
+	clients := d.streamClients[sessionID]
+	d.mu.Unlock()
+
+	if len(clients) == 0 {
+		return // no viewers, skip processing
+	}
+
+	if hasParams {
+		// Parse SPS/PPS from frame.
+		// Layout: [2-byte spsLen][sps][2-byte ppsLen][pps][NAL data]
+		if len(data) < 4 {
+			return
+		}
+		spsLen := int(binary.LittleEndian.Uint16(data[0:2]))
+		if len(data) < 2+spsLen+2 {
+			return
+		}
+		sps := data[2 : 2+spsLen]
+		ppsLen := int(binary.LittleEndian.Uint16(data[2+spsLen : 4+spsLen]))
+		if len(data) < 4+spsLen+ppsLen {
+			return
+		}
+		pps := data[4+spsLen : 4+spsLen+ppsLen]
+		nalData := data[4+spsLen+ppsLen:]
+
+		if err := muxer.SetParameterSets(sps, pps); err != nil {
+			slog.Error("Stream: failed to set parameter sets", "err", err, "session", sessionID)
+			return
+		}
+
+		// Send init segment to all connected stream clients.
+		if initSeg := muxer.InitSegment(); initSeg != nil {
+			d.sendToStreamClients(sessionID, initSeg)
+		}
+
+		// Also send the media segment for this first keyframe.
+		if len(nalData) > 0 {
+			if seg := muxer.MediaSegment(nalData, isKeyframe); seg != nil {
+				d.sendToStreamClients(sessionID, seg)
+			}
+		}
+	} else {
+		if seg := muxer.MediaSegment(data, isKeyframe); seg != nil {
+			d.sendToStreamClients(sessionID, seg)
+		}
+	}
+}
+
+// AddStreamClient adds a browser stream viewer for a session.
+func (d *Daemon) AddStreamClient(sessionID string, c *wsClient) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	d.streamClients[sessionID] = append(d.streamClients[sessionID], c)
+
+	// Send init segment if available.
+	if muxer, ok := d.streamMuxers[sessionID]; ok {
+		if initSeg := muxer.InitSegment(); initSeg != nil {
+			c.mu.Lock()
+			ctx, cancel := contextWithTimeout(5 * time.Second)
+			_ = c.conn.Write(ctx, websocket.MessageBinary, initSeg)
+			cancel()
+			c.mu.Unlock()
+		}
+	}
+
+	// If this is the first client, tell the player to start streaming.
+	if len(d.streamClients[sessionID]) == 1 {
+		d.sendStreamControlLocked(sessionID, 0x47453257) // kStreamStartMagic
+	}
+
+	slog.Info("Stream client connected", "session", sessionID, "clients", len(d.streamClients[sessionID]))
+}
+
+// RemoveStreamClient removes a browser stream viewer.
+func (d *Daemon) RemoveStreamClient(sessionID string, c *wsClient) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	clients := d.streamClients[sessionID]
+	for i, cl := range clients {
+		if cl == c {
+			d.streamClients[sessionID] = append(clients[:i], clients[i+1:]...)
+			break
+		}
+	}
+
+	remaining := len(d.streamClients[sessionID])
+	if remaining == 0 {
+		delete(d.streamClients, sessionID)
+		d.sendStreamControlLocked(sessionID, 0x47453258) // kStreamStopMagic
+		delete(d.streamMuxers, sessionID)
+	}
+
+	slog.Info("Stream client disconnected", "session", sessionID, "remaining", remaining)
+}
+
+// sendToStreamClients sends binary data to all stream viewers of a session.
+func (d *Daemon) sendToStreamClients(sessionID string, data []byte) {
+	d.mu.Lock()
+	clients := d.streamClients[sessionID]
+	alive := clients[:0]
+	for _, c := range clients {
+		c.mu.Lock()
+		ctx, cancel := contextWithTimeout(time.Second)
+		err := c.conn.Write(ctx, websocket.MessageBinary, data)
+		cancel()
+		c.mu.Unlock()
+		if err == nil {
+			alive = append(alive, c)
+		}
+	}
+	d.streamClients[sessionID] = alive
+	d.mu.Unlock()
+}
+
+// sendStreamControlLocked sends a stream control message to the player.
+// Must be called with d.mu held.
+func (d *Daemon) sendStreamControlLocked(sessionID string, magic uint32) {
+	sess, ok := d.sessions[sessionID]
+	if !ok || sess.Player == nil {
+		return
+	}
+
+	var buf [8]byte
+	binary.LittleEndian.PutUint32(buf[0:4], magic)
+	binary.LittleEndian.PutUint32(buf[4:8], 0) // length = 0
+
+	ctx, cancel := contextWithTimeout(2 * time.Second)
+	defer cancel()
+	if err := sess.Player.Conn.Write(ctx, websocket.MessageBinary, buf[:]); err != nil {
+		slog.Warn("Failed to send stream control to player", "magic", fmt.Sprintf("0x%08X", magic), "err", err)
+	}
 }
 
 func removeClient(clients []*wsClient, target *wsClient) []*wsClient {

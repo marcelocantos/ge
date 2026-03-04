@@ -23,4 +23,19 @@ void activateApp();
 // Returns the resulting drawable size.
 void syncDrawableSize(SDL_Window* window, int* w, int* h);
 
+// Returns the Metal view created during createSurface (Apple only, nullptr on Android).
+SDL_MetalView metalView();
+
+// Enable video capture on the Metal layer (Apple only, no-op on Android).
+void enableCapture();
+
+// Read the last presented frame's pixels. Returns false if unavailable.
+bool captureFrame(uint8_t* dst, int w, int h, size_t bytesPerRow);
+
+// Returns true if a drawable is available for capture.
+bool captureReady();
+
+// Returns device class: 1=phone, 2=tablet, 3=desktop.
+uint8_t deviceClass();
+
 } // namespace platform

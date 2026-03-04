@@ -440,6 +440,7 @@ struct WireSession::M {
     std::function<void(const SDL_Event&)> onEvent;
     std::function<void(std::span<const uint8_t>)> onMessage;
     int pixelRatio = 1;
+    uint8_t deviceClass = 0;
     bool connected = false;
     Audio audio;
 
@@ -451,6 +452,31 @@ struct WireSession::M {
 
     // Per-session mip streaming timer (avoids static shared state across threads)
     std::chrono::steady_clock::time_point lastMipTime = std::chrono::steady_clock::now();
+
+    // Sideband helpers for preview frames and accelerometer data.
+    // The sideband WebSocket is shared with DaemonSink (log forwarding);
+    // these helpers add session routing prefixes expected by ged.
+    void sendSidebandBinary(const void* data, size_t len) {
+        auto conn = daemonSink ? daemonSink->connection() : nullptr;
+        if (!conn || !conn->isOpen()) return;
+        // Prefix: "sessionId\0" + payload (ged server.go:80-91)
+        std::vector<char> frame(sessionId.size() + 1 + len);
+        std::memcpy(frame.data(), sessionId.data(), sessionId.size());
+        frame[sessionId.size()] = '\0';
+        std::memcpy(frame.data() + sessionId.size() + 1, data, len);
+        try { conn->sendBinary(frame.data(), frame.size()); } catch (...) {}
+    }
+
+    void sendSidebandText(const std::string& json) {
+        auto conn = daemonSink ? daemonSink->connection() : nullptr;
+        if (!conn || !conn->isOpen()) return;
+        try { conn->sendText(json); } catch (...) {}
+    }
+
+    bool isSidebandOpen() const {
+        auto conn = daemonSink ? daemonSink->connection() : nullptr;
+        return conn && conn->isOpen();
+    }
 };
 
 WireSession::WireSession(const std::string& daemonHost, uint16_t daemonPort,
@@ -499,10 +525,12 @@ void WireSession::connect() {
         throw std::runtime_error("Protocol version mismatch");
     }
 
-    SPDLOG_INFO("Player: {}x{} @ {}x, format={}",
+    SPDLOG_INFO("Player: {}x{} @ {}x, format={}, deviceClass={}, orientation={}",
                 deviceInfo.width, deviceInfo.height,
-                deviceInfo.pixelRatio, deviceInfo.preferredFormat);
+                deviceInfo.pixelRatio, deviceInfo.preferredFormat,
+                deviceInfo.deviceClass, deviceInfo.orientation);
     m->pixelRatio = std::max(1, (int)deviceInfo.pixelRatio);
+    m->deviceClass = deviceInfo.deviceClass;
 
     // Create wire client
     dawn::wire::WireClientDescriptor clientDesc{
@@ -665,6 +693,11 @@ int WireSession::pixelRatio() const {
     return m->pixelRatio;
 }
 
+uint8_t WireSession::deviceClass() const {
+    if (!m->connected) const_cast<WireSession*>(this)->connect();
+    return m->deviceClass;
+}
+
 Audio& WireSession::audio() {
     return m->audio;
 }
@@ -680,14 +713,51 @@ bool WireSession::run(RunConfig config) {
 
     m->onMessage = std::move(config.onMessage);
 
+    auto lastAccelSend = std::chrono::steady_clock::now();
+    int orientation = 0;
+
     m->onEvent = [this,
                   userEvent = std::move(config.onEvent),
-                  userResize = std::move(config.onResize)](const SDL_Event& e) mutable {
+                  userResize = std::move(config.onResize),
+                  lastAccelSend, orientation](const SDL_Event& e) mutable {
         if (e.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED) {
             m->gfx->resize({e.window.data1, e.window.data2});
             if (userResize) userResize(e.window.data1, e.window.data2);
         } else {
             if (userEvent) userEvent(e);
+            // Forward display orientation to dashboard preview
+            if (e.type == SDL_EVENT_DISPLAY_ORIENTATION) {
+                // Map SDL orientation enum to 0/1/2/3
+                int mapped = 0;
+                switch (e.display.data1) {
+                    case 1: mapped = 0; break; // portrait
+                    case 2: mapped = 2; break; // portrait flipped
+                    case 3: mapped = 1; break; // landscape
+                    case 4: mapped = 3; break; // landscape flipped
+                }
+                if (mapped != orientation) {
+                    orientation = mapped;
+                    char buf[80];
+                    snprintf(buf, sizeof(buf),
+                        R"({"type":"orient","session":"%s","o":%d})",
+                        m->sessionId.c_str(), orientation);
+                    m->sendSidebandText(std::string(buf));
+                }
+            }
+            // Forward accelerometer data to dashboard preview (~20 Hz)
+            if (e.type == SDL_EVENT_SENSOR_UPDATE) {
+                auto now = std::chrono::steady_clock::now();
+                if (now - lastAccelSend > std::chrono::milliseconds(50)) {
+                    lastAccelSend = now;
+                    char buf[160];
+                    snprintf(buf, sizeof(buf),
+                        R"({"type":"accel","session":"%s","data":{"x":%.4f,"y":%.4f,"z":%.4f,"o":%d}})",
+                        m->sessionId.c_str(),
+                        e.sensor.data[0], e.sensor.data[1], e.sensor.data[2],
+                        orientation);
+                    m->sendSidebandText(std::string(buf));
+                }
+            }
         }
     };
 
@@ -773,6 +843,8 @@ bool WireSession::run(RunConfig config) {
     };
 
     SPDLOG_INFO("Entering render loop...");
+
+    int frameCount = 0;
 
     // Credit-based double buffering: frameReadyCount starts at 2, so the first
     // two frames send immediately (priming the pipeline). After that, each frame
@@ -867,6 +939,7 @@ bool WireSession::run(RunConfig config) {
             }
 
             m->serializer->sendFrameEnd();
+            frameCount++;
         } catch (const std::exception& e) {
             SPDLOG_WARN("Player disconnected: {}", e.what());
             return true;

@@ -28,6 +28,11 @@ public:
         conn_ = std::move(conn);
     }
 
+    std::shared_ptr<ge::WsConnection> connection() const {
+        std::lock_guard lock(const_cast<std::mutex&>(this->mutex_));
+        return conn_;
+    }
+
 protected:
     void sink_it_(const spdlog::details::log_msg& msg) override {
         if (!conn_ || !conn_->isOpen()) return;

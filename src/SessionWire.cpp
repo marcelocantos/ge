@@ -25,6 +25,7 @@ Audio& Session::audio() { return m->wire.audio(); }
 void Session::connect() { m->wire.connect(); }
 GpuContext& Session::gpu() { return m->wire.gpu(); }
 int Session::pixelRatio() const { return m->wire.pixelRatio(); }
+uint8_t Session::deviceClass() const { return m->wire.deviceClass(); }
 void Session::flush() { m->wire.flush(); }
 
 bool Session::run(RunConfig config) {

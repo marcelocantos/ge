@@ -37,6 +37,7 @@ interface PhonePreviewProps {
 function PhonePreview({ selectedSession }: PhonePreviewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const wsRef = useRef<WebSocket | null>(null);
+  const connectStreamRef = useRef<((sid: string | null) => void) | null>(null);
 
   // Send session selection whenever it changes
   useEffect(() => {
@@ -44,6 +45,8 @@ function PhonePreview({ selectedSession }: PhonePreviewProps) {
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: "select", session: selectedSession }));
     }
+    // Update stream connection for new session
+    connectStreamRef.current?.(selectedSession);
   }, [selectedSession]);
 
   useEffect(() => {
@@ -71,26 +74,34 @@ function PhonePreview({ selectedSession }: PhonePreviewProps) {
     scene.add(dirLight);
 
     // --- Phone model ---
-    // Outer group: orientation (Z rotation in world space)
-    // Inner group: tilt (pitch/roll in phone-local space)
-    // This prevents Euler angle coupling between tilt and orientation.
     const orientGroup = new THREE.Group();
     scene.add(orientGroup);
     const tiltGroup = new THREE.Group();
     orientGroup.add(tiltGroup);
 
-    // Screen canvas + texture (persistent across rebuilds)
-    const screenCanvas = document.createElement("canvas");
-    screenCanvas.width = 540;
-    screenCanvas.height = 1170;
-    const screenCtx = screenCanvas.getContext("2d")!;
-    screenCtx.fillStyle = "#111";
-    screenCtx.fillRect(0, 0, screenCanvas.width, screenCanvas.height);
+    // --- Video element for H.264 stream (MSE) ---
+    const video = document.createElement("video");
+    video.muted = true;
+    video.autoplay = true;
+    video.playsInline = true;
+    video.style.display = "none";
+    document.body.appendChild(video);
 
-    const screenTexture = new THREE.CanvasTexture(screenCanvas);
+    const screenTexture = new THREE.VideoTexture(video);
     screenTexture.colorSpace = THREE.SRGBColorSpace;
     screenTexture.minFilter = THREE.LinearFilter;
     screenTexture.magFilter = THREE.LinearFilter;
+
+    // Fallback canvas for when no video is playing
+    const fallbackCanvas = document.createElement("canvas");
+    fallbackCanvas.width = 540;
+    fallbackCanvas.height = 1170;
+    const fallbackCtx = fallbackCanvas.getContext("2d")!;
+    fallbackCtx.fillStyle = "#111";
+    fallbackCtx.fillRect(0, 0, fallbackCanvas.width, fallbackCanvas.height);
+
+    const fallbackTexture = new THREE.CanvasTexture(fallbackCanvas);
+    fallbackTexture.colorSpace = THREE.SRGBColorSpace;
 
     // Materials (reused)
     const bodyMat = new THREE.MeshStandardMaterial({
@@ -98,7 +109,9 @@ function PhonePreview({ selectedSession }: PhonePreviewProps) {
       metalness: 0.3,
       roughness: 0.7,
     });
-    const screenMat = new THREE.MeshBasicMaterial({ map: screenTexture });
+    const screenMat = new THREE.MeshBasicMaterial({ map: fallbackTexture });
+
+    let videoPlaying = false;
 
     // Track current meshes/geometries for disposal on rebuild
     let bodyMesh: THREE.Mesh | null = null;
@@ -109,14 +122,12 @@ function PhonePreview({ selectedSession }: PhonePreviewProps) {
     let phoneH = DEFAULT_H;
 
     function buildPhone(w: number, h: number) {
-      // Remove old meshes
       if (bodyMesh) { tiltGroup.remove(bodyMesh); bodyGeo!.dispose(); }
       if (screenMesh) { tiltGroup.remove(screenMesh); screenGeo!.dispose(); }
 
       phoneW = w;
       phoneH = h;
 
-      // Body: extruded rounded rectangle
       const bodyShape = createRoundedRectShape(w, h, CORNER_R);
       bodyGeo = new THREE.ExtrudeGeometry(bodyShape, {
         depth: PHONE_D,
@@ -129,7 +140,6 @@ function PhonePreview({ selectedSession }: PhonePreviewProps) {
       bodyMesh = new THREE.Mesh(bodyGeo, bodyMat);
       tiltGroup.add(bodyMesh);
 
-      // Screen: plane inset on front face
       const screenW = w - BEZEL * 2;
       const screenH = h - BEZEL * 2;
       screenGeo = new THREE.PlaneGeometry(screenW, screenH);
@@ -137,13 +147,6 @@ function PhonePreview({ selectedSession }: PhonePreviewProps) {
       screenMesh.position.z = (PHONE_D + 0.08) / 2 + 0.01;
       tiltGroup.add(screenMesh);
 
-      // Update canvas aspect to match device and force texture re-upload
-      screenCanvas.width = Math.round(screenW * 200);
-      screenCanvas.height = Math.round(screenH * 200);
-      screenCtx.fillStyle = "#111";
-      screenCtx.fillRect(0, 0, screenCanvas.width, screenCanvas.height);
-      screenTexture.dispose();  // force WebGL texture re-creation at new size
-      screenTexture.needsUpdate = true;
       fitCamera();
     }
 
@@ -155,7 +158,6 @@ function PhonePreview({ selectedSession }: PhonePreviewProps) {
     const Z_ROT = [0, Math.PI / 2, Math.PI, -Math.PI / 2];
     let targetCamZ = 10;
 
-    // Position camera so the model's width is flush with the viewport edges.
     function fitCamera() {
       const isLandscape = orientation === 1 || orientation === 3;
       const hw = (isLandscape ? phoneH : phoneW) * SCALE;
@@ -190,28 +192,130 @@ function PhonePreview({ selectedSession }: PhonePreviewProps) {
       const dt = Math.min((now - lastTime) / 1000, 0.1);
       lastTime = now;
 
-      // Exponential damping toward target orientation
       const factor = 1 - Math.exp(-8 * dt);
 
-      // Shortest-arc interpolation for Z rotation
       let zDiff = targetZRot - currentZRot;
       if (zDiff > Math.PI) zDiff -= 2 * Math.PI;
       if (zDiff < -Math.PI) zDiff += 2 * Math.PI;
       currentZRot += zDiff * factor;
 
       orientGroup.rotation.z = currentZRot;
-
-      // Smooth camera zoom to fit current orientation
       camera.position.z += (targetCamZ - camera.position.z) * factor;
 
       renderer.render(scene, camera);
     }
     animate();
 
-    // --- WebSocket for preview data ---
+    // --- MSE state for H.264 video ---
+    let mediaSource: MediaSource | null = null;
+    let sourceBuffer: SourceBuffer | null = null;
+    let pendingBuffers: ArrayBuffer[] = [];
+
+    function resetMSE() {
+      pendingBuffers = [];
+      sourceBuffer = null;
+      if (mediaSource && mediaSource.readyState === "open") {
+        try { mediaSource.endOfStream(); } catch { /* ignore */ }
+      }
+      mediaSource = new MediaSource();
+      video.src = URL.createObjectURL(mediaSource);
+
+      mediaSource.addEventListener("sourceopen", () => {
+        try {
+          sourceBuffer = mediaSource!.addSourceBuffer('video/mp4; codecs="avc1.42E01E"');
+          sourceBuffer.mode = "segments";
+
+          sourceBuffer.addEventListener("updateend", () => {
+            // Trim buffer to last 3 seconds
+            if (sourceBuffer!.buffered.length > 0) {
+              const end = sourceBuffer!.buffered.end(sourceBuffer!.buffered.length - 1);
+              if (end > 3 && !sourceBuffer!.updating) {
+                sourceBuffer!.remove(0, end - 3);
+                return;
+              }
+            }
+            // Flush pending buffers
+            if (pendingBuffers.length > 0 && !sourceBuffer!.updating) {
+              sourceBuffer!.appendBuffer(pendingBuffers.shift()!);
+            }
+          });
+
+          // Flush any segments that arrived before sourceopen
+          if (pendingBuffers.length > 0) {
+            sourceBuffer.appendBuffer(pendingBuffers.shift()!);
+          }
+        } catch (e) {
+          console.error("MSE addSourceBuffer failed:", e);
+        }
+      });
+    }
+
+    function appendSegment(data: ArrayBuffer) {
+      if (sourceBuffer && !sourceBuffer.updating) {
+        try {
+          sourceBuffer.appendBuffer(data);
+        } catch {
+          pendingBuffers.push(data);
+        }
+      } else {
+        pendingBuffers.push(data);
+      }
+
+      // Switch to video texture once we start receiving data
+      if (!videoPlaying) {
+        videoPlaying = true;
+        screenMat.map = screenTexture;
+        screenMat.needsUpdate = true;
+      }
+    }
+
+    // --- Stream WebSocket (H.264 video per session) ---
+    let streamWs: WebSocket | null = null;
+    let streamReconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let currentStreamSession: string | null = null;
+    let disposed = false;
+
+    function connectStream(sessionId: string | null) {
+      // Clean up previous
+      if (streamReconnectTimer) { clearTimeout(streamReconnectTimer); streamReconnectTimer = null; }
+      if (streamWs) { streamWs.onclose = null; streamWs.close(); streamWs = null; }
+      currentStreamSession = sessionId;
+
+      if (!sessionId || disposed) {
+        // Revert to fallback texture
+        videoPlaying = false;
+        screenMat.map = fallbackTexture;
+        screenMat.needsUpdate = true;
+        return;
+      }
+
+      resetMSE();
+
+      const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+      const wsUrl = `${protocol}//${window.location.host}/ws/stream/${sessionId}`;
+      streamWs = new WebSocket(wsUrl);
+      streamWs.binaryType = "arraybuffer";
+
+      streamWs.onmessage = (event) => {
+        if (event.data instanceof ArrayBuffer) {
+          appendSegment(event.data);
+        }
+      };
+
+      streamWs.onclose = () => {
+        if (!disposed && sessionId === currentStreamSession) {
+          streamReconnectTimer = setTimeout(() => connectStream(sessionId), RECONNECT_DELAY_MS);
+        }
+      };
+
+      streamWs.onerror = () => {};
+    }
+
+    connectStreamRef.current = connectStream;
+
+    // --- Preview WebSocket (text messages: device info, orientation) ---
     let ws: WebSocket | null = null;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-    let disposed = false;
 
     function connect() {
       if (disposed) return;
@@ -238,16 +342,12 @@ function PhonePreview({ selectedSession }: PhonePreviewProps) {
 
       ws.onmessage = (event) => {
         if (typeof event.data === "string") {
-          // JSON text message — device info or orientation event
           try {
             const msg = JSON.parse(event.data);
             if (msg.type === "device") {
-              // Device pixel dimensions → phone model aspect ratio.
-              // Portrait dimensions (shorter side = width).
               const pw = Math.min(msg.w, msg.h);
               const ph = Math.max(msg.w, msg.h);
               const aspect = pw / ph;
-              // Scale to fit the same height as the default model
               buildPhone(DEFAULT_H * aspect, DEFAULT_H);
             }
             if (msg.type === "orient" && msg.o !== undefined) {
@@ -268,44 +368,24 @@ function PhonePreview({ selectedSession }: PhonePreviewProps) {
           } catch {
             // ignore
           }
-        } else {
-          // Binary message: JPEG frame
-          const blob = new Blob([event.data], { type: "image/jpeg" });
-          createImageBitmap(blob).then((bmp) => {
-            const isLandscape = orientation === 1 || orientation === 3;
-            screenCtx.clearRect(0, 0, screenCanvas.width, screenCanvas.height);
-            if (isLandscape) {
-              const angle = Z_ROT[orientation];
-              screenCtx.save();
-              screenCtx.translate(screenCanvas.width / 2, screenCanvas.height / 2);
-              screenCtx.rotate(angle);
-              screenCtx.drawImage(bmp,
-                -screenCanvas.height / 2, -screenCanvas.width / 2,
-                screenCanvas.height, screenCanvas.width);
-              screenCtx.restore();
-            } else if (orientation === 2) {
-              screenCtx.save();
-              screenCtx.translate(screenCanvas.width / 2, screenCanvas.height / 2);
-              screenCtx.rotate(Z_ROT[2]);
-              screenCtx.drawImage(bmp,
-                -screenCanvas.width / 2, -screenCanvas.height / 2,
-                screenCanvas.width, screenCanvas.height);
-              screenCtx.restore();
-            } else {
-              screenCtx.drawImage(bmp, 0, 0, screenCanvas.width, screenCanvas.height);
-            }
-            screenTexture.needsUpdate = true;
-            bmp.close();
-          });
         }
+        // Binary messages no longer expected on /ws/preview
       };
     }
 
     connect();
 
+    // Connect stream if session already selected
+    if (selectedSession) {
+      connectStream(selectedSession);
+    }
+
     // --- Cleanup ---
     return () => {
       disposed = true;
+      connectStreamRef.current = null;
+      if (streamReconnectTimer) clearTimeout(streamReconnectTimer);
+      if (streamWs) { streamWs.onclose = null; streamWs.close(); }
       if (reconnectTimer) clearTimeout(reconnectTimer);
       if (ws) {
         ws.onclose = null;
@@ -320,6 +400,8 @@ function PhonePreview({ selectedSession }: PhonePreviewProps) {
       if (screenGeo) screenGeo.dispose();
       screenMat.dispose();
       screenTexture.dispose();
+      fallbackTexture.dispose();
+      if (document.body.contains(video)) document.body.removeChild(video);
       if (container.contains(renderer.domElement)) {
         container.removeChild(renderer.domElement);
       }

@@ -39,6 +39,7 @@ void Session::connect() { /* no-op in direct mode */ }
 GpuContext& Session::gpu() { return m->gpu; }
 Audio& Session::audio() { return m->audio; }
 int Session::pixelRatio() const { return m->pixelRatio; }
+uint8_t Session::deviceClass() const { return 3; } // desktop
 void Session::flush() { /* no-op: Application calls present() directly */ }
 
 bool Session::run(RunConfig config) {

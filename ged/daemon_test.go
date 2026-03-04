@@ -21,7 +21,7 @@ const (
 	kServerAssignedMagic  = 0x4745324E
 	kFrameReadyMagic      = 0x47453247
 	kWireCommandMagic     = 0x47453243
-	kProtocolVersion      = 3
+	kProtocolVersion      = 4
 )
 
 // makeDeviceInfo constructs a wire DeviceInfo frame: MessageHeader + DeviceInfo struct.
