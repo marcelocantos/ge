@@ -16,24 +16,28 @@
 int main(int argc, char* argv[]) {
     SPDLOG_INFO("ge player (iOS) starting...");
 
-    return playerLoop([] {
-        // Check for explicit address (skips QR scan entirely).
-        if (const char* addr = std::getenv("GE_DAEMON_ADDR")) {
-            std::string s(addr);
-            std::string host = s;
-            uint16_t port = kDefaultPort;
-            if (auto colon = s.rfind(':'); colon != std::string::npos) {
-                host = s.substr(0, colon);
-                port = static_cast<uint16_t>(std::stoi(s.substr(colon + 1)));
+    return playerLoop(
+        // checkOverride: fast, non-blocking overrides
+        [] -> ge::ScanResult {
+            if (const char* addr = std::getenv("GE_DAEMON_ADDR")) {
+                std::string s(addr);
+                std::string host = s;
+                uint16_t port = kDefaultPort;
+                if (auto colon = s.rfind(':'); colon != std::string::npos) {
+                    host = s.substr(0, colon);
+                    port = static_cast<uint16_t>(std::stoi(s.substr(colon + 1)));
+                }
+                SPDLOG_INFO("GE_DAEMON_ADDR: {}:{}", host, port);
+                return {host, port};
             }
-            SPDLOG_INFO("GE_DAEMON_ADDR: {}:{}", host, port);
-            return ge::ScanResult{host, port};
-        }
 #if TARGET_OS_SIMULATOR
-        SPDLOG_INFO("Simulator: using localhost:{}", kDefaultPort);
-        return ge::ScanResult{"localhost", kDefaultPort};
+            SPDLOG_INFO("Simulator: using localhost:{}", kDefaultPort);
+            return {"localhost", kDefaultPort};
 #else
-        return ge::scanQRCode();
+            return {};
 #endif
-    }, "ios");
+        },
+        // discover: blocking QR scan
+        [] { return ge::scanQRCode(); },
+        "ios");
 }

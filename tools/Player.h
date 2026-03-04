@@ -15,7 +15,8 @@ class Player {
 public:
     Player(std::string host, uint16_t port, int width, int height,
            bool maximized = false, int maxRetries = -1, bool headless = false,
-           std::string profile = "default", std::string name = "");
+           std::string profile = "default", std::string name = "",
+           int connectTimeoutMs = 0);
     ~Player();
     int run();
 
@@ -24,6 +25,11 @@ private:
     std::unique_ptr<M> m;
 };
 
-// Reconnect loop: calls discover() to get a server address, connects,
-// and loops back to discovery on disconnect. Returns non-zero on fatal error.
-int playerLoop(std::function<ge::ScanResult()> discover, std::string name = "");
+// Reconnect loop with two-phase address discovery:
+//   1. checkOverride() — fast: env var, simulator, debug property. Empty = no override.
+//   2. discover() — slow/blocking: QR scan.
+// Between them, a stored address (from prior QR discovery) is tried with a 5s timeout.
+// After QR discovery, the address is saved for next launch.
+int playerLoop(std::function<ge::ScanResult()> checkOverride,
+               std::function<ge::ScanResult()> discover,
+               std::string name = "");

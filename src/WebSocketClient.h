@@ -22,7 +22,9 @@ public:
 };
 
 // Connect to a WebSocket endpoint as a client. Returns null on failure.
+// connectTimeoutMs > 0 caps the TCP connect phase; 0 = OS default (~75s).
 std::shared_ptr<WsConnection> connectWebSocket(
-    const std::string& host, uint16_t port, const std::string& path);
+    const std::string& host, uint16_t port, const std::string& path,
+    int connectTimeoutMs = 0);
 
 } // namespace ge

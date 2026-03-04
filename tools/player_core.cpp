@@ -174,6 +174,41 @@ std::vector<char> loadMipFromCache(const fs::path& dir, uint64_t hash) {
     return tail;
 }
 
+// Address persistence: save/load the QR-discovered server address so the
+// player can reconnect on next launch without re-scanning.
+
+fs::path cacheProfileDir(const std::string& profile) {
+    const char* home = std::getenv("HOME");
+    if (!home) home = "/tmp";
+    return fs::path(home) / ".cache" / "ge" / "profiles" / profile;
+}
+
+ge::ScanResult loadStoredAddress(const fs::path& profileDir) {
+    auto path = profileDir / "address";
+    std::ifstream f(path);
+    if (!f.is_open()) return {};
+    std::string line;
+    std::getline(f, line);
+    if (line.empty()) return {};
+    auto colon = line.rfind(':');
+    if (colon == std::string::npos) return {line, kDefaultPort};
+    uint16_t port = static_cast<uint16_t>(std::stoi(line.substr(colon + 1)));
+    return {line.substr(0, colon), port};
+}
+
+void saveStoredAddress(const std::string& host, uint16_t port,
+                       const fs::path& profileDir) {
+    std::error_code ec;
+    fs::create_directories(profileDir, ec);
+    if (ec) return;
+    auto path = profileDir / "address";
+    std::ofstream out(path, std::ios::trunc);
+    if (out.is_open()) {
+        out << host << ":" << port;
+        SPDLOG_INFO("Saved server address: {}:{}", host, port);
+    }
+}
+
 // Build a synthetic UnregisterObject wire command for a single object.
 std::array<char, wire_obs::kUnregisterObjectCmdSize>
 buildUnregisterObjectCmd(uint32_t objectType, uint32_t objectId) {
@@ -508,6 +543,7 @@ struct Player::M {
     bool maximized = false;
     bool headless = false;
     int maxRetries = -1;  // -1 = unlimited
+    int connectTimeoutMs = 0;
     std::string profile = "default";
     std::string name;
     std::string serverPreference; // preferred server name (persisted)
@@ -573,7 +609,7 @@ struct Player::M {
 
 Player::Player(std::string host, uint16_t port, int width, int height,
                    bool maximized, int maxRetries, bool headless,
-                   std::string profile, std::string name)
+                   std::string profile, std::string name, int connectTimeoutMs)
     : m(std::make_unique<M>()) {
     m->host = std::move(host);
     m->port = port;
@@ -582,13 +618,12 @@ Player::Player(std::string host, uint16_t port, int width, int height,
     m->maximized = maximized;
     m->headless = headless;
     m->maxRetries = maxRetries;
+    m->connectTimeoutMs = connectTimeoutMs;
     m->profile = std::move(profile);
     m->name = std::move(name);
 
     // Store profile base directory — DB opened when kStateRequestMagic arrives
-    const char* home = std::getenv("HOME");
-    if (!home) home = "/tmp";
-    m->dbPath = (fs::path(home) / ".cache" / "ge" / "profiles" / m->profile).string();
+    m->dbPath = cacheProfileDir(m->profile).string();
 
     // Load server preference
     auto prefPath = fs::path(m->dbPath) / "server-preference";
@@ -755,7 +790,7 @@ std::shared_ptr<ge::WsConnection> Player::M::connectWithUI(bool& quit) {
     std::atomic<bool> done{false};
     std::thread connThread([&] {
         auto wsPath = name.empty() ? "/ws/wire" : "/ws/wire?name=" + name;
-        result = ge::connectWebSocket(host, port, wsPath);
+        result = ge::connectWebSocket(host, port, wsPath, connectTimeoutMs);
         done.store(true, std::memory_order_release);
     });
 
@@ -1473,17 +1508,45 @@ ConnectionResult Player::M::connectAndRun() {
     return ConnectionResult::Disconnected;
 }
 
-int playerLoop(std::function<ge::ScanResult()> discover, std::string name) {
+int playerLoop(std::function<ge::ScanResult()> checkOverride,
+               std::function<ge::ScanResult()> discover,
+               std::string name) {
+    const std::string profile = "default";
+    auto profileDir = cacheProfileDir(profile);
+
     for (;;) {
-        auto addr = discover();
+        // Phase 1: fast override (env var, simulator, debug property)
+        auto addr = checkOverride();
+        int maxRetries = -1;  // unlimited
+        int timeoutMs = 0;    // OS default
+
         if (addr.host.empty()) {
-            SPDLOG_INFO("Discovery cancelled, retrying...");
-            continue;
+            // Phase 2: try stored address from prior QR discovery
+            addr = loadStoredAddress(profileDir);
+            if (!addr.host.empty()) {
+                SPDLOG_INFO("Trying stored address: {}:{}", addr.host, addr.port);
+                maxRetries = 0;   // single attempt
+                timeoutMs = 5000; // 5s timeout
+            }
         }
+
+        if (addr.host.empty()) {
+            // Phase 3: QR scan (blocking)
+            addr = discover();
+            if (addr.host.empty()) {
+                SPDLOG_INFO("Discovery cancelled, retrying...");
+                continue;
+            }
+            // Save the discovered address for next launch
+            uint16_t port = addr.port ? addr.port : kDefaultPort;
+            saveStoredAddress(addr.host, port, profileDir);
+        }
+
         uint16_t port = addr.port ? addr.port : kDefaultPort;
         SPDLOG_INFO("Target: {}:{}", addr.host, port);
 
-        Player player(addr.host, port, kDefaultWidth, kDefaultHeight, false, -1, false, "default", name);
+        Player player(addr.host, port, kDefaultWidth, kDefaultHeight,
+                      false, maxRetries, false, profile, name, timeoutMs);
         int result = player.run();
         if (result != 0) return result;
 

@@ -43,14 +43,18 @@ int main(int argc, char* argv[]) {
 
     SPDLOG_INFO("ge player (Android) starting...");
 
-    return playerLoop([] {
-        // Priority: debug property > emulator detection > QR scan
-        auto direct = directAddress();
-        if (!direct.host.empty()) {
-            SPDLOG_INFO("Direct connection via debug.ge.address: {}:{}", direct.host, direct.port);
-            return direct;
-        }
-        if (isEmulator()) return ge::ScanResult{"10.0.2.2", kDefaultPort};
-        return ge::scanQRCode();
-    }, "android");
+    return playerLoop(
+        // checkOverride: fast, non-blocking overrides
+        [] -> ge::ScanResult {
+            auto direct = directAddress();
+            if (!direct.host.empty()) {
+                SPDLOG_INFO("Direct connection via debug.ge.address: {}:{}", direct.host, direct.port);
+                return direct;
+            }
+            if (isEmulator()) return ge::ScanResult{"10.0.2.2", kDefaultPort};
+            return {};
+        },
+        // discover: blocking QR scan
+        [] { return ge::scanQRCode(); },
+        "android");
 }

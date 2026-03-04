@@ -224,7 +224,8 @@ private:
 };
 
 std::shared_ptr<WsConnection> connectWebSocket(
-    const std::string& host, uint16_t port, const std::string& path)
+    const std::string& host, uint16_t port, const std::string& path,
+    int connectTimeoutMs)
 {
     try {
         auto io = std::make_unique<asio::io_context>();
@@ -232,7 +233,44 @@ std::shared_ptr<WsConnection> connectWebSocket(
         auto endpoints = resolver.resolve(host, std::to_string(port));
 
         tcp::socket socket(*io);
-        asio::connect(socket, endpoints);
+
+        if (connectTimeoutMs > 0) {
+            // Async connect with timeout
+            asio::steady_timer timer(*io);
+            timer.expires_after(std::chrono::milliseconds(connectTimeoutMs));
+
+            asio::error_code connectEc;
+            bool timedOut = false;
+
+            asio::async_connect(socket, endpoints,
+                [&](const asio::error_code& ec, const tcp::endpoint&) {
+                    connectEc = ec;
+                    timer.cancel();
+                });
+
+            timer.async_wait([&](const asio::error_code& ec) {
+                if (!ec) {  // timer expired (not cancelled)
+                    timedOut = true;
+                    socket.close();
+                }
+            });
+
+            io->run();
+
+            if (timedOut) {
+                SPDLOG_WARN("WebSocket connect timed out after {}ms", connectTimeoutMs);
+                return nullptr;
+            }
+            if (connectEc) {
+                SPDLOG_WARN("WebSocket connect failed: {}", connectEc.message());
+                return nullptr;
+            }
+
+            // Reset io_context for subsequent synchronous operations
+            io->restart();
+        } else {
+            asio::connect(socket, endpoints);
+        }
 
         // Generate a client key (16 bytes base64-encoded)
         std::string clientKey = sha1::base64(
