@@ -21,8 +21,11 @@ public:
         : socket_(std::move(socket)), serverSide_(serverSide) { setNoDelay(); }
 
     // Client-side: we own the io_context the socket was created on.
-    TcpWsConnection(std::unique_ptr<asio::io_context> io, tcp::socket socket)
-        : ownedIo_(std::move(io)), socket_(std::move(socket)), serverSide_(false) { setNoDelay(); }
+    // Optional preread data is prepended to future reads (handles asio::read_until over-read).
+    TcpWsConnection(std::unique_ptr<asio::io_context> io, tcp::socket socket,
+                    std::vector<char> preread = {})
+        : ownedIo_(std::move(io)), socket_(std::move(socket)),
+          serverSide_(false), preread_(std::move(preread)) { setNoDelay(); }
 
     void sendBinary(const void* data, size_t len) override {
         sendFrame(0x02, data, len);
@@ -51,6 +54,7 @@ public:
     bool isOpen() const override { return open_; }
 
     size_t available() override {
+        if (!preread_.empty()) return preread_.size();
         asio::error_code ec;
         size_t n = socket_.available(ec);
         if (ec) { open_ = false; return 0; }
@@ -118,15 +122,31 @@ private:
         if (ec) open_ = false;
     }
 
+    // Read exactly len bytes, draining any pre-read data first.
+    bool readExact(void* dest, size_t len) {
+        auto* p = static_cast<char*>(dest);
+        if (!preread_.empty()) {
+            size_t n = std::min(preread_.size(), len);
+            std::memcpy(p, preread_.data(), n);
+            preread_.erase(preread_.begin(), preread_.begin() + n);
+            p += n;
+            len -= n;
+        }
+        if (len > 0) {
+            asio::error_code ec;
+            asio::read(socket_, asio::buffer(p, len), ec);
+            if (ec) { open_ = false; return false; }
+        }
+        return true;
+    }
+
     bool recvFrame(std::vector<char>& out) {
         out.clear();
 
         // Reassemble fragmented messages
         while (true) {
             uint8_t header[2];
-            asio::error_code ec;
-            asio::read(socket_, asio::buffer(header, 2), ec);
-            if (ec) { open_ = false; return false; }
+            if (!readExact(header, 2)) return false;
 
             bool fin = header[0] & 0x80;
             uint8_t opcode = header[0] & 0x0F;
@@ -135,13 +155,11 @@ private:
 
             if (payloadLen == 126) {
                 uint8_t ext[2];
-                asio::read(socket_, asio::buffer(ext, 2), ec);
-                if (ec) { open_ = false; return false; }
+                if (!readExact(ext, 2)) return false;
                 payloadLen = (uint64_t(ext[0]) << 8) | ext[1];
             } else if (payloadLen == 127) {
                 uint8_t ext[8];
-                asio::read(socket_, asio::buffer(ext, 8), ec);
-                if (ec) { open_ = false; return false; }
+                if (!readExact(ext, 8)) return false;
                 payloadLen = 0;
                 for (int i = 0; i < 8; ++i)
                     payloadLen = (payloadLen << 8) | ext[i];
@@ -149,16 +167,14 @@ private:
 
             uint8_t maskKey[4] = {};
             if (masked) {
-                asio::read(socket_, asio::buffer(maskKey, 4), ec);
-                if (ec) { open_ = false; return false; }
+                if (!readExact(maskKey, 4)) return false;
             }
 
             size_t prevSize = out.size();
             out.resize(prevSize + payloadLen);
 
             if (payloadLen > 0) {
-                asio::read(socket_, asio::buffer(out.data() + prevSize, payloadLen), ec);
-                if (ec) { open_ = false; return false; }
+                if (!readExact(out.data() + prevSize, payloadLen)) return false;
 
                 if (masked) {
                     for (size_t i = 0; i < payloadLen; ++i)
@@ -203,6 +219,7 @@ private:
     tcp::socket socket_;
     std::mutex writeMtx_;
     bool serverSide_;
+    std::vector<char> preread_;  // bytes over-read during HTTP upgrade
     bool open_ = true;
 };
 
@@ -248,7 +265,17 @@ std::shared_ptr<WsConnection> connectWebSocket(
         // Drain remaining header lines
         while (std::getline(is, line) && line != "\r" && !line.empty()) {}
 
-        return std::make_shared<TcpWsConnection>(std::move(io), std::move(socket));
+        // Extract any bytes read_until consumed beyond the HTTP headers.
+        // These belong to the first WebSocket frame and must not be lost.
+        std::vector<char> preread;
+        if (buf.size() > 0) {
+            auto data = buf.data();
+            auto* p = static_cast<const char*>(data.data());
+            preread.assign(p, p + buf.size());
+        }
+
+        return std::make_shared<TcpWsConnection>(
+            std::move(io), std::move(socket), std::move(preread));
     } catch (const std::exception& e) {
         SPDLOG_WARN("WebSocket connect failed: {}", e.what());
         return nullptr;
