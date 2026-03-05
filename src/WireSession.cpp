@@ -441,6 +441,7 @@ struct WireSession::M {
     std::function<void(std::span<const uint8_t>)> onMessage;
     int pixelRatio = 1;
     uint8_t deviceClass = 0;
+    uint8_t orientation = 0;
     bool connected = false;
     Audio audio;
 
@@ -531,6 +532,7 @@ void WireSession::connect() {
                 deviceInfo.deviceClass, deviceInfo.orientation);
     m->pixelRatio = std::max(1, (int)deviceInfo.pixelRatio);
     m->deviceClass = deviceInfo.deviceClass;
+    m->orientation = deviceInfo.orientation;
 
     // Create wire client
     dawn::wire::WireClientDescriptor clientDesc{
@@ -696,6 +698,11 @@ int WireSession::pixelRatio() const {
 uint8_t WireSession::deviceClass() const {
     if (!m->connected) const_cast<WireSession*>(this)->connect();
     return m->deviceClass;
+}
+
+uint8_t WireSession::orientation() const {
+    if (!m->connected) const_cast<WireSession*>(this)->connect();
+    return m->orientation;
 }
 
 Audio& WireSession::audio() {

@@ -26,6 +26,7 @@ void Session::connect() { m->wire.connect(); }
 GpuContext& Session::gpu() { return m->wire.gpu(); }
 int Session::pixelRatio() const { return m->wire.pixelRatio(); }
 uint8_t Session::deviceClass() const { return m->wire.deviceClass(); }
+uint8_t Session::orientation() const { return m->wire.orientation(); }
 void Session::flush() { m->wire.flush(); }
 
 bool Session::run(RunConfig config) {

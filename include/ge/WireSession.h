@@ -44,6 +44,9 @@ public:
     // Device class (0=unknown, 1=phone, 2=tablet, 3=desktop). Available after connect().
     uint8_t deviceClass() const;
 
+    // Initial device orientation (SDL_DisplayOrientation value). Available after connect().
+    uint8_t orientation() const;
+
     // Flush wire commands to receiver and process responses.
     void flush();
 

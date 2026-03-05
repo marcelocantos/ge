@@ -44,6 +44,7 @@ public:
     GpuContext& gpu();
     int pixelRatio() const;
     uint8_t deviceClass() const;
+    uint8_t orientation() const;
     void flush();
 
     // Render loop configuration.
