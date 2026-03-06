@@ -5,6 +5,9 @@
 #include "AudioPlayer.h"
 #include "QRScanner.h"
 #include "player_platform.h"
+#ifdef GE_IOS
+#include "KeychainStore.h"
+#endif
 
 #include <SDL3/SDL.h>
 #include <spdlog/spdlog.h>
@@ -184,11 +187,15 @@ fs::path cacheProfileDir(const std::string& profile) {
 }
 
 ge::ScanResult loadStoredAddress(const fs::path& profileDir) {
+    std::string line;
+#ifdef GE_IOS
+    line = ge::keychainLoad("server-address");
+#else
     auto path = profileDir / "address";
     std::ifstream f(path);
     if (!f.is_open()) return {};
-    std::string line;
     std::getline(f, line);
+#endif
     if (line.empty()) return {};
     auto colon = line.rfind(':');
     if (colon == std::string::npos) return {line, kDefaultPort};
@@ -198,15 +205,21 @@ ge::ScanResult loadStoredAddress(const fs::path& profileDir) {
 
 void saveStoredAddress(const std::string& host, uint16_t port,
                        const fs::path& profileDir) {
+    std::string addr = host + ":" + std::to_string(port);
+#ifdef GE_IOS
+    ge::keychainSave("server-address", addr);
+    SPDLOG_INFO("Saved server address to keychain: {}", addr);
+#else
     std::error_code ec;
     fs::create_directories(profileDir, ec);
     if (ec) return;
     auto path = profileDir / "address";
     std::ofstream out(path, std::ios::trunc);
     if (out.is_open()) {
-        out << host << ":" << port;
-        SPDLOG_INFO("Saved server address: {}:{}", host, port);
+        out << addr;
+        SPDLOG_INFO("Saved server address: {}", addr);
     }
+#endif
 }
 
 // Build a synthetic UnregisterObject wire command for a single object.

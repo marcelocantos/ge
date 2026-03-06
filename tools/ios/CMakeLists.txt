@@ -17,6 +17,9 @@ set(SOURCES
     ${GE_ROOT}/vendor/src/sqlite3.c
     ${GE_ROOT}/vendor/src/sqlpipe.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/QRScanner.mm
+    ${CMAKE_CURRENT_SOURCE_DIR}/KeychainStore.mm
+    ${GE_ROOT}/src/VideoEncoder_apple.mm
+    ${GE_ROOT}/tools/player_capture_apple.mm
 )
 
 add_executable(Player MACOSX_BUNDLE ${SOURCES})
@@ -66,6 +69,8 @@ target_link_libraries(Player PRIVATE
     "-framework GameController"
     "-framework CoreHaptics"
     "-framework CoreMotion"
+    "-framework VideoToolbox"
+    "-framework Security"
     "-framework OpenGLES"
     "-lobjc"
 )
