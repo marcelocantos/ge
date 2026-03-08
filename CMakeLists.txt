@@ -4,7 +4,7 @@
 # Options:
 #   GE_DIRECT  — Build for direct rendering (no wire/networking). Default: OFF.
 
-cmake_minimum_required(VERSION 3.22)
+cmake_minimum_required(VERSION 3.28...4.2)
 if(CMAKE_SYSTEM_NAME STREQUAL "Android")
     project(ge LANGUAGES CXX)
 else()

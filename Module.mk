@@ -63,6 +63,7 @@ ge/SRC = \
 # Session backend objects (linked by the parent, not part of libge.a)
 ge/SESSION_WIRE_OBJ = $(BUILD_DIR)/ge/src/SessionWire.o
 ge/SESSION_DIRECT_OBJ = $(BUILD_DIR)/ge/src/SessionDirect.o
+ge/SESSION_HEADLESS_OBJ = $(BUILD_DIR)/ge/src/SessionHeadless.o
 
 ge/OBJ = $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(filter %.cpp,$(ge/SRC))) \
          $(patsubst %.mm,$(BUILD_DIR)/%.o,$(filter %.mm,$(ge/SRC)))

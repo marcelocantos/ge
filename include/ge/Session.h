@@ -35,6 +35,10 @@ public:
             std::shared_ptr<DaemonSink> sharedSink);
 #endif
 
+    // Headless mode: wraps an existing GpuContext for testing.
+    // Pass-through viewport, no SDL window or wire transport.
+    explicit Session(GpuContext& ctx);
+
     ~Session();
 
     Session(const Session&) = delete;
@@ -43,6 +47,8 @@ public:
     Audio& audio();
     void connect();
     GpuContext& gpu();
+    int width() const;   // Portrait-space width (min of real dims when portraitLock)
+    int height() const;  // Portrait-space height (max of real dims when portraitLock)
     int pixelRatio() const;
     uint8_t deviceClass() const;
     uint8_t orientation() const;
@@ -57,6 +63,15 @@ public:
     // rotation so portrait content appears upright. Identity in portrait.
     linalg::aliases::float4x4 orientationRot() const;
 
+    // Viewport helpers: accept portrait-space coordinates and translate to
+    // real surface coordinates based on current orientation. When portraitLock
+    // is off, these are pass-through.
+    void setViewport(wgpu::RenderPassEncoder& pass,
+                     float x, float y, float w, float h,
+                     float minDepth = 0.f, float maxDepth = 1.f);
+    void setScissorRect(wgpu::RenderPassEncoder& pass,
+                        uint32_t x, uint32_t y, uint32_t w, uint32_t h);
+
     void setSessionFlags(uint16_t flags);
     void flush();
 
@@ -66,6 +81,7 @@ public:
         std::function<void(wgpu::TextureView target, int w, int h)> onRender;
         std::function<void(const SDL_Event&)> onEvent;
         std::function<void(int w, int h)> onResize;
+        bool portraitLock = false;  // Keep surface at portrait dimensions; transform touch events
         uint32_t sensors = 0;  // bitmask of requested SDL_SensorType values
 
         // State sync (wire mode only). If onStateReceived is set, the

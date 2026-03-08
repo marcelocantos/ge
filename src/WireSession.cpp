@@ -728,7 +728,6 @@ bool WireSession::run(RunConfig config) {
 
     auto lastAccelSend = std::chrono::steady_clock::now();
     int orientation = 0;
-
     m->onEvent = [this,
                   userEvent = std::move(config.onEvent),
                   userResize = std::move(config.onResize),
@@ -740,13 +739,13 @@ bool WireSession::run(RunConfig config) {
             if (userEvent) userEvent(e);
             // Forward display orientation to dashboard preview
             if (e.type == SDL_EVENT_DISPLAY_ORIENTATION) {
-                // Map SDL orientation enum to 0/1/2/3
                 int mapped = 0;
-                switch (e.display.data1) {
-                    case 1: mapped = 0; break; // portrait
-                    case 2: mapped = 2; break; // portrait flipped
-                    case 3: mapped = 1; break; // landscape
-                    case 4: mapped = 3; break; // landscape flipped
+                switch (static_cast<SDL_DisplayOrientation>(e.display.data1)) {
+                    case SDL_ORIENTATION_PORTRAIT:          mapped = 0; break;
+                    case SDL_ORIENTATION_LANDSCAPE:         mapped = 1; break;
+                    case SDL_ORIENTATION_PORTRAIT_FLIPPED:  mapped = 2; break;
+                    case SDL_ORIENTATION_LANDSCAPE_FLIPPED: mapped = 3; break;
+                    default: break;
                 }
                 if (mapped != orientation) {
                     orientation = mapped;

@@ -38,11 +38,22 @@ Session::~Session() = default;
 void Session::connect() { /* no-op in direct mode */ }
 GpuContext& Session::gpu() { return m->gpu; }
 Audio& Session::audio() { return m->audio; }
+int Session::width() const { return m->gpu.width(); }
+int Session::height() const { return m->gpu.height(); }
 int Session::pixelRatio() const { return m->pixelRatio; }
 uint8_t Session::deviceClass() const { return 3; } // desktop
 uint8_t Session::orientation() const { return 0; } // desktop: no orientation
 float Session::orientationAngle() const { return 0.0f; }
 linalg::aliases::float4x4 Session::orientationRot() const { return linalg::identity; }
+void Session::setViewport(wgpu::RenderPassEncoder& pass,
+                          float x, float y, float w, float h,
+                          float minDepth, float maxDepth) {
+    pass.SetViewport(x, y, w, h, minDepth, maxDepth);
+}
+void Session::setScissorRect(wgpu::RenderPassEncoder& pass,
+                             uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
+    pass.SetScissorRect(x, y, w, h);
+}
 void Session::setSessionFlags(uint16_t) { /* no-op in direct mode */ }
 void Session::flush() { /* no-op: Application calls present() directly */ }
 

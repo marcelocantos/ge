@@ -45,6 +45,11 @@ struct Session::M {
     float orientProgress = 1.0f;    // 0..1, 1 = arrived
     static constexpr float kOrientDuration = 0.35f; // seconds
 
+    // Portrait lock state.
+    bool portraitLock = false;
+    int discreteOrientation = 0;    // raw SDL_DisplayOrientation value
+    int portraitW = 0, portraitH = 0; // canonical portrait dimensions (min x max)
+
     M(const std::string& daemonHost, uint16_t daemonPort,
       const std::string& sessionId,
       std::shared_ptr<DaemonSink> sharedSink)
@@ -85,6 +90,8 @@ Session::~Session() = default;
 Audio& Session::audio() { return m->wire.audio(); }
 void Session::connect() { m->wire.connect(); }
 GpuContext& Session::gpu() { return m->wire.gpu(); }
+int Session::width() const { return m->portraitLock ? m->portraitW : m->wire.gpu().width(); }
+int Session::height() const { return m->portraitLock ? m->portraitH : m->wire.gpu().height(); }
 int Session::pixelRatio() const { return m->wire.pixelRatio(); }
 uint8_t Session::deviceClass() const { return m->wire.deviceClass(); }
 uint8_t Session::orientation() const { return m->wire.orientation(); }
@@ -101,18 +108,108 @@ linalg::aliases::float4x4 Session::orientationRot() const {
     };
 }
 
+void Session::setViewport(wgpu::RenderPassEncoder& pass,
+                          float x, float y, float w, float h,
+                          float minDepth, float maxDepth) {
+    if (!m->portraitLock) {
+        pass.SetViewport(x, y, w, h, minDepth, maxDepth);
+        return;
+    }
+    float pw = float(m->portraitW), ph = float(m->portraitH);
+    switch (static_cast<SDL_DisplayOrientation>(m->discreteOrientation)) {
+        case SDL_ORIENTATION_LANDSCAPE:  // right side up — device rotated CCW
+            pass.SetViewport(y, pw - x - w, h, w, minDepth, maxDepth);
+            break;
+        case SDL_ORIENTATION_LANDSCAPE_FLIPPED:  // left side up — device rotated CW
+            pass.SetViewport(ph - y - h, x, h, w, minDepth, maxDepth);
+            break;
+        case SDL_ORIENTATION_PORTRAIT_FLIPPED:  // 180°
+            pass.SetViewport(pw - x - w, ph - y - h, w, h, minDepth, maxDepth);
+            break;
+        default:  // portrait — identity
+            pass.SetViewport(x, y, w, h, minDepth, maxDepth);
+            break;
+    }
+}
+
+void Session::setScissorRect(wgpu::RenderPassEncoder& pass,
+                             uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
+    if (!m->portraitLock) {
+        pass.SetScissorRect(x, y, w, h);
+        return;
+    }
+    uint32_t pw = uint32_t(m->portraitW), ph = uint32_t(m->portraitH);
+    switch (static_cast<SDL_DisplayOrientation>(m->discreteOrientation)) {
+        case SDL_ORIENTATION_LANDSCAPE:  // right side up — device rotated CCW
+            pass.SetScissorRect(y, pw - x - w, h, w);
+            break;
+        case SDL_ORIENTATION_LANDSCAPE_FLIPPED:  // left side up — device rotated CW
+            pass.SetScissorRect(ph - y - h, x, h, w);
+            break;
+        case SDL_ORIENTATION_PORTRAIT_FLIPPED:  // 180°
+            pass.SetScissorRect(pw - x - w, ph - y - h, w, h);
+            break;
+        default:  // portrait — identity
+            pass.SetScissorRect(x, y, w, h);
+            break;
+    }
+}
+
 void Session::setSessionFlags(uint16_t flags) { m->wire.setSessionFlags(flags); }
 void Session::flush() { m->wire.flush(); }
 
+// Transform a finger event from rotated screen coordinates to portrait coordinates.
+static void transformFingerToPortrait(SDL_Event& e, int orientation) {
+    float x = e.tfinger.x, y = e.tfinger.y;
+    switch (static_cast<SDL_DisplayOrientation>(orientation)) {
+        case SDL_ORIENTATION_LANDSCAPE:          // device rotated CCW
+            e.tfinger.x = 1.0f - y;
+            e.tfinger.y = x;
+            break;
+        case SDL_ORIENTATION_LANDSCAPE_FLIPPED:  // device rotated CW
+            e.tfinger.x = y;
+            e.tfinger.y = 1.0f - x;
+            break;
+        case SDL_ORIENTATION_PORTRAIT_FLIPPED:   // upside-down
+            e.tfinger.x = 1.0f - x;
+            e.tfinger.y = 1.0f - y;
+            break;
+        default:  // portrait — no transform
+            break;
+    }
+}
+
 bool Session::run(RunConfig config) {
     m->initOrientAngle();
+    m->portraitLock = config.portraitLock;
 
-    // Wrap user's onEvent to intercept orientation changes for smooth angle.
+    if (m->portraitLock) {
+        m->discreteOrientation = m->wire.orientation();
+        auto& gpu = m->wire.gpu();
+        int w = gpu.width(), h = gpu.height();
+        m->portraitW = std::min(w, h);
+        m->portraitH = std::max(w, h);
+    }
+
+    // Wrap user's onEvent to intercept orientation changes for smooth angle,
+    // and (when portrait-locked) transform touch events to portrait coordinates.
     auto userEvent = std::move(config.onEvent);
-    auto wrappedEvent = [this,
+    bool portraitLock = m->portraitLock;
+    auto wrappedEvent = [this, portraitLock,
                          userEvent = std::move(userEvent)](const SDL_Event& e) {
         if (e.type == SDL_EVENT_DISPLAY_ORIENTATION) {
             m->onOrientationEvent(e.display.data1);
+            if (portraitLock) {
+                m->discreteOrientation = e.display.data1;
+            }
+        }
+        if (portraitLock && (e.type == SDL_EVENT_FINGER_DOWN ||
+                            e.type == SDL_EVENT_FINGER_UP ||
+                            e.type == SDL_EVENT_FINGER_MOTION)) {
+            SDL_Event pe = e;
+            transformFingerToPortrait(pe, m->discreteOrientation);
+            if (userEvent) userEvent(pe);
+            return;
         }
         if (userEvent) userEvent(e);
     };
@@ -124,11 +221,53 @@ bool Session::run(RunConfig config) {
         if (userUpdate) userUpdate(dt);
     };
 
+    // Wrap onResize to keep discreteOrientation in sync with surface aspect
+    // ratio. The resize event may arrive before the orientation event, so
+    // infer landscape/portrait from dimensions to prevent setViewport from
+    // using stale orientation (which causes out-of-bounds viewports).
+    auto userResize = std::move(config.onResize);
+    auto wrappedResize = [this, portraitLock,
+                          userResize = std::move(userResize)](int w, int h) {
+        if (portraitLock) {
+            // Update portrait dims — the OS may resize the window (multitasking,
+            // Stage Manager) to different dimensions than at connection time.
+            m->portraitW = std::min(w, h);
+            m->portraitH = std::max(w, h);
+
+            // Infer orientation from surface aspect ratio to stay in sync
+            // before the SDL_EVENT_DISPLAY_ORIENTATION event arrives.
+            bool surfaceLandscape = w > h;
+            auto cur = static_cast<SDL_DisplayOrientation>(m->discreteOrientation);
+            bool wasLandscape = (cur == SDL_ORIENTATION_LANDSCAPE ||
+                                 cur == SDL_ORIENTATION_LANDSCAPE_FLIPPED);
+            if (surfaceLandscape && !wasLandscape) {
+                // Default to landscape CW — corrected when orientation event arrives.
+                m->discreteOrientation = SDL_ORIENTATION_LANDSCAPE;
+            } else if (!surfaceLandscape && wasLandscape) {
+                m->discreteOrientation = SDL_ORIENTATION_PORTRAIT;
+            }
+        }
+        if (userResize) userResize(w, h);
+    };
+
+    // Wrap onRender to pass portrait dims when portrait-locked.
+    auto userRender = std::move(config.onRender);
+    auto wrappedRender = [this, userRender = std::move(userRender)](
+            wgpu::TextureView target, int w, int h) {
+        if (m->portraitLock) {
+            int pw = std::min(w, h), ph = std::max(w, h);
+            if (userRender) userRender(target, pw, ph);
+        } else {
+            if (userRender) userRender(target, w, h);
+        }
+    };
+
     return m->wire.run({
         std::move(wrappedUpdate),
-        std::move(config.onRender),
+        std::move(wrappedRender),
         std::move(wrappedEvent),
-        std::move(config.onResize),
+        std::move(wrappedResize),
+        config.portraitLock,
         config.sensors,
         std::move(config.appId),
         std::move(config.onStateReceived),
