@@ -732,10 +732,13 @@ bool WireSession::run(RunConfig config) {
     m->onEvent = [this,
                   userEvent = std::move(config.onEvent),
                   userResize = std::move(config.onResize),
+                  portraitLock = config.portraitLock,
                   lastAccelSend, orientation](const SDL_Event& e) mutable {
         if (e.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED) {
-            m->gfx->resize({e.window.data1, e.window.data2});
-            if (userResize) userResize(e.window.data1, e.window.data2);
+            if (!portraitLock) {
+                m->gfx->resize({e.window.data1, e.window.data2});
+                if (userResize) userResize(e.window.data1, e.window.data2);
+            }
         } else {
             if (userEvent) userEvent(e);
             // Forward display orientation to dashboard preview

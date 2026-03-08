@@ -49,7 +49,7 @@ bool Session::run(RunConfig config) {
     DeltaTimer timer;
 
     auto resizeWatch = m->sdl.addEventWatch([&](const SDL_Event& e) -> bool {
-        if (e.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED) {
+        if (e.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED && !config.portraitLock) {
             int w = e.window.data1, h = e.window.data2;
             m->gpu.resize({w, h});
             if (config.onResize) config.onResize(w, h);
@@ -69,7 +69,7 @@ bool Session::run(RunConfig config) {
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
             if (e.type == SDL_EVENT_QUIT) return false;
-            if (e.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED) {
+            if (e.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED && !config.portraitLock) {
                 int w = e.window.data1, h = e.window.data2;
                 m->gpu.resize({w, h});
                 if (config.onResize) config.onResize(w, h);
