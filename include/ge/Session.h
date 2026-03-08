@@ -66,7 +66,6 @@ public:
         std::function<void(wgpu::TextureView target, int w, int h)> onRender;
         std::function<void(const SDL_Event&)> onEvent;
         std::function<void(int w, int h)> onResize;
-        bool portraitLock = false;  // Keep surface at portrait dimensions; transform touch events
         uint32_t sensors = 0;  // bitmask of requested SDL_SensorType values
 
         // State sync (wire mode only). If onStateReceived is set, the

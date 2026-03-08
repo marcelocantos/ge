@@ -45,10 +45,6 @@ struct Session::M {
     float orientProgress = 1.0f;    // 0..1, 1 = arrived
     static constexpr float kOrientDuration = 0.35f; // seconds
 
-    // Portrait lock: discrete orientation for touch transforms.
-    int discreteOrientation = 0;    // raw SDL_DisplayOrientation value
-    int portraitW = 0, portraitH = 0; // initial (portrait) surface dimensions
-
     M(const std::string& daemonHost, uint16_t daemonPort,
       const std::string& sessionId,
       std::shared_ptr<DaemonSink> sharedSink)
@@ -108,56 +104,15 @@ linalg::aliases::float4x4 Session::orientationRot() const {
 void Session::setSessionFlags(uint16_t flags) { m->wire.setSessionFlags(flags); }
 void Session::flush() { m->wire.flush(); }
 
-// Transform a finger event from rotated screen coordinates to portrait coordinates.
-static void transformFingerToPortrait(SDL_Event& e, int orientation) {
-    float x = e.tfinger.x, y = e.tfinger.y;
-    switch (static_cast<SDL_DisplayOrientation>(orientation)) {
-        case SDL_ORIENTATION_LANDSCAPE:          // rotated 90° CW
-            e.tfinger.x = 1.0f - y;
-            e.tfinger.y = x;
-            break;
-        case SDL_ORIENTATION_LANDSCAPE_FLIPPED:  // rotated 90° CCW
-            e.tfinger.x = y;
-            e.tfinger.y = 1.0f - x;
-            break;
-        case SDL_ORIENTATION_PORTRAIT_FLIPPED:   // upside-down
-            e.tfinger.x = 1.0f - x;
-            e.tfinger.y = 1.0f - y;
-            break;
-        default:  // portrait — no transform
-            break;
-    }
-}
-
 bool Session::run(RunConfig config) {
     m->initOrientAngle();
-    bool portraitLock = config.portraitLock;
 
-    if (portraitLock) {
-        m->discreteOrientation = m->wire.orientation();
-        auto& gpu = m->wire.gpu();
-        m->portraitW = gpu.width();
-        m->portraitH = gpu.height();
-    }
-
-    // Wrap user's onEvent to intercept orientation changes for smooth angle,
-    // and (when portrait-locked) transform touch events to portrait coordinates.
+    // Wrap user's onEvent to intercept orientation changes for smooth angle.
     auto userEvent = std::move(config.onEvent);
-    auto wrappedEvent = [this, portraitLock,
+    auto wrappedEvent = [this,
                          userEvent = std::move(userEvent)](const SDL_Event& e) {
         if (e.type == SDL_EVENT_DISPLAY_ORIENTATION) {
             m->onOrientationEvent(e.display.data1);
-            if (portraitLock) {
-                m->discreteOrientation = e.display.data1;
-            }
-        }
-        if (portraitLock && (e.type == SDL_EVENT_FINGER_DOWN ||
-                            e.type == SDL_EVENT_FINGER_UP ||
-                            e.type == SDL_EVENT_FINGER_MOTION)) {
-            SDL_Event pe = e;
-            transformFingerToPortrait(pe, m->discreteOrientation);
-            if (userEvent) userEvent(pe);
-            return;
         }
         if (userEvent) userEvent(e);
     };
@@ -174,7 +129,6 @@ bool Session::run(RunConfig config) {
         std::move(config.onRender),
         std::move(wrappedEvent),
         std::move(config.onResize),
-        config.portraitLock,
         config.sensors,
         std::move(config.appId),
         std::move(config.onStateReceived),
