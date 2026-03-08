@@ -2,6 +2,7 @@
 #include <ge/Audio.h>
 #include <ge/WireSession.h>
 
+#include <SDL3/SDL_video.h>
 #include <cmath>
 
 namespace ge {
@@ -10,12 +11,12 @@ namespace {
 
 // Map SDL_DisplayOrientation to radians.
 float orientationToRadians(int sdlOrientation) {
-    switch (sdlOrientation) {
-        case 1: return 0.0f;                   // SDL_ORIENTATION_PORTRAIT
-        case 2: return float(M_PI);            // SDL_ORIENTATION_PORTRAIT_FLIPPED
-        case 3: return float(M_PI / 2);        // SDL_ORIENTATION_LANDSCAPE
-        case 4: return float(-M_PI / 2);       // SDL_ORIENTATION_LANDSCAPE_FLIPPED
-        default: return 0.0f;
+    switch (static_cast<SDL_DisplayOrientation>(sdlOrientation)) {
+        case SDL_ORIENTATION_LANDSCAPE:          return float(M_PI / 2);
+        case SDL_ORIENTATION_LANDSCAPE_FLIPPED:  return float(-M_PI / 2);
+        case SDL_ORIENTATION_PORTRAIT:           return 0.0f;
+        case SDL_ORIENTATION_PORTRAIT_FLIPPED:   return float(M_PI);
+        default:                                 return 0.0f;
     }
 }
 

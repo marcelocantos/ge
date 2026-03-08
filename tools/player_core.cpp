@@ -858,8 +858,11 @@ ConnectionResult Player::M::connectAndRun() {
     deviceInfo.height = static_cast<uint16_t>(pixelHeight);
     deviceInfo.pixelRatio = static_cast<uint16_t>(width > 0 ? pixelWidth / width : 2);
     deviceInfo.deviceClass = platform::deviceClass();
-    deviceInfo.orientation = static_cast<uint8_t>(
-        SDL_GetCurrentDisplayOrientation(SDL_GetPrimaryDisplay()));
+    SDL_DisplayID primaryDisplay = SDL_GetPrimaryDisplay();
+    SDL_DisplayOrientation natOrient = SDL_GetNaturalDisplayOrientation(primaryDisplay);
+    SDL_DisplayOrientation curOrient = SDL_GetCurrentDisplayOrientation(primaryDisplay);
+    SPDLOG_INFO("SDL display: primary={}, natural={}, current={}", primaryDisplay, (int)natOrient, (int)curOrient);
+    deviceInfo.orientation = static_cast<uint8_t>(curOrient);
     deviceInfo.preferredFormat = static_cast<uint32_t>(swapChainFormat);
 
     // Create serializer for sending responses back to the server
