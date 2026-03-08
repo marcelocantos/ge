@@ -1,6 +1,6 @@
 # ge/ Engine Module
 
-**IMPORTANT: When adding new functionality, always consider whether it belongs in `ge/` (general-purpose engine feature usable by any app) or in the parent project (game-specific logic). If unsure, ask before implementing.**
+**IMPORTANT: When creating any artefact — code, targets, documentation, plans, tests — always consider whether it belongs in `ge/` (general-purpose engine, usable by any app) or in the parent project (game-specific logic). If unsure, ask before creating it.** Anything concerning the player, ged, wire protocol, engine infrastructure, or engine design belongs in `ge/`, not the consuming project.
 
 Reusable rendering and asset engine built on Dawn (WebGPU) + SDL3. Consumed as a git submodule; build integration via `Module.mk`.
 
@@ -615,4 +615,62 @@ Protocol changes require updating both `WireSession` (server side) and `player_c
 3. Use pImpl for classes that pull in Dawn/SDL/asio headers (see parent project's CLAUDE.md for pImpl guidelines)
 4. Add to `ge/SRC` in `Module.mk` if it's a new source file
 5. Update this CLAUDE.md's Public API section
+
+### Mobile smoke testing
+
+**Before asking the user whether something is rendering on a mobile device, exhaust all programmatic checks first.** The user cannot easily tell you what's on screen during an automated workflow — treat "ask user to look at device" as a last resort, not a first step.
+
+After building and deploying to a device/simulator, run the smoke test script:
+
+```bash
+# iOS Simulator — specify phone or tablet form factor
+ge/tools/smoke-test.sh --platform ios-sim --device tablet
+ge/tools/smoke-test.sh --platform ios-sim --device phone
+
+# iOS Device — specific device by name or UDID
+ge/tools/smoke-test.sh --platform ios-device --device Pippa
+
+# Android emulator
+ge/tools/smoke-test.sh --platform android-emu --package com.marcelocantos.player
+
+# Android device — specific device by serial
+ge/tools/smoke-test.sh --platform android-device --device R5CT900XYZ
+
+# Desktop player
+ge/tools/smoke-test.sh --platform desktop
+```
+
+The `--device` flag meaning varies by platform:
+- **ios-sim**: `phone` or `tablet` — picks the latest booted simulator of that form factor. Omit to use any sole booted sim (errors if multiple are booted).
+- **ios-device**: device name or UDID (substring match, case-insensitive). Omit for the sole connected device. Lists all registered physical devices with `[connected]`/`[disconnected]` state when the target isn't found.
+- **android**: serial or model substring. Omit for the sole connected device.
+
+Use `--install <path>` to ensure the device runs the latest build. This performs an atomic terminate → install → launch cycle and verifies the new process starts:
+
+```bash
+# Deploy latest build to simulator before testing
+ge/tools/smoke-test.sh --platform ios-sim --device tablet \
+    --install ios/build/xcode/Debug-iphonesimulator/YourWorld.app
+
+# Deploy APK to Android
+ge/tools/smoke-test.sh --platform android-emu \
+    --install ge/tools/android/app/build/outputs/apk/debug/app-debug.apk
+```
+
+Without `--install`, the script checks passively (is the app installed? is it running? is the running process newer than the binary?). **Always prefer `--install`** after a rebuild to avoid debugging stale binaries.
+
+The script checks, in order:
+
+1. **ged reachable** — port listening, `/api/info` responds, game server connected, active session count
+2. **Game server running** — process alive (if `--server-pid` given)
+3. **Device/simulator reachable** — `simctl`, `devicectl`, or `adb` confirms device present
+4. **App deployed and running** — with `--install`: terminate → install → launch → verify PID. Without: check installation, process state, and binary freshness.
+5. **Player connected** — polls ged `/api/info` for active sessions (up to `--timeout` seconds)
+6. **Player logs** — checks logcat (Android) or crash reports (iOS) for recent errors
+
+Each check prints PASS/FAIL/WARN. The script exits non-zero if any check fails. **Do not ask the user about visual output until this script passes.** If it fails, diagnose and fix the failure — don't escalate to the user.
+
+Only after the smoke test passes and the problem is still unclear, ask the user what they see — but state what you already verified: "Smoke test passed (ged connected, player session active, no crash reports) — can you confirm whether the globe is rendering?"
+
+**Device preference**: When the user tells you which device to test on (e.g. "use Pippa"), save it to auto-memory so you remember across sessions. Always pass the preferred device via `--device`. If the smoke test fails because that device isn't found, tell the user which device was expected and list the devices that *are* available (the script prints them), then ask how they'd like to proceed.
 
