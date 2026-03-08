@@ -24,8 +24,14 @@ class Audio;
 // dependencies never enter the final binary.
 class Session {
 public:
+    struct Config {
+        bool showStatusBar;  // iOS: show OS status bar (default: hidden)
+    };
+
+    static constexpr Config kDefaultConfig{false};
+
 #ifdef GE_DIRECT
-    Session();
+    explicit Session(Config config = kDefaultConfig);
 #else
     // Hosted mode: SessionHost owns the sideband; this session connects
     // its wire WS to /ws/server/wire/{sessionId}.

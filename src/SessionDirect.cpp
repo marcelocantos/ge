@@ -13,7 +13,8 @@ struct Session::M {
     Audio audio;
     int pixelRatio = 1;
 
-    M() : sdl("ge", 1280, 720),
+    M(Session::Config config)
+        : sdl("ge", 1280, 720, {.showStatusBar = config.showStatusBar}),
           gpu(sdl.nativeSurface(),
               getPixelSize(sdl.window()).first,
               getPixelSize(sdl.window()).second) {
@@ -32,7 +33,7 @@ struct Session::M {
     }
 };
 
-Session::Session() : m(std::make_unique<M>()) {}
+Session::Session(Config config) : m(std::make_unique<M>(config)) {}
 Session::~Session() = default;
 
 void Session::connect() { /* no-op in direct mode */ }

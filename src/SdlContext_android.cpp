@@ -48,7 +48,8 @@ struct SdlContext::M {
     SDL_Window* window = nullptr;
 };
 
-SdlContext::SdlContext(const char* windowTitle, int width, int height)
+SdlContext::SdlContext(const char* windowTitle, int width, int height,
+                       Config /*config*/)
     : m(std::make_unique<M>()) {
 
     if (!SDL_Init(SDL_INIT_VIDEO)) {

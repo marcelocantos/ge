@@ -30,7 +30,14 @@ public:
     // Event filter receives SDL_Event, returns true to propagate event
     using EventFilter = std::function<bool(const SDL_Event&)>;
 
-    SdlContext(const char* windowTitle, int width, int height);
+    struct Config {
+        bool showStatusBar;
+    };
+
+    static constexpr Config kDefaultConfig{false};
+
+    SdlContext(const char* windowTitle, int width, int height,
+              Config config = kDefaultConfig);
     ~SdlContext();
 
     SDL_Window* window() const;

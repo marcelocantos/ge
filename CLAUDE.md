@@ -524,6 +524,20 @@ The iOS Simulator GPU supports ETC2 but not ASTC. Generate both formats during p
 
 Use `SDL_EVENT_FINGER_*` events exclusively for touch/drag input. SDL3 synthesizes finger events from mouse input on desktop (`SDL_HINT_MOUSE_TOUCH_EVENTS` defaults on), so the same code path works everywhere. Finger event coordinates are normalized 0-1; convert to point space by multiplying by `width / pixelRatio`.
 
+### iOS Status Bar
+
+Both `SdlContext` and `Session` accept a `Config` struct with a `showStatusBar` field (default: `false`). When `showStatusBar` is false on iOS, `SdlContext` adds `SDL_WINDOW_BORDERLESS` to the window flags, which makes SDL's view controller return `YES` from `prefersStatusBarHidden`. The flag has no effect on non-iOS platforms.
+
+```cpp
+// Default: status bar hidden (typical for games)
+ge::Session session;
+
+// Opt in to showing the status bar
+ge::Session session({.showStatusBar = true});
+```
+
+The app's `Info.plist` should still include `UIStatusBarHidden = true` as a fallback for the launch screen, but the runtime behavior is controlled by this config flag via SDL's view controller.
+
 ## Public API
 
 ### Wire Transport

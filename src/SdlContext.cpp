@@ -5,6 +5,10 @@
 #include <stdexcept>
 #include <string>
 
+#ifdef __APPLE__
+#include <TargetConditionals.h>
+#endif
+
 // Context for event watch - stored in handle, used as userdata for SDL callback
 struct EventWatchContext {
     SdlContext::EventFilter filter;
@@ -49,7 +53,8 @@ struct SdlContext::M {
     SDL_MetalView metalView = nullptr;
 };
 
-SdlContext::SdlContext(const char* windowTitle, int width, int height)
+SdlContext::SdlContext(const char* windowTitle, int width, int height,
+                       Config config)
     : m(std::make_unique<M>()) {
 
     if (!SDL_Init(SDL_INIT_VIDEO)) {
@@ -59,9 +64,13 @@ SdlContext::SdlContext(const char* windowTitle, int width, int height)
     SPDLOG_INFO("SDL3 initialized");
 
     // Create window with Metal support
-    m->window = SDL_CreateWindow(windowTitle, width, height,
-                                  SDL_WINDOW_RESIZABLE | SDL_WINDOW_METAL |
-                                  SDL_WINDOW_HIGH_PIXEL_DENSITY);
+    SDL_WindowFlags flags = SDL_WINDOW_RESIZABLE | SDL_WINDOW_METAL |
+                            SDL_WINDOW_HIGH_PIXEL_DENSITY;
+#if defined(__APPLE__) && TARGET_OS_IOS
+    if (!config.showStatusBar)
+        flags |= SDL_WINDOW_BORDERLESS;
+#endif
+    m->window = SDL_CreateWindow(windowTitle, width, height, flags);
     if (!m->window) {
         SDL_Quit();
         throw std::runtime_error(std::string("SDL_CreateWindow failed: ") + SDL_GetError());
