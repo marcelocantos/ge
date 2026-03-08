@@ -2,6 +2,7 @@
 
 #include <ge/GpuContext.h>
 #include <SDL3/SDL_events.h>
+#include <linalg.h>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -51,6 +52,10 @@ public:
     // Animated with S-curve easing when orientation changes. Updated each frame
     // before onUpdate. Always 0 on desktop.
     float orientationAngle() const;
+
+    // Counter-rotation matrix for clip space. Compensates for iOS window
+    // rotation so portrait content appears upright. Identity in portrait.
+    linalg::aliases::float4x4 orientationRot() const;
 
     void setSessionFlags(uint16_t flags);
     void flush();

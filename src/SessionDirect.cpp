@@ -42,6 +42,7 @@ int Session::pixelRatio() const { return m->pixelRatio; }
 uint8_t Session::deviceClass() const { return 3; } // desktop
 uint8_t Session::orientation() const { return 0; } // desktop: no orientation
 float Session::orientationAngle() const { return 0.0f; }
+linalg::aliases::float4x4 Session::orientationRot() const { return linalg::identity; }
 void Session::setSessionFlags(uint16_t) { /* no-op in direct mode */ }
 void Session::flush() { /* no-op: Application calls present() directly */ }
 

@@ -93,6 +93,18 @@ int Session::pixelRatio() const { return m->wire.pixelRatio(); }
 uint8_t Session::deviceClass() const { return m->wire.deviceClass(); }
 uint8_t Session::orientation() const { return m->wire.orientation(); }
 float Session::orientationAngle() const { return m->orientAngle; }
+
+linalg::aliases::float4x4 Session::orientationRot() const {
+    float a = -m->orientAngle; // counter-rotate
+    float c = std::cos(a), s = std::sin(a);
+    return {
+        linalg::aliases::float4{c, -s, 0, 0},
+        linalg::aliases::float4{s,  c, 0, 0},
+        linalg::aliases::float4{0,  0, 1, 0},
+        linalg::aliases::float4{0,  0, 0, 1},
+    };
+}
+
 void Session::setSessionFlags(uint16_t flags) { m->wire.setSessionFlags(flags); }
 void Session::flush() { m->wire.flush(); }
 
