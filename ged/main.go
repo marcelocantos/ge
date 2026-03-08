@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 )
 
 var version = "dev"
@@ -34,6 +35,9 @@ func main() {
 		Level: slog.LevelInfo,
 	})))
 
+	// Ask any existing ged on this port to shut down.
+	supersede(*port)
+
 	d := NewDaemon(*port, *noOpen)
 
 	// Print QR code
@@ -57,4 +61,31 @@ func main() {
 		slog.Error("Server failed", "err", err)
 		os.Exit(1)
 	}
+}
+
+// supersede asks any existing ged on the given port to shut down, then waits
+// for the port to become available.
+func supersede(port int) {
+	url := fmt.Sprintf("http://localhost:%d/quitquitquit", port)
+	client := &http.Client{Timeout: time.Second}
+	resp, err := client.Post(url, "", nil)
+	if err != nil {
+		return // no ged running (or not responding) — proceed
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return
+	}
+	slog.Info("Asked existing ged to shut down, waiting...")
+	// Poll until the port is free (up to 3s).
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		time.Sleep(100 * time.Millisecond)
+		resp, err := client.Get(fmt.Sprintf("http://localhost:%d/api/info", port))
+		if err != nil {
+			return // port is free
+		}
+		resp.Body.Close()
+	}
+	slog.Warn("Timed out waiting for old ged to exit")
 }

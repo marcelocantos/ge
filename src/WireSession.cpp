@@ -442,6 +442,7 @@ struct WireSession::M {
     int pixelRatio = 1;
     uint8_t deviceClass = 0;
     uint8_t orientation = 0;
+    uint16_t sessionFlags = 0;
     bool connected = false;
     Audio audio;
 
@@ -553,6 +554,7 @@ void WireSession::connect() {
 
     // Send SessionInit as a WebSocket binary frame
     wire::SessionInit sessionInit{};
+    sessionInit.flags = m->sessionFlags;
     sessionInit.instanceHandle = {instanceReservation.handle.id, instanceReservation.handle.generation};
     sessionInit.surfaceHandle = {surfaceReservation.handle.id, surfaceReservation.handle.generation};
 
@@ -703,6 +705,10 @@ uint8_t WireSession::deviceClass() const {
 uint8_t WireSession::orientation() const {
     if (!m->connected) const_cast<WireSession*>(this)->connect();
     return m->orientation;
+}
+
+void WireSession::setSessionFlags(uint16_t flags) {
+    m->sessionFlags = flags;
 }
 
 Audio& WireSession::audio() {

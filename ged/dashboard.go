@@ -7,9 +7,11 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/coder/websocket"
 	"github.com/skip2/go-qrcode"
@@ -17,6 +19,16 @@ import (
 
 // registerDashboard sets up all dashboard HTTP and WebSocket routes on the mux.
 func (d *Daemon) registerDashboard(mux *http.ServeMux) {
+	// Graceful shutdown — allows a new ged to supersede this one.
+	mux.HandleFunc("POST /quitquitquit", func(w http.ResponseWriter, r *http.Request) {
+		slog.Info("Received /quitquitquit, shutting down")
+		w.WriteHeader(http.StatusOK)
+		go func() {
+			time.Sleep(50 * time.Millisecond) // let response flush
+			os.Exit(0)
+		}()
+	})
+
 	// QR code PNG
 	mux.HandleFunc("GET /api/qr", func(w http.ResponseWriter, r *http.Request) {
 		png, err := qrcode.Encode(d.qrURL, qrcode.Medium, 256)

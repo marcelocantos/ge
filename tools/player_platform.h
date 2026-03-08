@@ -38,4 +38,9 @@ bool captureReady();
 // Returns device class: 1=phone, 2=tablet, 3=desktop.
 uint8_t deviceClass();
 
+// Start monitoring physical device orientation via platform sensors.
+// On iOS, registers for UIDeviceOrientationDidChangeNotification and pushes
+// synthetic SDL_EVENT_DISPLAY_ORIENTATION events. No-op on other platforms.
+void startOrientationMonitoring();
+
 } // namespace platform

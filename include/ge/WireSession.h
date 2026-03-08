@@ -47,6 +47,10 @@ public:
     // Initial device orientation (SDL_DisplayOrientation value). Available after connect().
     uint8_t orientation() const;
 
+    // Set session flags (wire::kSessionFlag*) before connect().
+    // These are sent to the player in SessionInit.
+    void setSessionFlags(uint16_t flags);
+
     // Flush wire commands to receiver and process responses.
     void flush();
 

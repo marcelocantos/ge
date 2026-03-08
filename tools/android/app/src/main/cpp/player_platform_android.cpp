@@ -46,4 +46,8 @@ uint8_t deviceClass() {
     return 1; // phone (Android tablet detection is future work)
 }
 
+void startOrientationMonitoring() {
+    // No-op on Android. Future: use SensorManager for device orientation.
+}
+
 } // namespace platform

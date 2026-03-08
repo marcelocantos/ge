@@ -45,6 +45,14 @@ public:
     int pixelRatio() const;
     uint8_t deviceClass() const;
     uint8_t orientation() const;
+
+    // Smooth orientation angle (radians) tracking physical device orientation.
+    // 0 = portrait, π/2 = landscape left, -π/2 = landscape right, π = upside-down.
+    // Animated with S-curve easing when orientation changes. Updated each frame
+    // before onUpdate. Always 0 on desktop.
+    float orientationAngle() const;
+
+    void setSessionFlags(uint16_t flags);
     void flush();
 
     // Render loop configuration.

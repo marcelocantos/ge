@@ -53,12 +53,15 @@ struct Handle {
     uint32_t generation;
 };
 
+// SessionInit flags (bitfield, sent from game server to player)
+constexpr uint16_t kSessionFlagInternalOrientation = 0x0001;  // App handles orientation transitions internally (smooth animation)
+
 // Sent by game server after receiving DeviceInfo
 // Contains reserved handles that the player should inject native resources into
 struct SessionInit {
     uint32_t magic = kSessionInitMagic;
     uint16_t version = kProtocolVersion;
-    uint16_t reserved = 0;
+    uint16_t flags = 0;
     // Reserved handles from WireClient that player should inject into
     Handle instanceHandle;
     Handle adapterHandle;

@@ -14,6 +14,16 @@
 #include <spdlog/spdlog.h>
 #include <stdexcept>
 
+#if TARGET_OS_IPHONE
+// The interface rotates with the device (all four orientations declared in
+// Info.plist) so system UI (home gesture, Control Center, multitasking)
+// matches the physical orientation. The system's default swivel animation
+// plays normally. The game detects orientation changes via
+// SDL_EVENT_DISPLAY_ORIENTATION and renders in portrait space with a
+// clip-space rotation (see Session::orientationAngle()), so orientation-
+// aware elements (carousel) track the physical bottom edge smoothly.
+#endif
+
 namespace {
 // Kept alive for the lifetime of the surface.
 SDL_MetalView g_metalView = nullptr;
@@ -128,6 +138,11 @@ uint8_t deviceClass() {
 #else
     return 3; // desktop
 #endif
+}
+
+void startOrientationMonitoring() {
+    // No-op on iOS: SDL delivers SDL_EVENT_DISPLAY_ORIENTATION events
+    // automatically when the window rotates. No extra sensor monitoring needed.
 }
 
 } // namespace platform

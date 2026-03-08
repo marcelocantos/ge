@@ -992,8 +992,13 @@ ConnectionResult Player::M::connectAndRun() {
                      sessionInit.version, wire::kProtocolVersion);
         return ConnectionResult::Disconnected;
     }
-    SPDLOG_INFO("Received SessionInit with instance handle={{id={}, gen={}}}",
-                sessionInit.instanceHandle.id, sessionInit.instanceHandle.generation);
+    SPDLOG_INFO("Received SessionInit with instance handle={{id={}, gen={}}}, flags=0x{:04x}",
+                sessionInit.instanceHandle.id, sessionInit.instanceHandle.generation,
+                sessionInit.flags);
+
+    if (sessionInit.flags & wire::kSessionFlagInternalOrientation) {
+        platform::startOrientationMonitoring();
+    }
 
     dawn::wire::WireServerDescriptor serverDesc{
         .procs = &dawn::native::GetProcs(),
