@@ -1595,6 +1595,11 @@ ConnectionResult Player::M::connectAndRun() {
     }
     wireServer.reset();
     serializer->setDiscard(false);
+    // The WireServer destructor generates destroy commands via GetCmdSpace().
+    // Discard mode only takes effect on Flush(), so GetCmdSpace() calls after
+    // the destructor's last Flush() leave residual bytes in the buffer.
+    // Clear them to prevent corrupting the next session's first wire response.
+    serializer->buffer().clear();
 
     if (serverSwitched) {
         // Directed switch: reconnect to get a clean WebSocket — the

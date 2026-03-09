@@ -83,3 +83,17 @@ where running a background TCP server is impractical or forbidden.
 **Weight**: 1 (value 2 / cost 2)
 
 **Status**: identified
+
+## 🎯 T7: Audio pauses when the app is backgrounded
+
+**Desired state**: When a ge app enters background on mobile (iOS/Android), the engine automatically pauses all active audio. When it returns to foreground, audio resumes. This works in all session types (wire, direct) without game-specific code.
+
+**Context**: User reported music keeps playing when the iOS app is backgrounded. Currently `ge::Audio` (server-side) sends play/stop/volume commands, and `AudioPlayer` (player-side, wire mode) or equivalent direct-mode playback handles them. Neither layer responds to app lifecycle events. The engine should intercept `SDL_EVENT_DID_ENTER_BACKGROUND` / `SDL_EVENT_DID_ENTER_FOREGROUND` and pause/resume audio automatically. In wire mode this means the player pauses its `AudioPlayer`; in direct mode the session or audio subsystem does it directly.
+
+**Acceptance**: On iOS and Android, backgrounding the app silences all ge audio. Foregrounding resumes it. Works in both wire mode (player) and direct mode (standalone app). No game code changes required. Desktop platforms are unaffected.
+
+**Weight**: 3 (value 5 / cost 2)
+
+**Origin**: manual (user-reported from yourworld)
+
+**Status**: identified
