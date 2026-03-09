@@ -334,6 +334,7 @@ public:
 
     void processResponses(dawn::wire::WireClient& client,
                            const std::function<void(const SDL_Event&)>& onEvent,
+                           const std::function<void(const wire::SafeAreaUpdate&)>& onSafeArea = nullptr,
                            const std::function<void(std::span<const uint8_t>)>& onMessage = nullptr) {
         while (conn_->available() > 0) {
             wire::MessageHeader header{};
@@ -355,6 +356,12 @@ public:
                     if (onEvent) {
                         onEvent(event);
                     }
+                }
+            } else if (header.magic == wire::kSafeAreaMagic) {
+                if (payload.size() >= sizeof(wire::SafeAreaUpdate) && onSafeArea) {
+                    wire::SafeAreaUpdate sa{};
+                    std::memcpy(&sa, payload.data(), sizeof(sa));
+                    onSafeArea(sa);
                 }
             } else if (header.magic == wire::kFrameReadyMagic) {
                 ++frameReadyCount;
@@ -438,10 +445,12 @@ struct WireSession::M {
     wgpu::Instance instance;
     std::unique_ptr<GpuContext> gfx;
     std::function<void(const SDL_Event&)> onEvent;
+    std::function<void(const wire::SafeAreaUpdate&)> onSafeArea;
     std::function<void(std::span<const uint8_t>)> onMessage;
     int pixelRatio = 1;
     uint8_t deviceClass = 0;
     uint8_t orientation = 0;
+    int safeX = 0, safeY = 0, safeW = 0, safeH = 0;
     uint16_t sessionFlags = 0;
     bool connected = false;
     Audio audio;
@@ -534,6 +543,11 @@ void WireSession::connect() {
     m->pixelRatio = std::max(1, (int)deviceInfo.pixelRatio);
     m->deviceClass = deviceInfo.deviceClass;
     m->orientation = deviceInfo.orientation;
+    m->safeX = deviceInfo.safeX;
+    m->safeY = deviceInfo.safeY;
+    m->safeW = deviceInfo.safeW;
+    m->safeH = deviceInfo.safeH;
+    SPDLOG_INFO("Safe area: x={} y={} w={} h={}", m->safeX, m->safeY, m->safeW, m->safeH);
 
     // Create wire client
     dawn::wire::WireClientDescriptor clientDesc{
@@ -607,7 +621,7 @@ void WireSession::connect() {
 
     m->serializer->Flush();
     while (!adapterReceived) {
-        m->serializer->processResponses(*m->wireClient, m->onEvent, m->onMessage);
+        m->serializer->processResponses(*m->wireClient, m->onEvent, m->onSafeArea, m->onMessage);
         m->instance.ProcessEvents();
     }
 
@@ -662,7 +676,7 @@ void WireSession::connect() {
 
     m->serializer->Flush();
     while (!deviceReceived) {
-        m->serializer->processResponses(*m->wireClient, m->onEvent, m->onMessage);
+        m->serializer->processResponses(*m->wireClient, m->onEvent, m->onSafeArea, m->onMessage);
         m->instance.ProcessEvents();
     }
 
@@ -707,6 +721,11 @@ uint8_t WireSession::orientation() const {
     return m->orientation;
 }
 
+int WireSession::safeX() const { return m->safeX; }
+int WireSession::safeY() const { return m->safeY; }
+int WireSession::safeW() const { return m->safeW; }
+int WireSession::safeH() const { return m->safeH; }
+
 void WireSession::setSessionFlags(uint16_t flags) {
     m->sessionFlags = flags;
 }
@@ -716,7 +735,7 @@ Audio& WireSession::audio() {
 }
 
 void WireSession::flush() {
-    m->serializer->processResponses(*m->wireClient, m->onEvent, m->onMessage);
+    m->serializer->processResponses(*m->wireClient, m->onEvent, m->onSafeArea, m->onMessage);
     m->instance.ProcessEvents();
     m->serializer->Flush();
 }
@@ -773,6 +792,15 @@ bool WireSession::run(RunConfig config) {
         }
     };
 
+    m->onSafeArea = [this](const wire::SafeAreaUpdate& sa) {
+        m->safeX = sa.safeX;
+        m->safeY = sa.safeY;
+        m->safeW = sa.safeW;
+        m->safeH = sa.safeH;
+        SPDLOG_INFO("Safe area updated: x={} y={} w={} h={}",
+                    sa.safeX, sa.safeY, sa.safeW, sa.safeH);
+    };
+
     // Flush any resource creation commands issued between construction and run()
     flush();
 
@@ -814,13 +842,21 @@ bool WireSession::run(RunConfig config) {
             config.appId.data(), config.appId.size());
         SPDLOG_INFO("Sent StateRequest (app={}), waiting for player DB...", config.appId);
 
+        // Buffer sqlpipe messages that arrive before onStateReceived runs.
+        // The player sends its sqlpipe hello immediately after the state DB,
+        // but the app's master isn't re-initialized until onStateReceived.
+        std::vector<std::vector<uint8_t>> deferredMessages;
+        auto bufferMessage = [&](std::span<const uint8_t> data) {
+            deferredMessages.emplace_back(data.begin(), data.end());
+        };
+
         std::vector<char> statePayload;
         for (;;) {
             if (!m->serializer->connection().isOpen()) {
                 SPDLOG_WARN("Player disconnected during state sync");
                 return true;
             }
-            m->serializer->processResponses(*m->wireClient, m->onEvent, m->onMessage);
+            m->serializer->processResponses(*m->wireClient, m->onEvent, m->onSafeArea, bufferMessage);
             m->instance.ProcessEvents();
             if (auto data = m->serializer->takeStashedStateData()) {
                 statePayload = std::move(*data);
@@ -831,6 +867,13 @@ bool WireSession::run(RunConfig config) {
 
         config.onStateReceived(std::move(statePayload));
         SPDLOG_INFO("State sync complete ({} bytes)", statePayload.size());
+
+        // Replay buffered sqlpipe messages now that the master is initialized
+        if (m->onMessage) {
+            for (auto& msg : deferredMessages) {
+                m->onMessage(std::span<const uint8_t>(msg.data(), msg.size()));
+            }
+        }
     }
 
     DeltaTimer frameTimer;
@@ -875,7 +918,7 @@ bool WireSession::run(RunConfig config) {
             return true;
         }
         try {
-            m->serializer->processResponses(*m->wireClient, m->onEvent, m->onMessage);
+            m->serializer->processResponses(*m->wireClient, m->onEvent, m->onSafeArea, m->onMessage);
         } catch (const std::exception& e) {
             SPDLOG_WARN("Player disconnected: {}", e.what());
             return true;
@@ -888,7 +931,7 @@ bool WireSession::run(RunConfig config) {
                 return true;
             }
             try {
-                m->serializer->processResponses(*m->wireClient, m->onEvent, m->onMessage);
+                m->serializer->processResponses(*m->wireClient, m->onEvent, m->onSafeArea, m->onMessage);
             } catch (const std::exception& e) {
                 SPDLOG_WARN("Player disconnected: {}", e.what());
                 return true;

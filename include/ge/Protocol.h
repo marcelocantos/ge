@@ -30,9 +30,10 @@ constexpr uint32_t kServerAssignedMagic = 0x4745324E;  // "GE2N" — ged → pla
 constexpr uint32_t kVideoStreamMagic  = 0x47453256;   // "GE2V" — player → ged: H.264 NALs
 constexpr uint32_t kStreamStartMagic  = 0x47453257;   // "GE2W" — ged → player: start streaming
 constexpr uint32_t kStreamStopMagic   = 0x47453258;   // "GE2X" — ged → player: stop streaming
+constexpr uint32_t kSafeAreaMagic     = 0x47453245;   // "GE2E" — player → server: safe area update
 
 // TODO: Consider semver or min/max range for backwards-compatible changes.
-constexpr uint16_t kProtocolVersion = 4;
+constexpr uint16_t kProtocolVersion = 5;
 constexpr size_t kMaxMessageSize = 512 * 1024 * 1024;  // 512MB (initial resource uploads can be large)
 
 // Sent by player after connecting to game server
@@ -45,6 +46,19 @@ struct DeviceInfo {
     uint8_t deviceClass = 0;  // 0=unknown, 1=phone, 2=tablet, 3=desktop
     uint8_t orientation = 0;  // SDL_DisplayOrientation value (0-4)
     uint32_t preferredFormat; // wgpu::TextureFormat value
+    uint16_t safeX = 0;      // Safe area left edge in pixels (0 = full screen)
+    uint16_t safeY = 0;      // Safe area top edge in pixels
+    uint16_t safeW = 0;      // Safe area width in pixels (0 = use full width)
+    uint16_t safeH = 0;      // Safe area height in pixels (0 = use full height)
+};
+
+// Safe area update (player → server, sent on orientation change)
+struct SafeAreaUpdate {
+    uint32_t magic = kSafeAreaMagic;
+    uint16_t safeX;   // Safe area left edge in pixels
+    uint16_t safeY;   // Safe area top edge in pixels
+    uint16_t safeW;   // Safe area width in pixels (0 = use full width)
+    uint16_t safeH;   // Safe area height in pixels (0 = use full height)
 };
 
 // Wire handle (matches dawn::wire::Handle)

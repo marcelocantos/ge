@@ -47,6 +47,13 @@ public:
     // Initial device orientation (SDL_DisplayOrientation value). Available after connect().
     uint8_t orientation() const;
 
+    // Safe area rect in pixels (from DeviceInfo). Available after connect().
+    // safeW=0 means full screen (no insets).
+    int safeX() const;
+    int safeY() const;
+    int safeW() const;
+    int safeH() const;
+
     // Set session flags (wire::kSessionFlag*) before connect().
     // These are sent to the player in SessionInit.
     void setSessionFlags(uint16_t flags);

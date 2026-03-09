@@ -47,6 +47,7 @@ struct Session::M {
 
     // Portrait lock state.
     bool portraitLock = false;
+    bool ignoreSafeArea = false;
     int discreteOrientation = 0;    // raw SDL_DisplayOrientation value
     int portraitW = 0, portraitH = 0; // canonical portrait dimensions (min x max)
 
@@ -90,8 +91,14 @@ Session::~Session() = default;
 Audio& Session::audio() { return m->wire.audio(); }
 void Session::connect() { m->wire.connect(); }
 GpuContext& Session::gpu() { return m->wire.gpu(); }
-int Session::width() const { return m->portraitLock ? m->portraitW : m->wire.gpu().width(); }
-int Session::height() const { return m->portraitLock ? m->portraitH : m->wire.gpu().height(); }
+int Session::width() const {
+    if (!m->ignoreSafeArea && m->wire.safeW() > 0) return m->wire.safeW();
+    return m->portraitLock ? m->portraitW : m->wire.gpu().width();
+}
+int Session::height() const {
+    if (!m->ignoreSafeArea && m->wire.safeH() > 0) return m->wire.safeH();
+    return m->portraitLock ? m->portraitH : m->wire.gpu().height();
+}
 int Session::pixelRatio() const { return m->wire.pixelRatio(); }
 uint8_t Session::deviceClass() const { return m->wire.deviceClass(); }
 uint8_t Session::orientation() const { return m->wire.orientation(); }
@@ -111,47 +118,68 @@ linalg::aliases::float4x4 Session::orientationRot() const {
 void Session::setViewport(wgpu::RenderPassEncoder& pass,
                           float x, float y, float w, float h,
                           float minDepth, float maxDepth) {
+    // Offset from safe-area-relative to portrait-absolute coordinates.
+    // Safe area values are always in portrait-space (player converts them).
+    if (!m->ignoreSafeArea && m->wire.safeW() > 0) {
+        x += float(m->wire.safeX());
+        y += float(m->wire.safeY());
+    }
+
     if (!m->portraitLock) {
         pass.SetViewport(x, y, w, h, minDepth, maxDepth);
         return;
     }
     float pw = float(m->portraitW), ph = float(m->portraitH);
+    float rx = x, ry = y, rw = w, rh = h;
     switch (static_cast<SDL_DisplayOrientation>(m->discreteOrientation)) {
         case SDL_ORIENTATION_LANDSCAPE:  // right side up — device rotated CCW
-            pass.SetViewport(y, pw - x - w, h, w, minDepth, maxDepth);
+            rx = y; ry = pw - x - w; rw = h; rh = w;
             break;
         case SDL_ORIENTATION_LANDSCAPE_FLIPPED:  // left side up — device rotated CW
-            pass.SetViewport(ph - y - h, x, h, w, minDepth, maxDepth);
+            rx = ph - y - h; ry = x; rw = h; rh = w;
             break;
         case SDL_ORIENTATION_PORTRAIT_FLIPPED:  // 180°
-            pass.SetViewport(pw - x - w, ph - y - h, w, h, minDepth, maxDepth);
+            rx = pw - x - w; ry = ph - y - h;
             break;
         default:  // portrait — identity
-            pass.SetViewport(x, y, w, h, minDepth, maxDepth);
             break;
     }
+    pass.SetViewport(rx, ry, rw, rh, minDepth, maxDepth);
 }
 
 void Session::setScissorRect(wgpu::RenderPassEncoder& pass,
                              uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
-    if (!m->portraitLock) {
-        pass.SetScissorRect(x, y, w, h);
-        return;
+    // Offset from safe-area-relative to portrait-absolute coordinates.
+    if (!m->ignoreSafeArea && m->wire.safeW() > 0) {
+        x += uint32_t(m->wire.safeX());
+        y += uint32_t(m->wire.safeY());
     }
-    uint32_t pw = uint32_t(m->portraitW), ph = uint32_t(m->portraitH);
-    switch (static_cast<SDL_DisplayOrientation>(m->discreteOrientation)) {
-        case SDL_ORIENTATION_LANDSCAPE:  // right side up — device rotated CCW
-            pass.SetScissorRect(y, pw - x - w, h, w);
-            break;
-        case SDL_ORIENTATION_LANDSCAPE_FLIPPED:  // left side up — device rotated CW
-            pass.SetScissorRect(ph - y - h, x, h, w);
-            break;
-        case SDL_ORIENTATION_PORTRAIT_FLIPPED:  // 180°
-            pass.SetScissorRect(pw - x - w, ph - y - h, w, h);
-            break;
-        default:  // portrait — identity
-            pass.SetScissorRect(x, y, w, h);
-            break;
+
+    uint32_t rx = x, ry = y, rw = w, rh = h;
+    if (m->portraitLock) {
+        uint32_t pw = uint32_t(m->portraitW), ph = uint32_t(m->portraitH);
+        switch (static_cast<SDL_DisplayOrientation>(m->discreteOrientation)) {
+            case SDL_ORIENTATION_LANDSCAPE:  // right side up — device rotated CCW
+                rx = y; ry = pw - x - w; rw = h; rh = w;
+                break;
+            case SDL_ORIENTATION_LANDSCAPE_FLIPPED:  // left side up — device rotated CW
+                rx = ph - y - h; ry = x; rw = h; rh = w;
+                break;
+            case SDL_ORIENTATION_PORTRAIT_FLIPPED:  // 180°
+                rx = pw - x - w; ry = ph - y - h; rw = w; rh = h;
+                break;
+            default:  // portrait — identity
+                break;
+        }
+    }
+
+    // Clamp to surface bounds to prevent validation error.
+    uint32_t sw = uint32_t(m->wire.gpu().width());
+    uint32_t sh = uint32_t(m->wire.gpu().height());
+    if (rx + rw > sw) rw = (rx < sw) ? sw - rx : 0;
+    if (ry + rh > sh) rh = (ry < sh) ? sh - ry : 0;
+    if (rw > 0 && rh > 0) {
+        pass.SetScissorRect(rx, ry, rw, rh);
     }
 }
 
@@ -182,6 +210,7 @@ static void transformFingerToPortrait(SDL_Event& e, int orientation) {
 bool Session::run(RunConfig config) {
     m->initOrientAngle();
     m->portraitLock = config.portraitLock;
+    m->ignoreSafeArea = config.ignoreSafeArea;
 
     if (m->portraitLock) {
         m->discreteOrientation = m->wire.orientation();
@@ -192,10 +221,11 @@ bool Session::run(RunConfig config) {
     }
 
     // Wrap user's onEvent to intercept orientation changes for smooth angle,
-    // and (when portrait-locked) transform touch events to portrait coordinates.
+    // transform touch events to portrait coordinates, and remap to safe area.
     auto userEvent = std::move(config.onEvent);
     bool portraitLock = m->portraitLock;
-    auto wrappedEvent = [this, portraitLock,
+    bool useSafeArea = !m->ignoreSafeArea;
+    auto wrappedEvent = [this, portraitLock, useSafeArea,
                          userEvent = std::move(userEvent)](const SDL_Event& e) {
         if (e.type == SDL_EVENT_DISPLAY_ORIENTATION) {
             m->onOrientationEvent(e.display.data1);
@@ -203,11 +233,26 @@ bool Session::run(RunConfig config) {
                 m->discreteOrientation = e.display.data1;
             }
         }
-        if (portraitLock && (e.type == SDL_EVENT_FINGER_DOWN ||
-                            e.type == SDL_EVENT_FINGER_UP ||
-                            e.type == SDL_EVENT_FINGER_MOTION)) {
+        bool isFinger = (e.type == SDL_EVENT_FINGER_DOWN ||
+                         e.type == SDL_EVENT_FINGER_UP ||
+                         e.type == SDL_EVENT_FINGER_MOTION);
+        bool hasSafeArea = useSafeArea && m->wire.safeW() > 0;
+        if (isFinger && (portraitLock || hasSafeArea)) {
             SDL_Event pe = e;
-            transformFingerToPortrait(pe, m->discreteOrientation);
+            if (portraitLock) {
+                transformFingerToPortrait(pe, m->discreteOrientation);
+            }
+            // Remap from full-screen normalized coords to safe-area-relative coords.
+            // The game thinks the screen is safeW × safeH, so touches outside the
+            // safe area map to negative or >1 values (which the game can ignore).
+            if (hasSafeArea) {
+                float fullW = float(m->portraitLock ? m->portraitW : m->wire.gpu().width());
+                float fullH = float(m->portraitLock ? m->portraitH : m->wire.gpu().height());
+                float sx = float(m->wire.safeX()), sy = float(m->wire.safeY());
+                float sw = float(m->wire.safeW()), sh = float(m->wire.safeH());
+                pe.tfinger.x = (pe.tfinger.x * fullW - sx) / sw;
+                pe.tfinger.y = (pe.tfinger.y * fullH - sy) / sh;
+            }
             if (userEvent) userEvent(pe);
             return;
         }
@@ -250,16 +295,21 @@ bool Session::run(RunConfig config) {
         if (userResize) userResize(w, h);
     };
 
-    // Wrap onRender to pass portrait dims when portrait-locked.
+    // Wrap onRender to pass safe-area dims (or portrait dims if no safe area).
     auto userRender = std::move(config.onRender);
-    auto wrappedRender = [this, userRender = std::move(userRender)](
+    auto wrappedRender = [this, useSafeArea,
+                          userRender = std::move(userRender)](
             wgpu::TextureView target, int w, int h) {
+        int rw = w, rh = h;
         if (m->portraitLock) {
-            int pw = std::min(w, h), ph = std::max(w, h);
-            if (userRender) userRender(target, pw, ph);
-        } else {
-            if (userRender) userRender(target, w, h);
+            rw = std::min(w, h);
+            rh = std::max(w, h);
         }
+        if (useSafeArea && m->wire.safeW() > 0) {
+            rw = m->wire.safeW();
+            rh = m->wire.safeH();
+        }
+        if (userRender) userRender(target, rw, rh);
     };
 
     return m->wire.run({

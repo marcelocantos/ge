@@ -36,6 +36,50 @@ namespace {
 
 enum class ConnectionResult { Quit, Disconnected };
 
+// Convert a safe area rect from surface-space to portrait-space.
+// The server/game always works in portrait coordinates (min-dim × max-dim).
+// SDL_GetWindowSafeArea returns values in the current orientation's coordinate
+// system, so we apply the inverse of the viewport orientation transform.
+void safeAreaToPortrait(wire::SafeAreaUpdate& sa,
+                        int surfW, int surfH, int pr,
+                        const SDL_Rect& rect,
+                        SDL_DisplayOrientation orient) {
+    int pw = std::min(surfW, surfH);  // portrait width in pixels
+    int ph = std::max(surfW, surfH);  // portrait height in pixels
+    int sx = rect.x * pr, sy = rect.y * pr;
+    int sw = rect.w * pr, sh = rect.h * pr;
+
+    switch (orient) {
+        case SDL_ORIENTATION_LANDSCAPE:
+            // Viewport fwd: (px,py,pw,ph) → (py, PW-px-pw, ph, pw)
+            sa.safeX = uint16_t(pw - sy - sh);
+            sa.safeY = uint16_t(sx);
+            sa.safeW = uint16_t(sh);
+            sa.safeH = uint16_t(sw);
+            break;
+        case SDL_ORIENTATION_LANDSCAPE_FLIPPED:
+            // Viewport fwd: (px,py,pw,ph) → (PH-py-ph, px, ph, pw)
+            sa.safeX = uint16_t(sy);
+            sa.safeY = uint16_t(ph - sx - sw);
+            sa.safeW = uint16_t(sh);
+            sa.safeH = uint16_t(sw);
+            break;
+        case SDL_ORIENTATION_PORTRAIT_FLIPPED:
+            // Viewport fwd: (px,py,pw,ph) → (PW-px-pw, PH-py-ph, pw, ph)
+            sa.safeX = uint16_t(pw - sx - sw);
+            sa.safeY = uint16_t(ph - sy - sh);
+            sa.safeW = uint16_t(sw);
+            sa.safeH = uint16_t(sh);
+            break;
+        default:  // portrait — identity
+            sa.safeX = uint16_t(sx);
+            sa.safeY = uint16_t(sy);
+            sa.safeW = uint16_t(sw);
+            sa.safeH = uint16_t(sh);
+            break;
+    }
+}
+
 // Dawn wire command constants for observing texture/view/bind group creation.
 // Values from WireCmd_autogen.h — must match the Dawn version in ge/vendor/dawn.
 namespace wire_obs {
@@ -865,6 +909,25 @@ ConnectionResult Player::M::connectAndRun() {
     deviceInfo.orientation = static_cast<uint8_t>(curOrient);
     deviceInfo.preferredFormat = static_cast<uint32_t>(swapChainFormat);
 
+    // Query OS safe area insets and convert to portrait-space pixels.
+    // Desktop windows don't rotate with the display, so skip the orientation
+    // transform — the safe area rect from SDL is already in window coordinates.
+    SDL_Rect safeRect{};
+    if (SDL_GetWindowSafeArea(window, &safeRect) && safeRect.w > 0 && safeRect.h > 0) {
+        int pr = deviceInfo.pixelRatio;
+        wire::SafeAreaUpdate sa{};
+        auto safeOrient = (deviceInfo.deviceClass == 3)
+            ? SDL_ORIENTATION_PORTRAIT : curOrient;
+        safeAreaToPortrait(sa, pixelWidth, pixelHeight, pr, safeRect, safeOrient);
+        deviceInfo.safeX = sa.safeX;
+        deviceInfo.safeY = sa.safeY;
+        deviceInfo.safeW = sa.safeW;
+        deviceInfo.safeH = sa.safeH;
+        SPDLOG_INFO("Safe area (portrait): x={} y={} w={} h={} (surface points: {},{} {}x{})",
+                    deviceInfo.safeX, deviceInfo.safeY, deviceInfo.safeW, deviceInfo.safeH,
+                    safeRect.x, safeRect.y, safeRect.w, safeRect.h);
+    }
+
     // Create serializer for sending responses back to the server
     auto serializer = std::make_unique<ge::WebSocketSerializer>(
         wsConn, wire::kWireResponseMagic);
@@ -1084,6 +1147,26 @@ ConnectionResult Player::M::connectAndRun() {
                 case SDL_EVENT_DISPLAY_ORIENTATION:
                     try {
                         serializer->sendMessage(wire::kSdlEventMagic, &event, sizeof(event));
+                        // Send updated safe area only on orientation change.
+                        // event.display.data1 is only valid for display events —
+                        // reading it from other union members gives garbage.
+                        if (event.type == SDL_EVENT_DISPLAY_ORIENTATION) {
+                            SDL_Rect safeRect{};
+                            if (SDL_GetWindowSafeArea(window, &safeRect) && safeRect.w > 0 && safeRect.h > 0) {
+                                int curPW, curPH;
+                                SDL_GetWindowSizeInPixels(window, &curPW, &curPH);
+                                auto newOrient = (deviceInfo.deviceClass == 3)
+                                    ? SDL_ORIENTATION_PORTRAIT
+                                    : static_cast<SDL_DisplayOrientation>(event.display.data1);
+                                wire::SafeAreaUpdate saUpdate{};
+                                safeAreaToPortrait(saUpdate, curPW, curPH,
+                                                   deviceInfo.pixelRatio, safeRect, newOrient);
+                                serializer->sendMessage(wire::kSafeAreaMagic, &saUpdate, sizeof(saUpdate));
+                                SPDLOG_INFO("Safe area update (portrait): x={} y={} w={} h={}",
+                                            saUpdate.safeX, saUpdate.safeY,
+                                            saUpdate.safeW, saUpdate.safeH);
+                            }
+                        }
                     } catch (const std::exception&) {
                         SPDLOG_WARN("Connection lost (event send)");
                         exitLoop = true;

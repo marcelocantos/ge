@@ -47,8 +47,8 @@ public:
     Audio& audio();
     void connect();
     GpuContext& gpu();
-    int width() const;   // Portrait-space width (min of real dims when portraitLock)
-    int height() const;  // Portrait-space height (max of real dims when portraitLock)
+    int width() const;   // Safe-area-adjusted width (portrait-space if portraitLock)
+    int height() const;  // Safe-area-adjusted height (portrait-space if portraitLock)
     int pixelRatio() const;
     uint8_t deviceClass() const;
     uint8_t orientation() const;
@@ -82,6 +82,7 @@ public:
         std::function<void(const SDL_Event&)> onEvent;
         std::function<void(int w, int h)> onResize;
         bool portraitLock = false;  // Keep surface at portrait dimensions; transform touch events
+        bool ignoreSafeArea = false;  // When true, use full surface (ignore OS safe area insets)
         uint32_t sensors = 0;  // bitmask of requested SDL_SensorType values
 
         // State sync (wire mode only). If onStateReceived is set, the
