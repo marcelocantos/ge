@@ -160,6 +160,7 @@ void AudioPlayer::handleCommand(uint32_t command, uint32_t id, float volume) {
             }
         }
 
+        SDL_ResumeAudioStreamDevice(clip.stream);
         SDL_ClearAudioStream(clip.stream);
         SDL_PutAudioStreamData(clip.stream, clip.pcmData.data(),
                                static_cast<int>(clip.pcmData.size()));
@@ -172,6 +173,7 @@ void AudioPlayer::handleCommand(uint32_t command, uint32_t id, float volume) {
     }
     case 1: // stop
         if (clip.stream) {
+            SDL_PauseAudioStreamDevice(clip.stream);
             SDL_ClearAudioStream(clip.stream);
         }
         SPDLOG_INFO("AudioPlayer: Stop clip {}", id);
