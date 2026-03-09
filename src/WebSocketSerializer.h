@@ -30,10 +30,17 @@ public:
 
     bool Flush() override {
         if (buffer_.empty()) return true;
+        if (discard_) {
+            buffer_.clear();
+            return true;
+        }
         sendMessage(flushMagic_, buffer_.data(), buffer_.size());
         buffer_.clear();
         return true;
     }
+
+    /// When true, Flush() discards accumulated data instead of sending it.
+    void setDiscard(bool d) { discard_ = d; }
 
     size_t GetMaximumAllocationSize() const override {
         return wire::kMaxMessageSize;
@@ -69,6 +76,7 @@ public:
 protected:
     std::shared_ptr<WsConnection> conn_;
     uint32_t flushMagic_;
+    bool discard_ = false;
     std::vector<char> buffer_;
     std::vector<char> frame_;  // reusable scratch for sendMessage
 };

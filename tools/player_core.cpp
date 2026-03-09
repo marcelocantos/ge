@@ -1584,8 +1584,17 @@ ConnectionResult Player::M::connectAndRun() {
     // before the new surface tries to use the same ANativeWindow.
     dawn::native::InstanceProcessEvents(dawnInstance->Get());
 
-    // Destroy the WireServer before potentially creating a new one
+    // Destroy the WireServer.  The destructor calls DestroyAllObjects which
+    // generates wire responses through the serializer.  If the session ended
+    // (server died) and we plan to reuse this WebSocket for a new session,
+    // those stale responses would race with the new server's bridge setup in
+    // ged and corrupt the new WireClient's state.  Put the serializer in
+    // discard mode so the destructor's output goes nowhere.
+    if (sessionEnded) {
+        serializer->setDiscard(true);
+    }
     wireServer.reset();
+    serializer->setDiscard(false);
 
     if (serverSwitched) {
         // Directed switch: reconnect to get a clean WebSocket — the
@@ -1599,8 +1608,6 @@ ConnectionResult Player::M::connectAndRun() {
     if (sessionEnded) {
         // Server died: stay connected to ged so our session persists.
         // Loop back to wait for SessionInit from a new server.
-        // Stale wire responses from the WireServer destructor are safe —
-        // ged drops them (bridged=false) before the new bridge is up.
         SPDLOG_INFO("Session ended — staying connected for reassignment");
         continue;
     }

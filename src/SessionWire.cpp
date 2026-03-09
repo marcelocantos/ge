@@ -218,7 +218,26 @@ bool Session::run(RunConfig config) {
         int w = gpu.width(), h = gpu.height();
         m->portraitW = std::min(w, h);
         m->portraitH = std::max(w, h);
+
+        // If the reported orientation is inconsistent with surface dims
+        // (e.g. SDL_GetCurrentDisplayOrientation returns the Mac display's
+        // orientation in the iOS Simulator, not the simulated device's),
+        // infer from aspect ratio so the first frame renders correctly.
+        auto cur = static_cast<SDL_DisplayOrientation>(m->discreteOrientation);
+        bool dimsLandscape = w > h;
+        bool orientLandscape = (cur == SDL_ORIENTATION_LANDSCAPE ||
+                                cur == SDL_ORIENTATION_LANDSCAPE_FLIPPED);
+        if (dimsLandscape && !orientLandscape) {
+            m->discreteOrientation = SDL_ORIENTATION_LANDSCAPE;
+        } else if (!dimsLandscape && orientLandscape) {
+            m->discreteOrientation = SDL_ORIENTATION_PORTRAIT;
+        }
     }
+    // Re-init orientation angle after any correction.
+    m->orientAngle = orientationToRadians(m->discreteOrientation);
+    m->orientTarget = m->orientAngle;
+    m->orientStart = m->orientAngle;
+    m->orientProgress = 1.0f;
 
     // Wrap user's onEvent to intercept orientation changes for smooth angle,
     // transform touch events to portrait coordinates, and remap to safe area.
