@@ -18,7 +18,7 @@ import (
 )
 
 // protocolVersion must match wire::kProtocolVersion in Protocol.h.
-const protocolVersion = 4
+const protocolVersion = 5
 
 func contextWithTimeout(d time.Duration) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), d)

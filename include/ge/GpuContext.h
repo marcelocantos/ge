@@ -34,8 +34,9 @@ public:
     wgpu::TextureFormat swapChainFormat() const;
 
     // Frame management
-    wgpu::TextureView currentFrameView();  // Get texture view for current frame
-    void present();                         // Submit frame to display
+    wgpu::TextureView currentFrameView();    // Get texture view for current frame
+    wgpu::Texture currentFrameTexture();     // Get texture for current frame (for copy/blit)
+    void present();                          // Submit frame to display
 
     // Resize handling
     void resize(linalg::vec<int,2> size);

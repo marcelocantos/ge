@@ -75,6 +75,8 @@ target_include_directories(ge PUBLIC
 )
 
 if(GE_DIRECT)
+    target_compile_definitions(ge PUBLIC GE_DIRECT)
+
     # astcenc (decompress-only) for ASTC→RGBA decoding at runtime
     set(ASTCENC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/vendor/github.com/ARM-software/astc-encoder/Source)
     file(GLOB ASTCENC_SOURCES ${ASTCENC_DIR}/astcenc_*.cpp)

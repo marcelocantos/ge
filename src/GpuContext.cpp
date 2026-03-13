@@ -218,6 +218,10 @@ wgpu::TextureView GpuContext::currentFrameView() {
     return m->surfaceTexture.texture.CreateView();
 }
 
+wgpu::Texture GpuContext::currentFrameTexture() {
+    return m->surfaceTexture.texture;
+}
+
 void GpuContext::present() {
     m->surface.Present();
 }

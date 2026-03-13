@@ -9,7 +9,7 @@ using namespace linalg::aliases;
 // Stores orientation as a quaternion and angular velocity as a 3D vector.
 class DampedRotation {
 public:
-    DampedRotation(float damping = 0.92f) : damping_(damping) {}
+    DampedRotation(float damping = 0.90f) : damping_(damping) {}
 
     const float4& orientation() const { return orientation_; }
     const float3& angularVelocity() const { return angularVelocity_; }

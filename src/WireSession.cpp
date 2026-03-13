@@ -755,7 +755,40 @@ bool WireSession::run(RunConfig config) {
             m->gfx->resize({e.window.data1, e.window.data2});
             if (userResize) userResize(e.window.data1, e.window.data2);
         } else {
-            if (userEvent) userEvent(e);
+            // Normalize input coords to pixels before dispatching to game code.
+            // Finger events arrive as normalized 0-1; mouse events as points.
+            // Game code receives everything in pixel coordinates.
+            SDL_Event ne = e;
+            float pr = float(m->pixelRatio);
+            float pw = float(m->gfx->width());
+            float ph = float(m->gfx->height());
+            switch (ne.type) {
+                case SDL_EVENT_FINGER_DOWN:
+                case SDL_EVENT_FINGER_UP:
+                    ne.tfinger.x = ne.tfinger.x * pw;
+                    ne.tfinger.y = ne.tfinger.y * ph;
+                    break;
+                case SDL_EVENT_FINGER_MOTION:
+                    ne.tfinger.x = ne.tfinger.x * pw;
+                    ne.tfinger.y = ne.tfinger.y * ph;
+                    ne.tfinger.dx = ne.tfinger.dx * pw;
+                    ne.tfinger.dy = ne.tfinger.dy * ph;
+                    break;
+                case SDL_EVENT_MOUSE_BUTTON_DOWN:
+                case SDL_EVENT_MOUSE_BUTTON_UP:
+                    ne.button.x = ne.button.x * pr;
+                    ne.button.y = ne.button.y * pr;
+                    break;
+                case SDL_EVENT_MOUSE_MOTION:
+                    ne.motion.x = ne.motion.x * pr;
+                    ne.motion.y = ne.motion.y * pr;
+                    ne.motion.xrel = ne.motion.xrel * pr;
+                    ne.motion.yrel = ne.motion.yrel * pr;
+                    break;
+                default:
+                    break;
+            }
+            if (userEvent) userEvent(ne);
             // Forward display orientation to dashboard preview
             if (e.type == SDL_EVENT_DISPLAY_ORIENTATION) {
                 int mapped = 0;

@@ -88,6 +88,10 @@ ge/TRIANGLE_SRC = ge/vendor/src/triangle.c
 ge/TRIANGLE_OBJ = $(BUILD_DIR)/ge/vendor/triangle.o
 ge/TRIANGLE_CFLAGS = -O2 -Ige/vendor/include -DTRILIBRARY -DREAL=double -DANSI_DECLARATORS -DNO_TIMER
 
+# lz4 compression (C code, used by sqlpipe)
+ge/LZ4_SRC = ge/vendor/src/lz4.c
+ge/LZ4_OBJ = $(BUILD_DIR)/ge/vendor/lz4.o
+
 # Vendor C++ libraries (compiled into libge.a)
 ge/VENDOR_CPP_SRC = ge/vendor/src/sqlift.cpp ge/vendor/src/sqlpipe.cpp
 ge/VENDOR_CPP_OBJ = $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(ge/VENDOR_CPP_SRC))
@@ -130,7 +134,7 @@ $(BUILD_DIR)/ge/src/%.o: ge/src/%.mm
 	$(CXX) $(CXXFLAGS) $(SDL_CFLAGS) -MMD -MP -c $< -o $@
 
 # Static library
-$(ge/LIB): $(ge/OBJ) $(ge/SQLITE_OBJ) $(ge/VENDOR_CPP_OBJ)
+$(ge/LIB): $(ge/OBJ) $(ge/SQLITE_OBJ) $(ge/LZ4_OBJ) $(ge/VENDOR_CPP_OBJ)
 	@mkdir -p $(dir $@)
 	$(AR) rcs $@ $^
 
@@ -148,6 +152,11 @@ $(BUILD_DIR)/$(ge/BOX2D_DIR)/src/%.o: $(ge/BOX2D_DIR)/src/%.c
 $(ge/SQLITE_OBJ): $(ge/SQLITE_SRC)
 	@mkdir -p $(dir $@)
 	$(CC) -O2 -Ige/vendor/include -DSQLITE_ENABLE_SESSION -DSQLITE_ENABLE_PREUPDATE_HOOK -DSQLITE_ENABLE_DESERIALIZE -c $< -o $@
+
+# lz4 compression
+$(ge/LZ4_OBJ): $(ge/LZ4_SRC)
+	@mkdir -p $(dir $@)
+	$(CC) -O2 -Ige/vendor/include -c $< -o $@
 
 # Triangle library
 $(ge/TRIANGLE_OBJ): $(ge/TRIANGLE_SRC)

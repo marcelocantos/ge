@@ -2,6 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
+#define SQLPIPE_VERSION       "0.7.0"
+#define SQLPIPE_VERSION_MAJOR 0
+#define SQLPIPE_VERSION_MINOR 7
+#define SQLPIPE_VERSION_PATCH 0
+
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -71,6 +76,67 @@ enum class ConflictType : std::uint8_t {
 using ConflictCallback = std::function<ConflictAction(
     ConflictType type, const ChangeEvent& event)>;
 
+/// Default bucket size for the diff protocol (rows per bucket).
+inline constexpr std::int64_t kDefaultBucketSize = 1024;
+
+/// Maximum serialized message size accepted by deserialize() (64 MB).
+inline constexpr std::size_t kMaxMessageSize = 64 * 1024 * 1024;
+
+/// Maximum number of elements in a deserialized array (10 M).
+inline constexpr std::uint32_t kMaxArrayCount = 10'000'000;
+
+/// Opaque handle for a query subscription.
+using SubscriptionId = std::uint64_t;
+
+/// Full result set of a subscribed query.
+struct QueryResult {
+    SubscriptionId                  id;
+    std::vector<std::string>        columns;  ///< Column names.
+    std::vector<std::vector<Value>> rows;     ///< Result rows.
+};
+
+// ── Diff sync progress ──────────────────────────────────────────
+
+/// Phase of the diff sync protocol for progress reporting.
+enum class DiffPhase : std::uint8_t {
+    ComputingBuckets,   ///< Computing bucket hashes for tables.
+    ComparingBuckets,   ///< Comparing bucket hashes (master only).
+    ComputingRowHashes, ///< Computing per-row hashes for mismatched buckets.
+    BuildingPatchset,   ///< Building INSERT patchset (master only).
+    ApplyingPatchset,   ///< Applying patchset + deletes (replica only).
+};
+
+/// Progress information emitted during diff sync.
+struct DiffProgress {
+    DiffPhase    phase;
+    std::string  table;           ///< Current table (empty if N/A).
+    std::int64_t items_done = 0;  ///< Buckets/rows/tables processed so far.
+    std::int64_t items_total = 0; ///< Total items (0 if unknown).
+};
+
+/// Callback for diff sync progress reporting.
+using ProgressCallback = std::function<void(const DiffProgress&)>;
+
+// ── Logging ────────────────────────────────────────────────────────
+
+/// Log severity level.
+enum class LogLevel : uint8_t { Debug = 0, Info, Warn, Error };
+
+/// Callback for library log output. If not set, logs are silently discarded.
+using LogCallback = std::function<void(LogLevel level, std::string_view message)>;
+
+/// Called when a schema mismatch is detected during handshake.
+/// Receives (remote_fingerprint, local_fingerprint, remote_schema_sql).
+/// remote_schema_sql contains the remote side's sorted CREATE TABLE statements
+/// (semicolon-separated). On the master side, this is empty because the replica
+/// only sends a fingerprint in HelloMsg, not its full schema.
+/// The callback may ALTER the local database to resolve the mismatch.
+/// Return true to recompute fingerprints and retry; false to proceed
+/// with the default behaviour (ErrorMsg on master, Error state on replica).
+using SchemaMismatchCallback = std::function<bool(
+    SchemaVersion remote_sv, SchemaVersion local_sv,
+    const std::string& remote_schema_sql)>;
+
 } // namespace sqlpipe
 
 // ── error.h ─────────────────────────────────────────────────────
@@ -79,13 +145,12 @@ namespace sqlpipe {
 /// Error codes returned by sqlpipe operations.
 enum class ErrorCode : int {
     Ok = 0,
-    SqliteError,      ///< An underlying SQLite call failed.
-    ProtocolError,    ///< Malformed or unexpected message.
-    SequenceGap,      ///< Received a sequence number that doesn't follow.
-    SchemaMismatch,   ///< Master and replica schemas differ.
+    SqliteError,        ///< An underlying SQLite call failed.
+    ProtocolError,      ///< Malformed or unexpected message.
+    SchemaMismatch,     ///< Master and replica schemas differ.
     InvalidState,       ///< Operation not valid in the current state.
-    ResyncRequired,     ///< Log doesn't cover the gap; full resync needed.
     OwnershipRejected,  ///< Peer ownership request was rejected by the server.
+    WithoutRowidTable,  ///< Table uses WITHOUT ROWID (not supported).
 };
 
 /// Exception thrown by sqlpipe operations.
@@ -105,48 +170,21 @@ private:
 // ── protocol.h ──────────────────────────────────────────────────
 namespace sqlpipe {
 
-inline constexpr std::uint32_t kProtocolVersion = 1;
+inline constexpr std::uint32_t kProtocolVersion = 5;
 
 // ── Message types ───────────────────────────────────────────────────
 
-/// Sent by both sides during handshake to exchange state.
+/// Sent by both sides during handshake to exchange schema state.
 struct HelloMsg {
     std::uint32_t protocol_version;  ///< Must match kProtocolVersion.
-    Seq           seq;               ///< Sender's current sequence number.
     SchemaVersion schema_version;    ///< Sender's schema fingerprint.
     std::set<std::string> owned_tables;  ///< Tables the sender wants to own (Peer mode).
 };
 
-/// Sent by master to announce a catchup sequence of changesets.
-struct CatchupBeginMsg {
-    Seq from_seq;  ///< First sequence number in the catchup range (inclusive).
-    Seq to_seq;    ///< Last sequence number in the catchup range (inclusive).
-};
-
-/// A single changeset (one flush() worth of changes).
+/// A single changeset (one flush() worth of changes). Used in live streaming.
 struct ChangesetMsg {
     Seq       seq;   ///< Sequence number assigned by the master.
     Changeset data;  ///< Raw SQLite changeset blob.
-};
-
-/// Marks the end of a catchup sequence. Replica transitions to Live.
-struct CatchupEndMsg {};
-
-/// Initiates a full resync. Replica drops and recreates all tables.
-struct ResyncBeginMsg {
-    SchemaVersion schema_version;  ///< Master's schema fingerprint.
-    std::string   schema_sql;      ///< CREATE TABLE statements to apply.
-};
-
-/// Carries all rows for one table during a full resync.
-struct ResyncTableMsg {
-    std::string table_name;  ///< Name of the table being synced.
-    Changeset   data;        ///< Changeset containing all rows as INSERTs.
-};
-
-/// Marks the end of a full resync. Replica transitions to Live.
-struct ResyncEndMsg {
-    Seq seq;  ///< Master's current sequence number.
 };
 
 /// Acknowledgement sent by the replica after applying a changeset.
@@ -156,34 +194,104 @@ struct AckMsg {
 
 /// Protocol-level error. Receiving side should transition to Error state.
 struct ErrorMsg {
-    ErrorCode   code;    ///< Machine-readable error category.
-    std::string detail;  ///< Human-readable description.
+    ErrorCode     code{};                      ///< Machine-readable error category.
+    std::string   detail;                      ///< Human-readable description.
+    SchemaVersion remote_schema_version = 0;   ///< Remote fingerprint (SchemaMismatch only).
+    std::string   remote_schema_sql;           ///< Remote CREATE TABLE SQL (SchemaMismatch only).
+
+    ErrorMsg() = default;
+    ErrorMsg(ErrorCode c, std::string d,
+             SchemaVersion rsv = 0, std::string rsql = {})
+        : code(c), detail(std::move(d)),
+          remote_schema_version(rsv), remote_schema_sql(std::move(rsql)) {}
+};
+
+// ── Diff protocol messages ──────────────────────────────────────────
+
+/// One bucket's hash in BucketHashesMsg.
+struct BucketHashEntry {
+    std::string   table;
+    std::int64_t  bucket_lo;     ///< Inclusive rowid lower bound.
+    std::int64_t  bucket_hi;     ///< Inclusive rowid upper bound.
+    std::uint64_t hash;          ///< XOR of fnv1a(rowid||row_hash) per row.
+    std::int64_t  row_count;     ///< Number of rows in this bucket.
+};
+
+/// Sent by replica after receiving master's HelloMsg.
+/// Contains per-table bucket hashes for the diff protocol.
+struct BucketHashesMsg {
+    std::vector<BucketHashEntry> buckets;
+};
+
+/// One bucket range the master needs row-level detail for.
+struct NeedBucketRange {
+    std::string  table;
+    std::int64_t lo;
+    std::int64_t hi;
+};
+
+/// Sent by master after comparing bucket hashes.
+/// Lists the buckets that differ and need row-level detail.
+struct NeedBucketsMsg {
+    std::vector<NeedBucketRange> ranges;
+};
+
+/// A contiguous run of rowids with their hashes.
+struct RowHashRun {
+    std::int64_t               start_rowid;  ///< First rowid in the run.
+    std::int64_t               count;        ///< Number of contiguous rowids.
+    std::vector<std::uint64_t> hashes;       ///< One hash per rowid.
+};
+
+/// Row hashes for one bucket in RowHashesMsg.
+struct RowHashesEntry {
+    std::string              table;
+    std::int64_t             lo;     ///< Bucket rowid lower bound.
+    std::int64_t             hi;     ///< Bucket rowid upper bound.
+    std::vector<RowHashRun>  runs;   ///< Run-length encoded row hashes.
+};
+
+/// Sent by replica with per-row hashes for requested buckets.
+struct RowHashesMsg {
+    std::vector<RowHashesEntry> entries;
+};
+
+/// Per-table list of rowids to delete.
+struct TableDeletes {
+    std::string               table;
+    std::vector<std::int64_t> rowids;
+};
+
+/// Sent by master with the computed diff. Carries an INSERT patchset for
+/// rows to add/update and per-table rowid lists for rows to delete.
+struct DiffReadyMsg {
+    Seq                        seq;       ///< Master's current seq.
+    Changeset                  patchset;  ///< INSERT records for insert+update.
+    std::vector<TableDeletes>  deletes;   ///< Rowids to delete per table.
 };
 
 using Message = std::variant<
     HelloMsg,
-    CatchupBeginMsg,
     ChangesetMsg,
-    CatchupEndMsg,
-    ResyncBeginMsg,
-    ResyncTableMsg,
-    ResyncEndMsg,
     AckMsg,
-    ErrorMsg
+    ErrorMsg,
+    BucketHashesMsg,
+    NeedBucketsMsg,
+    RowHashesMsg,
+    DiffReadyMsg
 >;
 
 // ── Wire format tags ────────────────────────────────────────────────
 
 enum class MessageTag : std::uint8_t {
     Hello        = 0x01,
-    CatchupBegin = 0x02,
     Changeset    = 0x03,
-    CatchupEnd   = 0x04,
-    ResyncBegin  = 0x05,
-    ResyncTable  = 0x06,
-    ResyncEnd    = 0x07,
     Ack          = 0x08,
     Error        = 0x09,
+    BucketHashes = 0x0A,
+    NeedBuckets  = 0x0B,
+    RowHashes    = 0x0C,
+    DiffReady    = 0x0D,
 };
 
 // ── Serialization ───────────────────────────────────────────────────
@@ -201,16 +309,27 @@ Message deserialize(std::span<const std::uint8_t> buf);
 namespace sqlpipe {
 
 struct MasterConfig {
-    /// Maximum number of changesets to retain in the log for catchup.
-    /// Older entries are pruned. 0 = unlimited.
-    std::size_t max_log_entries = 10000;
-
     /// If set, only track these tables. nullopt = track all.
     /// An empty set means track nothing.
     std::optional<std::set<std::string>> table_filter;
 
     /// Meta-table key for storing the sequence number.
     std::string seq_key = "seq";
+
+    /// Rows per bucket for the diff protocol.
+    std::int64_t bucket_size = kDefaultBucketSize;
+
+    /// Diff sync progress callback. nullptr = no reporting.
+    ProgressCallback on_progress = nullptr;
+
+    /// Called when a replica's schema fingerprint doesn't match.
+    /// The callback may ALTER the local DB to resolve the mismatch,
+    /// then return true to recompute and retry the comparison.
+    /// nullptr or returning false = send ErrorMsg (default behaviour).
+    SchemaMismatchCallback on_schema_mismatch = nullptr;
+
+    /// Log callback. nullptr = discard all log output.
+    LogCallback on_log = nullptr;
 };
 
 /// The sending side of the replication protocol.
@@ -228,9 +347,8 @@ public:
     Master& operator=(Master&&) noexcept;
 
     /// Call after committing a write transaction. Extracts the changeset,
-    /// assigns a sequence number, stores it in the log, and returns the
-    /// messages to send to connected replicas.
-    /// Returns empty if nothing changed.
+    /// assigns a sequence number, and returns the messages to send to
+    /// connected replicas. Returns empty if nothing changed.
     std::vector<Message> flush();
 
     /// Process an incoming message from a replica.
@@ -238,9 +356,6 @@ public:
 
     Seq current_seq() const;
     SchemaVersion schema_version() const;
-
-    /// Generate the full resync message sequence.
-    std::vector<Message> generate_resync();
 
 private:
     struct Impl;
@@ -257,18 +372,35 @@ struct ReplicaConfig {
     /// Default (nullptr): ConflictAction::Abort.
     ConflictCallback on_conflict = nullptr;
 
-    /// If set, only manage these tables during resync (drop/recreate).
+    /// If set, only manage these tables during diff sync.
     /// nullopt = all tracked tables (default). Empty set = nothing.
     std::optional<std::set<std::string>> table_filter;
 
     /// Meta-table key for storing the sequence number.
     std::string seq_key = "seq";
+
+    /// Rows per bucket for the diff protocol.
+    std::int64_t bucket_size = kDefaultBucketSize;
+
+    /// Diff sync progress callback. nullptr = no reporting.
+    ProgressCallback on_progress = nullptr;
+
+    /// Called when a SchemaMismatch error is received from the master.
+    /// The callback may ALTER the local DB to match the master's schema,
+    /// then return true to auto-reset to Init state (caller should retry
+    /// the handshake). nullptr or returning false = transition to Error
+    /// state (default behaviour).
+    SchemaMismatchCallback on_schema_mismatch = nullptr;
+
+    /// Log callback. nullptr = discard all log output.
+    LogCallback on_log = nullptr;
 };
 
 /// Return type for Replica::handle_message.
 struct HandleResult {
-    std::vector<Message>     messages;  ///< Protocol responses to send back.
-    std::vector<ChangeEvent> changes;   ///< Row-level changes applied this call.
+    std::vector<Message>      messages;       ///< Protocol responses to send back.
+    std::vector<ChangeEvent>  changes;        ///< Row-level changes applied this call.
+    std::vector<QueryResult>  subscriptions;  ///< Invalidated subscription results.
 };
 
 /// The receiving side of the replication protocol.
@@ -291,17 +423,34 @@ public:
     /// Process an incoming message from the master.
     HandleResult handle_message(const Message& msg);
 
+    /// Process multiple messages, deferring subscription evaluation until
+    /// all are applied. More efficient than calling handle_message() in a
+    /// loop when processing a burst of messages.
+    HandleResult handle_messages(std::span<const Message> msgs);
+
+    /// Subscribe to a SQL query. Returns the current result immediately.
+    /// After each handle_message that changes a table the query reads from,
+    /// the updated result appears in HandleResult::subscriptions.
+    QueryResult subscribe(const std::string& sql);
+
+    /// Remove a subscription.
+    void unsubscribe(SubscriptionId id);
+
+    /// Reset to Init state for reconnection. Subscriptions are preserved;
+    /// they will re-evaluate after the next handshake applies changes.
+    void reset();
+
     Seq current_seq() const;
     SchemaVersion schema_version() const;
 
     /// Replica connection lifecycle state.
     enum class State : std::uint8_t {
-        Init,       ///< Created but hello() not yet called.
-        Handshake,  ///< hello() sent, awaiting master's response.
-        Catchup,    ///< Receiving missed changesets from the log.
-        Resync,     ///< Receiving a full database snapshot.
-        Live,       ///< Streaming; ready for real-time changesets.
-        Error,      ///< A protocol or application error occurred.
+        Init,        ///< Created but hello() not yet called.
+        Handshake,   ///< hello() sent, awaiting master's response.
+        DiffBuckets, ///< Sent bucket hashes, awaiting NeedBucketsMsg.
+        DiffRows,    ///< Sent row hashes (or skipped), awaiting DiffReadyMsg.
+        Live,        ///< Streaming; ready for real-time changesets.
+        Error,       ///< A protocol or application error occurred.
     };
 
     State state() const;
@@ -327,6 +476,11 @@ struct PeerConfig {
     /// Ignored on the server side (computed as complement of client's).
     std::set<std::string> owned_tables;
 
+    /// If set, only consider these tables for replication.
+    /// nullopt = all user tables (default). owned_tables must be a subset.
+    /// Complement (remote tables) is computed within this filtered set.
+    std::optional<std::set<std::string>> table_filter;
+
     /// Server-side ownership validation callback.
     /// Non-null indicates this peer is the server.
     /// nullptr = auto-approve any request.
@@ -335,8 +489,17 @@ struct PeerConfig {
     /// Conflict callback for the internal Replica.
     ConflictCallback on_conflict = nullptr;
 
-    /// Max log entries for the internal Master.
-    std::size_t max_log_entries = 10000;
+    /// Diff sync progress callback. nullptr = no reporting.
+    /// Forwarded to both the internal Master and Replica.
+    ProgressCallback on_progress = nullptr;
+
+    /// Called when a schema mismatch is detected during handshake.
+    /// Forwarded to both the internal Master and Replica.
+    SchemaMismatchCallback on_schema_mismatch = nullptr;
+
+    /// Log callback. nullptr = discard all log output.
+    /// Forwarded to both the internal Master and Replica.
+    LogCallback on_log = nullptr;
 };
 
 /// Identifies whether the sender was acting as master or replica.
@@ -384,11 +547,15 @@ public:
     /// Process an incoming PeerMessage from the remote peer.
     PeerHandleResult handle_message(const PeerMessage& msg);
 
+    /// Reset to Init state for reconnection. Call start() again to
+    /// re-handshake. Table ownership is preserved from the previous session.
+    void reset();
+
     /// Peer lifecycle state.
     enum class State : std::uint8_t {
         Init,        ///< Created, not yet started.
         Negotiating, ///< Ownership negotiation in progress.
-        Syncing,     ///< Handshake/catchup/resync in progress.
+        Diffing,     ///< Diff sync in progress.
         Live,        ///< Both directions are live.
         Error,       ///< A protocol or application error occurred.
     };
@@ -412,5 +579,16 @@ std::vector<std::uint8_t> serialize(const PeerMessage& msg);
 
 /// Deserialize a byte buffer into a PeerMessage.
 PeerMessage deserialize_peer(std::span<const std::uint8_t> buf);
+
+// ── Convenience utilities ───────────────────────────────────────
+
+/// Drive the Master/Replica handshake protocol to completion when both
+/// are in the same process. Exchanges messages until no more remain.
+void sync_handshake(Master& master, Replica& replica);
+
+/// Drive the Peer handshake protocol to completion when both peers are
+/// in the same process. The client initiates; messages are exchanged
+/// until both peers reach Live state or no more messages remain.
+void sync_handshake(Peer& client, Peer& server);
 
 } // namespace sqlpipe

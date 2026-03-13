@@ -21,15 +21,16 @@ const (
 	kServerAssignedMagic  = 0x4745324E
 	kFrameReadyMagic      = 0x47453247
 	kWireCommandMagic     = 0x47453243
-	kProtocolVersion      = 4
+	kProtocolVersion      = 5
 )
 
 // makeDeviceInfo constructs a wire DeviceInfo frame: MessageHeader + DeviceInfo struct.
 func makeDeviceInfo(width, height, pixelRatio uint16, format uint32) []byte {
-	// DeviceInfo struct layout (matches C++ sizeof = 20 with alignment padding):
+	// DeviceInfo struct layout (matches C++ sizeof = 28 with alignment padding):
 	//   magic(4) + version(2) + width(2) + height(2) + pixelRatio(2) +
-	//   reserved(2) + padding(2) + preferredFormat(4) = 20 bytes
-	const deviceInfoSize = 20
+	//   deviceClass(1) + orientation(1) + padding(2) + preferredFormat(4) +
+	//   safeX(2) + safeY(2) + safeW(2) + safeH(2) = 28 bytes
+	const deviceInfoSize = 28
 	buf := make([]byte, 8+deviceInfoSize) // MessageHeader + DeviceInfo
 
 	// MessageHeader
@@ -42,9 +43,10 @@ func makeDeviceInfo(width, height, pixelRatio uint16, format uint32) []byte {
 	binary.LittleEndian.PutUint16(buf[14:16], width)
 	binary.LittleEndian.PutUint16(buf[16:18], height)
 	binary.LittleEndian.PutUint16(buf[18:20], pixelRatio)
-	binary.LittleEndian.PutUint16(buf[20:22], 0) // reserved
+	// buf[20:22] = deviceClass(1) + orientation(1), zero
 	// buf[22:24] is alignment padding (zero)
 	binary.LittleEndian.PutUint32(buf[24:28], format)
+	// buf[28:36] = safeX(2) + safeY(2) + safeW(2) + safeH(2), all zero (full screen)
 
 	return buf
 }
