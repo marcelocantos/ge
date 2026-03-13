@@ -3,11 +3,11 @@ plugins {
 }
 
 android {
-    namespace "com.marcelocantos.player"
+    namespace "com.squz.player"
     compileSdk 35
 
     defaultConfig {
-        applicationId "com.marcelocantos.player"
+        applicationId "com.squz.player"
         minSdk 26
         targetSdk 35
         versionCode 1

@@ -30,8 +30,8 @@
 #                         ios-device:  path to .app bundle (uses devicectl)
 #                         android:     path to .apk file
 #                       Without --install, the script only checks passively.
-#   --bundle-id <id>    iOS bundle identifier (default: com.marcelocantos.yourworld2)
-#   --package <pkg>     Android package name (default: com.marcelocantos.player)
+#   --bundle-id <id>    iOS bundle identifier (default: com.squz.yourworld2)
+#   --package <pkg>     Android package name (default: com.squz.player)
 #   --ged-port <port>   ged daemon port (default: 42069)
 #   --timeout <secs>    Max seconds to wait for player connection (default: 15)
 #   --server-pid <pid>  Game server PID to verify is running
@@ -44,8 +44,8 @@ set -euo pipefail
 
 # Defaults
 PLATFORM=""
-BUNDLE_ID="com.marcelocantos.yourworld2"
-PACKAGE="com.marcelocantos.player"
+BUNDLE_ID="com.squz.yourworld2"
+PACKAGE="com.squz.player"
 GED_PORT=42069
 TIMEOUT=15
 SERVER_PID=""

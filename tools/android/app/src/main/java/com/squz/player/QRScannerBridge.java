@@ -1,4 +1,4 @@
-package com.marcelocantos.player;
+package com.squz.player;
 
 import android.app.Activity;
 

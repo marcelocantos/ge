@@ -1,4 +1,4 @@
-module github.com/marcelocantos/ge/ged
+module github.com/squz/ge/ged
 
 go 1.25.7
 

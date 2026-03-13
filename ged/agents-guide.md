@@ -7,7 +7,7 @@ provides QR codes for mobile device pairing.
 ## Installation
 
 ```bash
-brew install marcelocantos/tap/ged
+brew install squz/homebrew-tap/ged
 ```
 
 Or build from source:
@@ -111,7 +111,7 @@ The game server address defaults to `localhost:42069`. Override with
 When installed via Homebrew, ged can run as a background service:
 
 ```bash
-brew services start marcelocantos/tap/ged
+brew services start squz/homebrew-tap/ged
 ```
 
 Logs are written to `/opt/homebrew/var/log/ged.log`.

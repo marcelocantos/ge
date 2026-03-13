@@ -8,7 +8,7 @@
 
 namespace ge {
 
-static NSString* service = @"com.marcelocantos.player";
+static NSString* service = @"com.squz.player";
 
 static NSMutableDictionary* baseQuery(const std::string& key) {
     NSMutableDictionary* q = [NSMutableDictionary dictionary];

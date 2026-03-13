@@ -329,7 +329,7 @@ The APK is output to `app/build/outputs/apk/debug/app-debug.apk`.
 adb install -r ge/tools/android/app/build/outputs/apk/debug/app-debug.apk
 ```
 
-**Important:** The package name is `com.marcelocantos.player`. The main activity is `.GeActivity`.
+**Important:** The package name is `com.squz.player`. The main activity is `.GeActivity`.
 
 ### Running
 
@@ -339,7 +339,7 @@ adb install -r ge/tools/android/app/build/outputs/apk/debug/app-debug.apk
    ```
 2. Launch the player on the device:
    ```bash
-   adb shell am start -n com.marcelocantos.player/.GeActivity
+   adb shell am start -n com.squz.player/.GeActivity
    ```
 3. Point the phone camera at the terminal QR code (encodes `ge-remote://<lan-ip>:<port>`).
 4. The phone connects via WebSocket and renders the app.
@@ -631,7 +631,7 @@ ge/tools/smoke-test.sh --platform ios-sim --device phone
 ge/tools/smoke-test.sh --platform ios-device --device Pippa
 
 # Android emulator
-ge/tools/smoke-test.sh --platform android-emu --package com.marcelocantos.player
+ge/tools/smoke-test.sh --platform android-emu --package com.squz.player
 
 # Android device — specific device by serial
 ge/tools/smoke-test.sh --platform android-device --device R5CT900XYZ
