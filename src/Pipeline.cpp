@@ -46,7 +46,7 @@ wgpu::BlendState makeBlendState(BlendMode mode) {
         return {
             .color = {
                 .operation = wgpu::BlendOperation::Add,
-                .srcFactor = wgpu::BlendFactor::SrcAlpha,
+                .srcFactor = wgpu::BlendFactor::One,
                 .dstFactor = wgpu::BlendFactor::OneMinusSrcAlpha,
             },
             .alpha = {
