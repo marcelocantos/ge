@@ -45,7 +45,7 @@ struct VsOut {
 
 @fragment fn fs_main(in: VsOut) -> @location(0) vec4f {
     let c = textureSample(fontTex, fontSampler, in.uv);
-    return vec4f(c.rgb, c.a);
+    return vec4f(c.rgb * c.a, c.a); // premultiply for premultiplied alpha blending
 }
 )";
 
