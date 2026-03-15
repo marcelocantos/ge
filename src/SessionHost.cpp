@@ -141,10 +141,10 @@ void SessionHost::run(Factory factory) {
 
     // Send initial tweak state
     {
-        std::string tweakMsg = R"({"type":"tweaks","data":)" + tweak::toJson() + "}";
+        std::string tweakMsg = R"({"type":"tweaks","data":)" + tweak::allToJson() + "}";
         m->sidebandConn->sendText(tweakMsg);
         m->lastTweakGen = tweak::generation().load(std::memory_order_relaxed);
-        SPDLOG_INFO("Sent initial tweak state ({} tweaks)", tweak::registry().size());
+        SPDLOG_INFO("Sent initial tweak state ({} tweaks)", tweak::TweakBase::all().size());
     }
 
     // Install SIGINT handler
@@ -184,7 +184,7 @@ void SessionHost::run(Factory factory) {
             m->daemonSink->setConnection(m->sidebandConn);
 
             // Re-send tweak state
-            std::string tweakMsg = R"({"type":"tweaks","data":)" + tweak::toJson() + "}";
+            std::string tweakMsg = R"({"type":"tweaks","data":)" + tweak::allToJson() + "}";
             m->sidebandConn->sendText(tweakMsg);
             m->lastTweakGen = tweak::generation().load(std::memory_order_relaxed);
 
@@ -259,7 +259,7 @@ void SessionHost::run(Factory factory) {
         auto gen = tweak::generation().load(std::memory_order_relaxed);
         if (gen != m->lastTweakGen && m->sidebandConn && m->sidebandConn->isOpen()) {
             m->lastTweakGen = gen;
-            std::string tweakMsg = R"({"type":"tweaks","data":)" + tweak::toJson() + "}";
+            std::string tweakMsg = R"({"type":"tweaks","data":)" + tweak::allToJson() + "}";
             try { m->sidebandConn->sendText(tweakMsg); } catch (...) {}
         }
 

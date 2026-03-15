@@ -1,9 +1,11 @@
 #pragma once
 
 #include <sqlite3.h>
+#include <nlohmann/json.hpp>
 
 #include <atomic>
 #include <cstring>
+#include <memory>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -12,65 +14,87 @@ namespace tweak {
 
 enum class Scale { Linear, Log };
 
-struct Float;
-
-// Singleton registry of all tweak variables (populated by Float constructors).
-inline std::vector<Float*>& registry() {
-    static std::vector<Float*> r;
-    return r;
-}
-
 // Global generation counter — incremented on every set() call.
-// Consumers can check this to know when tunable values have changed.
 inline std::atomic<uint64_t>& generation() {
     static std::atomic<uint64_t> g{0};
     return g;
 }
 
-// SQLite handle for persistence (null until loadOverrides is called).
+// SQLite handle for persistence.
 inline sqlite3*& db() {
     static sqlite3* d = nullptr;
     return d;
 }
 
-struct Float {
+// ─── Type-erased base ─────────────────────────────────────────────────
+
+struct TweakBase {
     const char* name;
-    std::atomic<float> value;
-    float defaultVal;
-    Scale scale;
-    float speed;
+    TweakBase(const char* n) : name(n) { all().push_back(this); }
+    virtual ~TweakBase() = default;
+    virtual void loadJson(const std::string& json) = 0;
+    virtual std::string toJson() const = 0;
 
-    Float(const char* name, float def, Scale s, float spd = 1.0f)
-        : name(name), value(def), defaultVal(def), scale(s), speed(spd) {
-        registry().push_back(this);
-    }
-
-    operator float() const { return value.load(std::memory_order_relaxed); }
-
-    void set(float v) {
-        value.store(v, std::memory_order_relaxed);
-        generation().fetch_add(1, std::memory_order_relaxed);
+    static std::vector<TweakBase*>& all() {
+        static std::vector<TweakBase*> r;
+        return r;
     }
 };
 
-// Open (or create) the tweaks database and apply saved overrides.
+// ─── Tweak<T> ─────────────────────────────────────────────────────────
+
+template<typename T>
+struct Tweak : TweakBase {
+    T defaultVal;
+    Scale scale;
+    float speed;
+
+    Tweak(const char* name, T def = T{}, Scale s = Scale::Linear, float spd = 1.0f)
+        : TweakBase(name), defaultVal(std::move(def)), scale(s), speed(spd),
+          ptr_(std::make_shared<const T>(defaultVal)) {}
+
+    T get() const { return *std::atomic_load(&ptr_); }
+    operator T() const { return get(); }
+
+    void set(T v) {
+        std::atomic_store(&ptr_, std::make_shared<const T>(std::move(v)));
+        generation().fetch_add(1, std::memory_order_relaxed);
+    }
+
+    void loadJson(const std::string& json) override {
+        set(nlohmann::json::parse(json).get<T>());
+    }
+
+    std::string toJson() const override {
+        return nlohmann::json(get()).dump();
+    }
+
+private:
+    std::shared_ptr<const T> ptr_;
+};
+
+
+// ─── Database ─────────────────────────────────────────────────────────
+
 inline void loadOverrides(const char* path) {
     if (sqlite3_open(path, &db()) != SQLITE_OK) {
         db() = nullptr;
         return;
     }
     sqlite3_exec(db(),
-        "CREATE TABLE IF NOT EXISTS tweaks (name TEXT PRIMARY KEY, value REAL)",
+        "CREATE TABLE IF NOT EXISTS tweaks (name TEXT PRIMARY KEY, json TEXT NOT NULL)",
         nullptr, nullptr, nullptr);
 
     sqlite3_stmt* stmt = nullptr;
-    if (sqlite3_prepare_v2(db(), "SELECT name, value FROM tweaks", -1, &stmt, nullptr) == SQLITE_OK) {
+    if (sqlite3_prepare_v2(db(), "SELECT name, json FROM tweaks",
+                           -1, &stmt, nullptr) == SQLITE_OK) {
         while (sqlite3_step(stmt) == SQLITE_ROW) {
             auto* n = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
-            double v = sqlite3_column_double(stmt, 1);
-            for (auto* tw : registry()) {
+            auto* j = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
+            if (!n || !j) continue;
+            for (auto* tw : TweakBase::all()) {
                 if (std::strcmp(tw->name, n) == 0) {
-                    tw->value.store(static_cast<float>(v), std::memory_order_relaxed);
+                    try { tw->loadJson(j); } catch (...) {}
                     break;
                 }
             }
@@ -79,29 +103,26 @@ inline void loadOverrides(const char* path) {
     }
 }
 
-// Persist a single tweak value to the database.
-inline void save(const char* name, float value) {
+inline void save(const char* name, const std::string& json) {
     if (!db()) return;
     sqlite3_stmt* stmt = nullptr;
     if (sqlite3_prepare_v2(db(),
-            "INSERT INTO tweaks (name, value) VALUES (?, ?) "
-            "ON CONFLICT(name) DO UPDATE SET value = excluded.value",
+            "INSERT INTO tweaks (name, json) VALUES (?, ?) "
+            "ON CONFLICT(name) DO UPDATE SET json = excluded.json",
             -1, &stmt, nullptr) == SQLITE_OK) {
         sqlite3_bind_text(stmt, 1, name, -1, SQLITE_STATIC);
-        sqlite3_bind_double(stmt, 2, value);
+        sqlite3_bind_text(stmt, 2, json.c_str(), -1, SQLITE_STATIC);
         sqlite3_step(stmt);
         sqlite3_finalize(stmt);
     }
 }
 
-// Reset one tweak to its compiled default and remove from database.
+template<typename T>
+void save(Tweak<T>& tw) {
+    save(tw.name, tw.toJson());
+}
+
 inline void resetOne(const char* name) {
-    for (auto* tw : registry()) {
-        if (std::strcmp(tw->name, name) == 0) {
-            tw->set(tw->defaultVal);
-            break;
-        }
-    }
     if (!db()) return;
     sqlite3_stmt* stmt = nullptr;
     if (sqlite3_prepare_v2(db(), "DELETE FROM tweaks WHERE name = ?",
@@ -112,66 +133,54 @@ inline void resetOne(const char* name) {
     }
 }
 
-// Reset all tweaks to compiled defaults and clear the database.
 inline void resetAll() {
-    for (auto* tw : registry()) {
-        tw->set(tw->defaultVal);
-    }
     if (!db()) return;
     sqlite3_exec(db(), "DELETE FROM tweaks", nullptr, nullptr, nullptr);
 }
 
-// Serialize all tweaks to JSON.
-inline std::string toJson() {
+// ─── JSON API ─────────────────────────────────────────────────────────
+
+inline std::string allToJson() {
     std::ostringstream os;
     os << '[';
     bool first = true;
-    for (const auto* tw : registry()) {
+    for (const auto* tw : TweakBase::all()) {
         if (!first) os << ',';
         first = false;
-        os << "{\"name\":\"" << tw->name << '"'
-           << ",\"value\":" << tw->value.load(std::memory_order_relaxed)
-           << ",\"default\":" << tw->defaultVal
-           << ",\"scale\":\"" << (tw->scale == Scale::Log ? "log" : "linear") << '"'
-           << ",\"speed\":" << tw->speed
-           << '}';
+        os << "{\"name\":\"" << tw->name << "\",\"value\":" << tw->toJson() << '}';
     }
     os << ']';
     return os.str();
 }
 
-// Minimal JSON parsing: find "name":"X" and "value":Y pairs.
-// Expects body like: {"name":"WallRestitution","value":0.5}
 inline bool parseAndApply(const std::string& body) {
-    // Find "name":"..."
     auto namePos = body.find("\"name\"");
     if (namePos == std::string::npos) return false;
-    auto nameStart = body.find('"', namePos + 6);
-    if (nameStart == std::string::npos) return false;
-    nameStart++;
+    auto nameStart = body.find('"', namePos + 6) + 1;
     auto nameEnd = body.find('"', nameStart);
     if (nameEnd == std::string::npos) return false;
     std::string name = body.substr(nameStart, nameEnd - nameStart);
 
-    // Find "value":number
     auto valPos = body.find("\"value\"");
     if (valPos == std::string::npos) return false;
     auto colonPos = body.find(':', valPos + 7);
     if (colonPos == std::string::npos) return false;
-    float val = std::stof(body.substr(colonPos + 1));
+    // Extract everything after "value": up to the next } or end
+    auto valEnd = body.find('}', colonPos);
+    std::string valStr = body.substr(colonPos + 1, valEnd - colonPos - 1);
 
-    for (auto* tw : registry()) {
+    for (auto* tw : TweakBase::all()) {
         if (name == tw->name) {
-            tw->set(val);
-            save(tw->name, val);
+            try {
+                tw->loadJson(valStr);
+                save(name.c_str(), tw->toJson());
+            } catch (...) { return false; }
             return true;
         }
     }
     return false;
 }
 
-// Parse reset request body.
-// {"name":"X"} resets one, {"all":true} resets all.
 inline void parseAndReset(const std::string& body) {
     if (body.find("\"all\"") != std::string::npos) {
         resetAll();
@@ -179,13 +188,10 @@ inline void parseAndReset(const std::string& body) {
     }
     auto namePos = body.find("\"name\"");
     if (namePos == std::string::npos) return;
-    auto nameStart = body.find('"', namePos + 6);
-    if (nameStart == std::string::npos) return;
-    nameStart++;
+    auto nameStart = body.find('"', namePos + 6) + 1;
     auto nameEnd = body.find('"', nameStart);
     if (nameEnd == std::string::npos) return;
-    std::string name = body.substr(nameStart, nameEnd - nameStart);
-    resetOne(name.c_str());
+    resetOne(body.substr(nameStart, nameEnd - nameStart).c_str());
 }
 
 } // namespace tweak
