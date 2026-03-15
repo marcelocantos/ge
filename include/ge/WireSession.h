@@ -85,6 +85,9 @@ public:
         std::function<void(std::span<const uint8_t>)> onMessage;
     };
 
+    // Send a window-resize hint to the player (in points, not pixels).
+    void resizeWindow(uint16_t width, uint16_t height);
+
     // Run the render loop. Returns true on player disconnect (reconnectable),
     // false on server stop (SIGINT).
     bool run(RunConfig config);

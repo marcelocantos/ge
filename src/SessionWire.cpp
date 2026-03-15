@@ -185,6 +185,7 @@ void Session::setScissorRect(wgpu::RenderPassEncoder& pass,
 
 void Session::setSessionFlags(uint16_t flags) { m->wire.setSessionFlags(flags); }
 void Session::flush() { m->wire.flush(); }
+void Session::resizeWindow(uint16_t w, uint16_t h) { m->wire.resizeWindow(w, h); }
 
 // Transform a finger event from rotated screen coordinates to portrait coordinates.
 static void transformFingerToPortrait(SDL_Event& e, int orientation) {

@@ -75,6 +75,9 @@ public:
     void setSessionFlags(uint16_t flags);
     void flush();
 
+    // Send a window-resize hint to the player (in points, not pixels).
+    void resizeWindow(uint16_t width, uint16_t height);
+
     // Render loop configuration.
     struct RunConfig {
         std::function<void(float dt)> onUpdate;

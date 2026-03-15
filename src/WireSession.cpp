@@ -769,6 +769,12 @@ Audio& WireSession::audio() {
     return m->audio;
 }
 
+void WireSession::resizeWindow(uint16_t width, uint16_t height) {
+    if (!m->serializer) return;
+    float ratio = (width > 0 && height > 0) ? float(width) / float(height) : 0.0f;
+    m->serializer->sendMessage(wire::kAspectLockMagic, &ratio, sizeof(ratio));
+}
+
 void WireSession::flush() {
     m->serializer->processResponses(*m->wireClient, m->onEvent, m->onSafeArea, m->onMessage);
     m->instance.ProcessEvents();

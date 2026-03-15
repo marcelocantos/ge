@@ -34,6 +34,7 @@ struct TweakBase {
     virtual ~TweakBase() = default;
     virtual void loadJson(const std::string& json) = 0;
     virtual std::string toJson() const = 0;
+    virtual void resetToDefault() = 0;
 
     static std::vector<TweakBase*>& all() {
         static std::vector<TweakBase*> r;
@@ -67,6 +68,10 @@ struct Tweak : TweakBase {
 
     std::string toJson() const override {
         return nlohmann::json(get()).dump();
+    }
+
+    void resetToDefault() override {
+        set(defaultVal);
     }
 
 private:
@@ -123,6 +128,14 @@ void save(Tweak<T>& tw) {
 }
 
 inline void resetOne(const char* name) {
+    // Reset in-memory value to default
+    for (auto* tw : TweakBase::all()) {
+        if (std::strcmp(tw->name, name) == 0) {
+            tw->resetToDefault();
+            break;
+        }
+    }
+    // Clear persisted override
     if (!db()) return;
     sqlite3_stmt* stmt = nullptr;
     if (sqlite3_prepare_v2(db(), "DELETE FROM tweaks WHERE name = ?",
@@ -134,6 +147,11 @@ inline void resetOne(const char* name) {
 }
 
 inline void resetAll() {
+    // Reset all in-memory values to defaults
+    for (auto* tw : TweakBase::all()) {
+        tw->resetToDefault();
+    }
+    // Clear persisted overrides
     if (!db()) return;
     sqlite3_exec(db(), "DELETE FROM tweaks", nullptr, nullptr, nullptr);
 }

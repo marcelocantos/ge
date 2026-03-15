@@ -31,6 +31,7 @@ constexpr uint32_t kVideoStreamMagic  = 0x47453256;   // "GE2V" — player → g
 constexpr uint32_t kStreamStartMagic  = 0x47453257;   // "GE2W" — ged → player: start streaming
 constexpr uint32_t kStreamStopMagic   = 0x47453258;   // "GE2X" — ged → player: stop streaming
 constexpr uint32_t kSafeAreaMagic     = 0x47453245;   // "GE2E" — player → server: safe area update
+constexpr uint32_t kAspectLockMagic   = 0x47453260;   // "GE2`" — server → player: lock aspect ratio
 
 // TODO: Consider semver or min/max range for backwards-compatible changes.
 constexpr uint16_t kProtocolVersion = 5;
@@ -90,6 +91,13 @@ struct SessionReady {
     uint32_t magic = kSessionReadyMagic;
     uint16_t version = kProtocolVersion;
     uint16_t reserved = 0;
+};
+
+// Server → player: lock window aspect ratio (width/height as floats)
+// Send 0.0 to unlock.
+struct AspectLock {
+    uint32_t magic = kAspectLockMagic;
+    float ratio;  // width/height (e.g. 0.6948 for 954:1373), 0 = unlock
 };
 
 // Header for wire command/response messages

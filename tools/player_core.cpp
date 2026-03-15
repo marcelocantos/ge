@@ -1135,16 +1135,7 @@ ConnectionResult Player::M::connectAndRun() {
                         break;
                     }
                     [[fallthrough]];
-                case SDL_EVENT_KEY_UP:
-                case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
-                case SDL_EVENT_MOUSE_BUTTON_DOWN:
-                case SDL_EVENT_MOUSE_BUTTON_UP:
-                case SDL_EVENT_MOUSE_MOTION:
-                case SDL_EVENT_FINGER_DOWN:
-                case SDL_EVENT_FINGER_MOTION:
-                case SDL_EVENT_FINGER_UP:
-                case SDL_EVENT_SENSOR_UPDATE:
-                case SDL_EVENT_DISPLAY_ORIENTATION:
+                default:
                     try {
                         serializer->sendMessage(wire::kSdlEventMagic, &event, sizeof(event));
                         // Send updated safe area only on orientation change.
@@ -1506,6 +1497,18 @@ ConnectionResult Player::M::connectAndRun() {
 
                 serializer->sendMessage(wire::kFrameReadyMagic);
                 break; // yield to SDL event polling
+            } else if (header.magic == wire::kAspectLockMagic) {
+                if (payload.size() >= sizeof(float)) {
+                    float ratio;
+                    std::memcpy(&ratio, payload.data(), sizeof(float));
+                    if (ratio > 0.01f) {
+                        SPDLOG_INFO("Aspect ratio locked: {:.4f}", ratio);
+                        SDL_SetWindowAspectRatio(window, ratio, ratio);
+                    } else {
+                        SPDLOG_INFO("Aspect ratio unlocked");
+                        SDL_SetWindowAspectRatio(window, 0, 0);
+                    }
+                }
             } else if (header.magic == wire::kStreamStartMagic) {
                 SPDLOG_INFO("Stream start requested");
                 streamingEnabled = true;

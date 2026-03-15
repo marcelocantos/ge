@@ -58,7 +58,7 @@ function TweakField({
   const dragStartValue = useRef(0);
   const hasDragged = useRef(false);
 
-  const isModified = tweak.value !== tweak.default;
+  const isModified = tweak.default !== undefined && tweak.value !== tweak.default;
 
   // Strip the group prefix from the display name for compactness
   const match = tweak.name.match(/^[A-Z][a-z]*(.*)/);
@@ -82,7 +82,7 @@ function TweakField({
         if (!hasDragged.current) return;
 
         const fine = ev.shiftKey ? 0.1 : 1.0;
-        const s = tweak.speed * fine;
+        const s = (tweak.speed || 1.0) * fine;
         let newVal: number;
 
         if (tweak.scale === "log") {
@@ -155,7 +155,7 @@ function TweakField({
   }, [editing]);
 
   // Fill bar: ratio of current value to default (clamped for display)
-  const ratio = tweak.default !== 0 ? tweak.value / tweak.default : 1;
+  const ratio = tweak.default && tweak.default !== 0 ? tweak.value / tweak.default : 1;
   const fillPct = Math.min(Math.max(ratio * 50, 0), 100); // 50% = at default
 
   return (
@@ -187,6 +187,11 @@ function TweakField({
           <span className="tweak-value">{fmt(tweak.value)}</span>
         )}
       </div>
+      <button
+        className="tweak-reset-btn"
+        onClick={(e) => { e.stopPropagation(); onReset(tweak.name); }}
+        title="Reset to default"
+      >↺</button>
     </div>
   );
 }
