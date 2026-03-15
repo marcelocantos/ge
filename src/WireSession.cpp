@@ -85,7 +85,9 @@ public:
 
         // Pass 1: scan for large WriteTexture commands, track which textures
         // had mip levels dropped and what the lowest surviving mip level is.
+        // Also track max mip level per texture to identify single-mip textures.
         std::unordered_map<uint32_t, uint32_t> firstSurvivingMip; // textureId -> min surviving level
+        std::unordered_map<uint32_t, uint32_t> maxMipSeen;        // textureId -> highest mip level seen
         size_t pos = 0;
 
         while (pos + wire_filter::kMinCmdBytes <= buffer_.size()) {
@@ -117,8 +119,11 @@ public:
                 uint32_t mipLevel;
                 std::memcpy(&mipLevel, buffer_.data() + pos + mipOff, sizeof(mipLevel));
 
+                // Track max mip level seen for each texture
+                auto& maxMip = maxMipSeen[texId];
+                maxMip = std::max(maxMip, mipLevel);
+
                 if (dataSize > wire_filter::kThreshold) {
-                    // Track that this texture had a mip level dropped
                     auto it = firstSurvivingMip.find(texId);
                     if (it == firstSurvivingMip.end()) {
                         firstSurvivingMip[texId] = mipLevel + 1;
@@ -129,6 +134,20 @@ public:
             }
 
             pos += cmdSize;
+        }
+
+        // Don't defer single-mip textures — there's no smaller mip to fall
+        // back to, so deferring just means missing data with no fallback.
+        // This handles cube maps and other single-level textures.
+        for (auto it = firstSurvivingMip.begin(); it != firstSurvivingMip.end(); ) {
+            uint32_t texId = it->first;
+            auto maxIt = maxMipSeen.find(texId);
+            if (maxIt != maxMipSeen.end() && maxIt->second == 0) {
+                // Only mip level 0 was seen — single-mip texture, don't defer
+                it = firstSurvivingMip.erase(it);
+            } else {
+                ++it;
+            }
         }
 
         // Pass 2: build output buffer, skipping large WriteTexture cmds
@@ -153,11 +172,20 @@ public:
             if ((cmdId == wire_filter::kQueueWriteTexture ||
                  cmdId == wire_filter::kQueueWriteTextureXl) &&
                 cmdSize >= wire_filter::kDataSizeOffset + sizeof(uint64_t)) {
+                bool isXl = (cmdId == wire_filter::kQueueWriteTextureXl);
+                size_t texIdOff = isXl ? wire_filter::kWriteTexXlTextureIdOffset
+                                       : wire_filter::kWriteTexTextureIdOffset;
                 uint64_t dataSize;
                 std::memcpy(&dataSize,
                             buffer_.data() + pos + wire_filter::kDataSizeOffset,
                             sizeof(dataSize));
-                if (dataSize > wire_filter::kThreshold) {
+                uint32_t texId = 0;
+                if (cmdSize >= texIdOff + sizeof(uint32_t))
+                    std::memcpy(&texId, buffer_.data() + pos + texIdOff, sizeof(texId));
+                // Only defer if this texture has deferrable mips (multi-mip textures).
+                // Single-mip textures were removed from firstSurvivingMip above.
+                if (dataSize > wire_filter::kThreshold &&
+                    firstSurvivingMip.count(texId)) {
                     skip = true;
                     droppedBytes += cmdSize;
                 }
@@ -183,16 +211,23 @@ public:
                         std::memcpy(&oldCount,
                                     buffer_.data() + pos + wire_filter::kCreateViewMipCountOffset,
                                     sizeof(oldCount));
-                        uint32_t newCount = (oldCount > newBase) ? oldCount - newBase : 1;
 
-                        // Modify in-place (buffer_ is ours, not yet sent)
-                        std::memcpy(buffer_.data() + pos + wire_filter::kCreateViewBaseMipOffset,
-                                    &newBase, sizeof(newBase));
-                        std::memcpy(buffer_.data() + pos + wire_filter::kCreateViewMipCountOffset,
-                                    &newCount, sizeof(newCount));
+                        // If all mip levels were deferred (newBase >= oldCount),
+                        // don't rewrite — the view stays valid and data arrives
+                        // via deferred streaming. This handles single-mip textures
+                        // like cube maps where the only mip (level 0) is large.
+                        if (newBase < oldCount) {
+                            uint32_t newCount = oldCount - newBase;
 
-                        SPDLOG_INFO("Wire filter: TextureCreateView tex={} baseMip {} -> {}, count {} -> {}",
-                                    texId, 0, newBase, oldCount, newCount);
+                            // Modify in-place (buffer_ is ours, not yet sent)
+                            std::memcpy(buffer_.data() + pos + wire_filter::kCreateViewBaseMipOffset,
+                                        &newBase, sizeof(newBase));
+                            std::memcpy(buffer_.data() + pos + wire_filter::kCreateViewMipCountOffset,
+                                        &newCount, sizeof(newCount));
+
+                            SPDLOG_INFO("Wire filter: TextureCreateView tex={} baseMip {} -> {}, count {} -> {}",
+                                        texId, 0, newBase, oldCount, newCount);
+                        }
                     }
                 }
             }
