@@ -148,8 +148,8 @@ function LogViewer({ onConnectionChange, sessionFilter, onState }: Props) {
             }
             return next;
           });
-        } catch {
-          // Ignore malformed messages
+        } catch (e) {
+          console.error("LogViewer message error:", e, event.data?.substring?.(0, 200));
         }
       };
     }

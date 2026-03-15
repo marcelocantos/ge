@@ -8,6 +8,15 @@ interface Tweak {
   speed: number;
 }
 
+// Raw tweak from API — value may not be a number
+interface RawTweak {
+  name: string;
+  value: unknown;
+  default: unknown;
+  scale: "log" | "linear";
+  speed: number;
+}
+
 // Group tweaks by prefix (e.g. "Ball", "Wall", "Bond")
 function groupTweaks(tweaks: Tweak[]): Map<string, Tweak[]> {
   const groups = new Map<string, Tweak[]>();
@@ -191,7 +200,7 @@ function TweakPanel() {
   const fetchTweaks = useCallback(() => {
     fetch("/api/tweaks")
       .then((r) => r.json())
-      .then((data: Tweak[]) => setTweaks(data))
+      .then((data: RawTweak[]) => setTweaks(data.filter((t): t is Tweak => typeof t.value === "number") as Tweak[]))
       .catch(() => {});
   }, []);
 
@@ -237,7 +246,7 @@ function TweakPanel() {
         body: JSON.stringify({ name }),
       })
         .then((r) => r.json())
-        .then((data: Tweak[]) => setTweaks(data))
+        .then((data: RawTweak[]) => setTweaks(data.filter((t): t is Tweak => typeof t.value === "number") as Tweak[]))
         .catch(() => {});
     },
     [],
@@ -251,7 +260,7 @@ function TweakPanel() {
       body: JSON.stringify({ all: true }),
     })
       .then((r) => r.json())
-      .then((data: Tweak[]) => setTweaks(data))
+      .then((data: RawTweak[]) => setTweaks(data.filter((t): t is Tweak => typeof t.value === "number") as Tweak[]))
       .catch(() => {});
   }, []);
 

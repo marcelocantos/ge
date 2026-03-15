@@ -26,8 +26,8 @@ function App() {
   const handleState = useCallback((state: StateMessage) => {
     // Reload if ged is serving a newer dashboard build
     if (state.buildId && state.buildId !== __GE_BUILD_ID__) {
-      location.reload();
-      return;
+      console.warn("Build ID mismatch:", state.buildId, "vs", __GE_BUILD_ID__, "— skipping reload");
+      // Don't reload — causes infinite loop if IDs never converge
     }
 
     const newServers: Server[] = state.servers.map((s) => ({
