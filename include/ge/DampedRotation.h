@@ -16,6 +16,7 @@ public:
 
     void setOrientation(const float4& q) { orientation_ = q; }
     void setAngularVelocity(const float3& v) { angularVelocity_ = v; }
+    void setDamping(float d) { damping_ = d; }
 
     // Apply incremental rotation (during drag)
     void rotate(const float3& axis, float angle) {

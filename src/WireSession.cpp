@@ -680,7 +680,14 @@ void WireSession::connect() {
         });
     deviceDesc.SetUncapturedErrorCallback(
         [](const wgpu::Device&, wgpu::ErrorType type, wgpu::StringView message) {
-            SPDLOG_ERROR("WebGPU error: {}", std::string_view(message.data, message.length));
+            auto msg = std::string_view(message.data, message.length);
+            SPDLOG_CRITICAL("WebGPU error (type {}): {}", static_cast<int>(type), msg);
+            // Validation errors indicate programming bugs (bad shaders, mismatched
+            // bind groups, invalid pipeline state). Abort immediately so they can't
+            // silently poison downstream commands.
+            if (type == wgpu::ErrorType::Validation) {
+                std::abort();
+            }
         });
 
     std::vector<wgpu::FeatureName> features;

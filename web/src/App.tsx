@@ -9,6 +9,9 @@ import PhonePreview from "./PhonePreview";
 import PlayerList from "./PlayerList";
 import type { Server, SessionInfo } from "./PlayerList";
 
+const SIDEBAR_KEY = "ged-sidebar-width";
+const DEFAULT_SIDEBAR = 260;
+
 function App() {
   const [connected, setConnected] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
@@ -22,6 +25,34 @@ function App() {
   const [selectedSession, setSelectedSession] = useState<string | null>(null);
 
   const [servers, setServers] = useState<Server[]>([]);
+
+  // Resizable sidebar
+  const [sidebarWidth, setSidebarWidth] = useState(() => {
+    const stored = localStorage.getItem(SIDEBAR_KEY);
+    return stored ? parseInt(stored, 10) || DEFAULT_SIDEBAR : DEFAULT_SIDEBAR;
+  });
+  const sidebarRef = useRef<HTMLElement>(null);
+  const handleSidebarResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startWidth = sidebarWidth;
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    const onMove = (ev: MouseEvent) => {
+      const w = Math.max(180, Math.min(600, startWidth + ev.clientX - startX));
+      setSidebarWidth(w);
+    };
+    const onUp = () => {
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      // Persist on release
+      setSidebarWidth((w) => { localStorage.setItem(SIDEBAR_KEY, String(w)); return w; });
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }, [sidebarWidth]);
 
   const handleState = useCallback((state: StateMessage) => {
     // Reload if ged is serving a newer dashboard build
@@ -115,7 +146,7 @@ function App() {
         <span className="status-text">{connected ? "connected" : "disconnected"}</span>
       </header>
       <div className="layout">
-        <aside className="sidebar">
+        <aside className="sidebar" style={{ width: sidebarWidth }} ref={sidebarRef}>
           <QRCode />
           {servers.length > 0 && (
             <div className="player-list">
@@ -143,6 +174,7 @@ function App() {
           />
           <TweakPanel />
         </aside>
+        <div className="sidebar-resize-handle" onMouseDown={handleSidebarResizeStart} />
         <main className="main">
           <LogViewer
             onConnectionChange={setConnected}

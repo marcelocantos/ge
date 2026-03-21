@@ -189,11 +189,13 @@ function LogViewer({ onConnectionChange, sessionFilter, onState }: Props) {
         return (
           <div key={entry.id} className="log-line">
             <span className="log-ts">{formatTimestamp(entry.ts)}</span>
+            {"\t"}
             <span className="log-level" style={style}>
-              {entry.level.toUpperCase().padEnd(8)}
+              {entry.level.toUpperCase()}
             </span>
+            {"\t"}
             {entry.session && sessionFilter === null && (
-              <span className="log-session">{entry.session}</span>
+              <><span className="log-session">{entry.session}</span>{"\t"}</>
             )}
             <span className="log-msg" style={{ fontWeight: style.fontWeight }}>
               {entry.msg}

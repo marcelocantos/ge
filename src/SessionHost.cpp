@@ -243,7 +243,7 @@ void SessionHost::run(Factory factory) {
             } else if (type == "tweak_set") {
                 auto data = jsonObjectValue(msg, "data");
                 if (!data.empty() && tweak::parseAndApply(data)) {
-                    SPDLOG_INFO("SessionHost: tweak_set applied");
+                    SPDLOG_DEBUG("SessionHost: tweak_set applied");
                 }
 
             } else if (type == "tweak_reset") {

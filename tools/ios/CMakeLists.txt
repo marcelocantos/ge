@@ -16,6 +16,8 @@ set(SOURCES
     ${GE_ROOT}/src/WebSocketClient.cpp
     ${GE_ROOT}/vendor/src/sqlite3.c
     ${GE_ROOT}/vendor/src/sqlpipe.cpp
+    ${GE_ROOT}/vendor/src/sqlift.cpp
+    ${GE_ROOT}/vendor/src/lz4.c
     ${CMAKE_CURRENT_SOURCE_DIR}/QRScanner.mm
     ${CMAKE_CURRENT_SOURCE_DIR}/KeychainStore.mm
     ${GE_ROOT}/src/VideoEncoder_apple.mm
@@ -93,6 +95,7 @@ set_target_properties(Player PROPERTIES
     XCODE_ATTRIBUTE_CODE_SIGN_STYLE "Automatic"
     XCODE_GENERATE_SCHEME TRUE
     XCODE_SCHEME_ENABLE_GPU_API_VALIDATION OFF
+    XCODE_ATTRIBUTE_IPHONEOS_DEPLOYMENT_TARGET 16.3
     "XCODE_ATTRIBUTE_LIBRARY_SEARCH_PATHS[sdk=iphoneos*]" "${DAWN_DEVICE_DIR} ${SDL_DEVICE_DIR}"
     "XCODE_ATTRIBUTE_LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]" "${DAWN_SIM_DIR} ${SDL_SIM_DIR}"
 )

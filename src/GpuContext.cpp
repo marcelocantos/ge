@@ -106,9 +106,11 @@ GpuContext::GpuContext(void* nativeLayer, int width, int height, WireTransport* 
         });
     deviceDesc.SetUncapturedErrorCallback(
         [](const wgpu::Device&, wgpu::ErrorType type, wgpu::StringView message) {
-            SPDLOG_ERROR("WebGPU error: {} - {}",
-                        static_cast<int>(type),
-                        std::string_view(message.data, message.length));
+            auto msg = std::string_view(message.data, message.length);
+            SPDLOG_CRITICAL("WebGPU error (type {}): {}", static_cast<int>(type), msg);
+            if (type == wgpu::ErrorType::Validation) {
+                std::abort();
+            }
         });
 
     std::vector<wgpu::FeatureName> features;

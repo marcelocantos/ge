@@ -1,5 +1,6 @@
 #pragma once
 
+#include <linalg.h>
 #include <sqlite3.h>
 #include <nlohmann/json.hpp>
 
@@ -10,9 +11,33 @@
 #include <string>
 #include <vector>
 
+// ─── JSON for linalg types (must be in linalg namespace for ADL) ─────
+
+namespace linalg {
+
+inline void to_json(nlohmann::json& j, const vec<float,2>& v) { j = {v.x, v.y}; }
+inline void from_json(const nlohmann::json& j, vec<float,2>& v) { v.x = j[0]; v.y = j[1]; }
+
+inline void to_json(nlohmann::json& j, const vec<float,4>& v) { j = {v.x, v.y, v.z, v.w}; }
+inline void from_json(const nlohmann::json& j, vec<float,4>& v) {
+    v.x = j[0]; v.y = j[1]; v.z = j[2];
+    v.w = j.size() > 3 ? j[3].get<float>() : 1.0f;
+}
+
+} // namespace linalg
+
 namespace tweak {
 
 enum class Scale { Linear, Log };
+
+using float2 = linalg::vec<float, 2>;
+using float4 = linalg::vec<float, 4>;
+
+// Alias for color tweaks (RGBA).
+using Color = float4;
+
+// Alias for color tweaks (RGBA).
+using Color = float4;
 
 // Global generation counter — incremented on every set() call.
 inline std::atomic<uint64_t>& generation() {
@@ -34,6 +59,8 @@ struct TweakBase {
     virtual ~TweakBase() = default;
     virtual void loadJson(const std::string& json) = 0;
     virtual std::string toJson() const = 0;
+    virtual std::string defaultJson() const = 0;
+    virtual std::string metadataJson() const = 0;
     virtual void resetToDefault() = 0;
 
     static std::vector<TweakBase*>& all() {
@@ -70,6 +97,17 @@ struct Tweak : TweakBase {
         return nlohmann::json(get()).dump();
     }
 
+    std::string defaultJson() const override {
+        return nlohmann::json(defaultVal).dump();
+    }
+
+    std::string metadataJson() const override {
+        std::ostringstream os;
+        os << "\"scale\":\"" << (scale == Scale::Log ? "log" : "linear") << "\""
+           << ",\"speed\":" << speed;
+        return os.str();
+    }
+
     void resetToDefault() override {
         set(defaultVal);
     }
@@ -78,6 +116,80 @@ private:
     std::shared_ptr<const T> ptr_;
 };
 
+// ─── EnumTweak ────────────────────────────────────────────────────────
+
+struct EnumTweak : Tweak<int> {
+    std::vector<std::string> labels;
+
+    EnumTweak(const char* name, int def, std::vector<std::string> lbls)
+        : Tweak<int>(name, def), labels(std::move(lbls)) {}
+
+    // Update labels after construction (e.g. from config file).
+    // Bumps generation so the dashboard picks up the new metadata.
+    void setLabels(std::vector<std::string> lbls) {
+        labels = std::move(lbls);
+        generation().fetch_add(1, std::memory_order_relaxed);
+    }
+
+    std::string metadataJson() const override {
+        std::ostringstream os;
+        os << "\"type\":\"enum\",\"labels\":" << nlohmann::json(labels).dump();
+        return os.str();
+    }
+};
+
+// ─── AxisTweak ────────────────────────────────────────────────────────
+
+// A scalar tweak with a screen-space drag axis.
+// The axis encodes both direction and sensitivity:
+//   direction = normalize(axis)  — which way to drag to increase the value
+//   sensitivity = 1 / length(axis) — longer axis = slower change
+// Examples: {1,0} = drag right, normal speed. {0,-1} = drag up, normal speed.
+//           {0,-5} = drag up, 5x slower. {3,4} = drag toward lower-right, 5x slower.
+struct AxisTweak : Tweak<float> {
+    float2 axis;
+
+    AxisTweak(const char* name, float def, float2 ax, Scale s = Scale::Linear)
+        : Tweak<float>(name, def, s, 1.0f), axis(ax) {}
+
+    std::string metadataJson() const override {
+        std::ostringstream os;
+        os << "\"type\":\"axis\""
+           << ",\"scale\":\"" << (scale == Scale::Log ? "log" : "linear") << "\""
+           << ",\"axis\":[" << axis.x << "," << axis.y << "]";
+        return os.str();
+    }
+};
+
+// ─── Vec2Tweak ────────────────────────────────────────────────────────
+
+// Screen direction that increases a component's value.
+enum class Dir { Right, Left, Up, Down };
+
+struct Vec2Tweak : Tweak<float2> {
+    Dir xDir, yDir;
+
+    Vec2Tweak(const char* name, float2 def, Dir xd = Dir::Right, Dir yd = Dir::Down,
+              float spd = 1.0f)
+        : Tweak<float2>(name, def, Scale::Linear, spd), xDir(xd), yDir(yd) {}
+
+    std::string metadataJson() const override {
+        auto dirStr = [](Dir d) {
+            switch (d) {
+                case Dir::Right: return "right";
+                case Dir::Left:  return "left";
+                case Dir::Up:    return "up";
+                case Dir::Down:  return "down";
+            }
+            return "right";
+        };
+        std::ostringstream os;
+        os << "\"type\":\"vec2\",\"speed\":" << speed
+           << ",\"xDir\":\"" << dirStr(xDir) << "\""
+           << ",\"yDir\":\"" << dirStr(yDir) << "\"";
+        return os.str();
+    }
+};
 
 // ─── Database ─────────────────────────────────────────────────────────
 
@@ -128,14 +240,12 @@ void save(Tweak<T>& tw) {
 }
 
 inline void resetOne(const char* name) {
-    // Reset in-memory value to default
     for (auto* tw : TweakBase::all()) {
         if (std::strcmp(tw->name, name) == 0) {
             tw->resetToDefault();
             break;
         }
     }
-    // Clear persisted override
     if (!db()) return;
     sqlite3_stmt* stmt = nullptr;
     if (sqlite3_prepare_v2(db(), "DELETE FROM tweaks WHERE name = ?",
@@ -147,11 +257,9 @@ inline void resetOne(const char* name) {
 }
 
 inline void resetAll() {
-    // Reset all in-memory values to defaults
     for (auto* tw : TweakBase::all()) {
         tw->resetToDefault();
     }
-    // Clear persisted overrides
     if (!db()) return;
     sqlite3_exec(db(), "DELETE FROM tweaks", nullptr, nullptr, nullptr);
 }
@@ -165,27 +273,23 @@ inline std::string allToJson() {
     for (const auto* tw : TweakBase::all()) {
         if (!first) os << ',';
         first = false;
-        os << "{\"name\":\"" << tw->name << "\",\"value\":" << tw->toJson() << '}';
+        os << "{\"name\":\"" << tw->name
+           << "\",\"value\":" << tw->toJson()
+           << ",\"default\":" << tw->defaultJson()
+           << "," << tw->metadataJson()
+           << '}';
     }
     os << ']';
     return os.str();
 }
 
 inline bool parseAndApply(const std::string& body) {
-    auto namePos = body.find("\"name\"");
-    if (namePos == std::string::npos) return false;
-    auto nameStart = body.find('"', namePos + 6) + 1;
-    auto nameEnd = body.find('"', nameStart);
-    if (nameEnd == std::string::npos) return false;
-    std::string name = body.substr(nameStart, nameEnd - nameStart);
+    auto doc = nlohmann::json::parse(body, nullptr, false);
+    if (doc.is_discarded() || !doc.contains("name") || !doc.contains("value"))
+        return false;
 
-    auto valPos = body.find("\"value\"");
-    if (valPos == std::string::npos) return false;
-    auto colonPos = body.find(':', valPos + 7);
-    if (colonPos == std::string::npos) return false;
-    // Extract everything after "value": up to the next } or end
-    auto valEnd = body.find('}', colonPos);
-    std::string valStr = body.substr(colonPos + 1, valEnd - colonPos - 1);
+    std::string name = doc["name"];
+    std::string valStr = doc["value"].dump();
 
     for (auto* tw : TweakBase::all()) {
         if (name == tw->name) {

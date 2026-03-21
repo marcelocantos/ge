@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/coder/websocket"
@@ -127,6 +128,14 @@ func readDashBuildID() string {
 func (d *Daemon) AddServer(sc *ServerConn) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+
+	// Supersede any existing server with the same name.
+	for _, old := range d.servers {
+		if old.Name == sc.Name && old.PID != sc.PID {
+			slog.Info("Superseding server", "name", old.Name, "old_pid", old.PID, "new_pid", sc.PID)
+			syscall.Kill(old.PID, syscall.SIGINT)
+		}
+	}
 
 	d.nextSrvID++
 	sc.ID = "srv" + strconv.Itoa(d.nextSrvID)

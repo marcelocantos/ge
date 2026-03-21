@@ -28,6 +28,10 @@ export default defineConfig({
         target: "ws://localhost:42069",
         ws: true,
       },
+      "/mcp": {
+        target: "http://localhost:42069",
+        changeOrigin: true,
+      },
     },
   },
 });

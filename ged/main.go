@@ -46,6 +46,7 @@ func main() {
 	// Set up HTTP routes
 	mux := http.NewServeMux()
 	d.registerDashboard(mux)
+	d.registerMCP(mux)
 
 	// Handle signals
 	sigCh := make(chan os.Signal, 1)

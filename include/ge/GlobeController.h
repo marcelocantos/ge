@@ -28,6 +28,7 @@ public:
                     float dx = finger2X_ - finger1X_;
                     float dy = finger2Y_ - finger1Y_;
                     lastPinchDist_ = std::sqrt(dx*dx + dy*dy);
+                    lastPinchAngle_ = std::atan2(dy, dx);
                     pinchDelta_ = 0.0f;
                     accumX_ = accumY_ = 0.0f;
                     return true;
@@ -68,9 +69,18 @@ public:
                     float dx = finger2X_ - finger1X_;
                     float dy = finger2Y_ - finger1Y_;
                     float newDist = std::sqrt(dx*dx + dy*dy);
+                    float newAngle = std::atan2(dy, dx);
                     if (lastPinchDist_ > 0.1f)
                         pinchDelta_ += std::log(newDist / lastPinchDist_);
+                    // Apply two-finger rotation around camera view axis (Y).
+                    // Original rotates around Z (screen-normal in Y-up); our camera
+                    // is at (0,-3,0) looking at origin in Z-up, so the view axis is -Y.
+                    float angleDiff = newAngle - lastPinchAngle_;
+                    if (angleDiff > float(M_PI)) angleDiff -= 2.0f * float(M_PI);
+                    if (angleDiff < -float(M_PI)) angleDiff += 2.0f * float(M_PI);
+                    rotation_.rotate({0.0f, 1.0f, 0.0f}, angleDiff);
                     lastPinchDist_ = newDist;
+                    lastPinchAngle_ = newAngle;
                     return true;
                 }
                 if (inputSource_ != InputSource::Finger) return false;
@@ -153,7 +163,9 @@ public:
 
     // Call once per frame. Flushes accumulated drag to velocity, applies inertia.
     void update(float dt) {
-        if (dragging_ && dt > 0.001f && (accumX_ != 0.0f || accumY_ != 0.0f)) {
+        if (dragging_ && dt > 0.001f) {
+            // Always update velocity — even when accum is zero, so the EMA
+            // decays toward zero and doesn't carry stale momentum into release.
             rotation_.updateVelocityFromDrag(accumX_ / dt, accumY_ / dt, sensitivity_);
             accumX_ = accumY_ = 0.0f;
         }
@@ -166,6 +178,8 @@ public:
     const DampedRotation& rotation() const { return rotation_; }
     bool dragging() const { return dragging_; }
     bool pinching() const { return pinching_; }
+    void setSensitivity(float s) { sensitivity_ = s; }
+    void setDamping(float d) { rotation_.setDamping(d); }
 
     // Returns accumulated log-scale pinch delta since last call, then resets.
     // Positive = fingers spreading (zoom in), negative = fingers closing (zoom out).
@@ -174,6 +188,7 @@ public:
         pinchDelta_ = 0.0f;
         return d;
     }
+
 
 private:
     // Minimum displacement (pixels) before drag rotates the globe.
@@ -197,6 +212,7 @@ private:
     float finger2X_ = 0, finger2Y_ = 0;
     bool pinching_ = false;
     float lastPinchDist_ = 0;
+    float lastPinchAngle_ = 0;
     float pinchDelta_ = 0;
 };
 
