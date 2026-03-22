@@ -69,10 +69,10 @@ type Daemon struct {
 	nextID    int                       // incrementing session counter
 
 	// Dashboard state
-	logHistory  []string        // JSON-encoded log entries (ring buffer)
-	logClients  []*wsClient     // /ws/logs subscribers
-	prevClients []*wsClient     // /ws/preview subscribers
-	tweakState  json.RawMessage // cached tweak JSON from server
+	logHistory  []string                  // JSON-encoded log entries (ring buffer)
+	logClients  []*wsClient               // /ws/logs subscribers
+	prevClients []*wsClient               // /ws/preview subscribers
+	stateCache  map[string]json.RawMessage // cached sideband state by message type
 
 	// Video stream state
 	streamMuxers  map[string]*StreamMuxer // sessionID -> muxer
@@ -106,6 +106,7 @@ func NewDaemon(port int, noOpen bool) *Daemon {
 		noOpen:      noOpen,
 		servers:       make(map[string]*ServerConn),
 		sessions:      make(map[string]*PlayerSession),
+		stateCache:    make(map[string]json.RawMessage),
 		streamMuxers:  make(map[string]*StreamMuxer),
 		streamClients: make(map[string][]*wsClient),
 		dashBuildID:   readDashBuildID(),
@@ -202,21 +203,21 @@ func (d *Daemon) RemoveServer(sc *ServerConn) {
 
 	delete(d.servers, sc.ID)
 
-	// Try to reassign unattached sessions to remaining servers.
+	// Only reassign to a server with the same name (supersede case).
+	// If no same-name server exists, sessions stay unattached (black screen)
+	// until the dashboard manually reassigns them.
 	for _, sess := range d.sessions {
 		if sess.ServerID != "" {
 			continue
 		}
-		target := d.resolveServerPreferenceLocked(sess.Preference)
-		if target == "" {
-			target = d.pickAnyServerLocked()
+		for _, candidate := range d.servers {
+			if candidate.Name == sc.Name {
+				sess.ServerID = candidate.ID
+				d.sendServerAssignedLocked(sess.Player.Conn, candidate.Name)
+				d.sendToServerIDLocked(candidate.ID, fmt.Sprintf(`{"type":"player_attached","session_id":"%s"}`, sess.ID))
+				break
+			}
 		}
-		if target == "" {
-			continue
-		}
-		sess.ServerID = target
-		d.sendServerAssignedLocked(sess.Player.Conn, d.servers[target].Name)
-		d.sendToServerIDLocked(target, fmt.Sprintf(`{"type":"player_attached","session_id":"%s"}`, sess.ID))
 	}
 
 	d.broadcastStateLocked()
@@ -638,27 +639,28 @@ func (d *Daemon) RemovePreviewClient(c *wsClient) {
 	d.prevClients = removeClient(d.prevClients, c)
 }
 
-// SetTweakState caches the latest tweak state from the server.
-func (d *Daemon) SetTweakState(data json.RawMessage) {
+// CacheState stores a sideband message's data field, keyed by message type.
+// Ged doesn't interpret the content — it's opaque bytes.
+func (d *Daemon) CacheState(msgType string, data json.RawMessage) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	d.tweakState = data
+	d.stateCache[msgType] = data
 }
 
-// GetTweakState returns the cached tweak state.
-func (d *Daemon) GetTweakState() json.RawMessage {
+// GetCachedState returns the last cached data for a message type.
+func (d *Daemon) GetCachedState(msgType string) json.RawMessage {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if d.tweakState == nil {
-		return json.RawMessage("[]")
+	if data, ok := d.stateCache[msgType]; ok {
+		return data
 	}
-	return d.tweakState
+	return json.RawMessage("[]")
 }
 
-// SendTweakToServer forwards a tweak command to game servers.
-// If serverID is non-empty, targets that specific server; otherwise broadcasts
-// to all connected servers.
-func (d *Daemon) SendTweakToServer(msg string, serverID string) bool {
+// ForwardToServer sends a raw sideband message to game servers.
+// If serverID is non-empty, targets that specific server; otherwise broadcasts.
+// Ged does not parse the message content.
+func (d *Daemon) ForwardToServer(msg string, serverID string) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if len(d.servers) == 0 {

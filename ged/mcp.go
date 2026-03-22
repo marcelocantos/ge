@@ -38,8 +38,7 @@ func (d *Daemon) registerMCP(mux *http.ServeMux) {
 			mcp.WithDescription("List all tweaks with current values, defaults, and metadata."),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			state := d.GetTweakState()
-			// Pretty-print
+			state := d.GetCachedState("tweaks")
 			var tweaks []any
 			if json.Unmarshal(state, &tweaks) == nil {
 				b, _ := json.MarshalIndent(tweaks, "", "  ")
@@ -60,7 +59,7 @@ func (d *Daemon) registerMCP(mux *http.ServeMux) {
 			if name == "" {
 				return mcp.NewToolResultError("name is required"), nil
 			}
-			state := d.GetTweakState()
+			state := d.GetCachedState("tweaks")
 			var tweaks []map[string]any
 			if err := json.Unmarshal(state, &tweaks); err != nil {
 				return mcp.NewToolResultError("failed to parse tweak state"), nil
@@ -93,7 +92,7 @@ func (d *Daemon) registerMCP(mux *http.ServeMux) {
 			}
 			body, _ := json.Marshal(map[string]any{"name": name, "value": value})
 			msg := fmt.Sprintf(`{"type":"tweak_set","data":%s}`, string(body))
-			if d.SendTweakToServer(msg, "") {
+			if d.ForwardToServer(msg, "") {
 				return mcp.NewToolResultText(fmt.Sprintf("set %s = %v", name, value)), nil
 			}
 			return mcp.NewToolResultError("no server connected"), nil
@@ -116,7 +115,7 @@ func (d *Daemon) registerMCP(mux *http.ServeMux) {
 				body = string(b)
 			}
 			msg := fmt.Sprintf(`{"type":"tweak_reset","data":%s}`, body)
-			if d.SendTweakToServer(msg, "") {
+			if d.ForwardToServer(msg, "") {
 				if name == "" {
 					return mcp.NewToolResultText("all tweaks reset to defaults"), nil
 				}

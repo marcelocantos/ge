@@ -84,17 +84,38 @@ func (d *Daemon) registerDashboard(mux *http.ServeMux) {
 		}
 	})
 
-	// Tweaks
-	mux.HandleFunc("GET /api/tweaks", func(w http.ResponseWriter, r *http.Request) {
+	// Generic state cache — returns the last value broadcast by the server
+	// for a given message type (e.g. "tweaks", "settings").
+	mux.HandleFunc("GET /api/state/{type}", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write(d.GetTweakState())
+		w.Write(d.GetCachedState(r.PathValue("type")))
 	})
 
+	// Backward compat: GET /api/tweaks → GET /api/state/tweaks
+	mux.HandleFunc("GET /api/tweaks", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(d.GetCachedState("tweaks"))
+	})
+
+	// Generic sideband forward — sends a pre-formatted JSON message to
+	// game servers. Ged does not parse the content.
+	mux.HandleFunc("POST /api/sideband", func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		serverID := r.URL.Query().Get("server")
+		if d.ForwardToServer(string(body), serverID) {
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"ok":true}`)
+		} else {
+			http.Error(w, `{"error":"no server connected"}`, 503)
+		}
+	})
+
+	// Backward compat: POST /api/tweaks wraps body and forwards
 	mux.HandleFunc("POST /api/tweaks", func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		serverID := r.URL.Query().Get("server")
 		msg := fmt.Sprintf(`{"type":"tweak_set","data":%s}`, string(body))
-		if d.SendTweakToServer(msg, serverID) {
+		if d.ForwardToServer(msg, serverID) {
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(w, `{"ok":true}`)
 		} else {
@@ -106,9 +127,9 @@ func (d *Daemon) registerDashboard(mux *http.ServeMux) {
 		body, _ := io.ReadAll(r.Body)
 		serverID := r.URL.Query().Get("server")
 		msg := fmt.Sprintf(`{"type":"tweak_reset","data":%s}`, string(body))
-		if d.SendTweakToServer(msg, serverID) {
+		if d.ForwardToServer(msg, serverID) {
 			w.Header().Set("Content-Type", "application/json")
-			w.Write(d.GetTweakState())
+			w.Write(d.GetCachedState("tweaks"))
 		} else {
 			http.Error(w, `{"error":"no server connected"}`, 503)
 		}

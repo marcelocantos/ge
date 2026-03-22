@@ -167,9 +167,15 @@ func (d *Daemon) handleServerSideband(data []byte) {
 	json.Unmarshal(data, &full)
 	sid := full.Session
 
+	// Cache any message with a data field (tweaks, settings, etc.)
+	// Ged doesn't interpret the content — just stores it by type.
+	if msg.Data != nil && msg.Type != "" {
+		d.CacheState(msg.Type, msg.Data)
+	}
+
+	// Route messages that have specific delivery targets.
 	switch msg.Type {
 	case "log":
-		// Extract inner data so dashboard receives {"ts":"...","level":"...","msg":"..."}
 		if msg.Data != nil {
 			d.BroadcastLog(string(msg.Data))
 		}
@@ -179,7 +185,5 @@ func (d *Daemon) handleServerSideband(data []byte) {
 		d.SendPreview(sid, websocket.MessageBinary, msg.Data)
 	case "accel":
 		d.SendPreview(sid, websocket.MessageText, data)
-	case "tweaks":
-		d.SetTweakState(msg.Data)
 	}
 }
