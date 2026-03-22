@@ -680,12 +680,15 @@ void WireSession::connect() {
         });
     deviceDesc.SetUncapturedErrorCallback(
         [](const wgpu::Device&, wgpu::ErrorType type, wgpu::StringView message) {
+            static int errorCount = 0;
             auto msg = std::string_view(message.data, message.length);
-            SPDLOG_CRITICAL("WebGPU error (type {}): {}", static_cast<int>(type), msg);
-            // Validation errors indicate programming bugs (bad shaders, mismatched
-            // bind groups, invalid pipeline state). Abort immediately so they can't
-            // silently poison downstream commands.
-            if (type == wgpu::ErrorType::Validation) {
+            // Rate-limit: log first occurrence and every 1000th after
+            if (errorCount == 0 || errorCount % 1000 == 0) {
+                SPDLOG_ERROR("WebGPU error (type {}, count {}): {}", static_cast<int>(type), errorCount + 1, msg);
+            }
+            errorCount++;
+            // Abort on shader compilation failures — these are always bugs.
+            if (type == wgpu::ErrorType::Validation && msg.find("ShaderModule") != msg.npos) {
                 std::abort();
             }
         });
