@@ -84,6 +84,23 @@ func (d *Daemon) registerDashboard(mux *http.ServeMux) {
 		}
 	})
 
+	// Switch a session to a server by name (for player-driven selection).
+	// The player knows server names, not IDs.
+	mux.HandleFunc("POST /api/sessions/{sessionID}/select/{serverName}", func(w http.ResponseWriter, r *http.Request) {
+		sessionID := r.PathValue("sessionID")
+		serverName := r.PathValue("serverName")
+		if sessionID == "" || serverName == "" {
+			http.Error(w, `{"error":"missing session or server name"}`, 400)
+			return
+		}
+		if d.SwitchSessionByName(sessionID, serverName) {
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"ok":true}`)
+		} else {
+			http.Error(w, `{"error":"session or server not found"}`, 404)
+		}
+	})
+
 	// Generic state cache — returns the last value broadcast by the server
 	// for a given message type (e.g. "tweaks", "settings").
 	mux.HandleFunc("GET /api/state/{type}", func(w http.ResponseWriter, r *http.Request) {

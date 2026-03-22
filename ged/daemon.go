@@ -144,22 +144,18 @@ func (d *Daemon) AddServer(sc *ServerConn) {
 
 	slog.Info("Server registered", "id", sc.ID, "name", sc.Name, "pid", sc.PID)
 
-	// Assign unattached sessions to this server if their preference matches
-	// (or they have no preference and no other server).
+	// Only auto-assign sessions whose preference matches this server's name.
+	// Unattached sessions with no preference stay unattached — the player
+	// decides which server to connect to, not ged.
 	for _, sess := range d.sessions {
 		if sess.ServerID != "" {
-			continue // already assigned
-		}
-		target := d.resolveServerPreferenceLocked(sess.Preference)
-		if target == "" {
-			target = d.pickAnyServerLocked()
-		}
-		if target == "" {
 			continue
 		}
-		sess.ServerID = target
-		d.sendServerAssignedLocked(sess.Player.Conn, d.servers[target].Name)
-		d.sendToServerIDLocked(target, fmt.Sprintf(`{"type":"player_attached","session_id":"%s"}`, sess.ID))
+		if sess.Preference == sc.Name {
+			sess.ServerID = sc.ID
+			d.sendServerAssignedLocked(sess.Player.Conn, sc.Name)
+			d.sendToServerIDLocked(sc.ID, fmt.Sprintf(`{"type":"player_attached","session_id":"%s"}`, sess.ID))
+		}
 	}
 
 	d.broadcastStateLocked()
@@ -276,6 +272,28 @@ func (d *Daemon) SwitchSession(sessionID, serverID string) bool {
 
 // AddPlayer registers a new player, assigns a session ID, resolves the player's
 // server preference, and notifies the matched server. Returns the session ID.
+// SwitchSessionByName finds a server by name and switches the session to it.
+func (d *Daemon) SwitchSessionByName(sessionID, serverName string) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	sess, ok := d.sessions[sessionID]
+	if !ok {
+		return false
+	}
+	for _, sc := range d.servers {
+		if sc.Name == serverName {
+			if sess.ServerID == sc.ID {
+				return true
+			}
+			d.sendSessionEndWithTargetLocked(sess.Player.Conn, sc.Name)
+			d.broadcastStateLocked()
+			return true
+		}
+	}
+	return false
+}
+
 func (d *Daemon) AddPlayer(pc *PlayerConn, name, preference string) string {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -283,10 +301,14 @@ func (d *Daemon) AddPlayer(pc *PlayerConn, name, preference string) string {
 	d.nextID++
 	sessionID := "s" + strconv.Itoa(d.nextID)
 
-	// Resolve preference → server ID, fall back to any server
+	// Resolve preference → server ID. If no preference, only auto-assign
+	// when there's exactly one server (unambiguous). With multiple servers,
+	// the player stays unattached until it picks one.
 	target := d.resolveServerPreferenceLocked(preference)
-	if target == "" {
-		target = d.pickAnyServerLocked()
+	if target == "" && len(d.servers) == 1 {
+		for id := range d.servers {
+			target = id
+		}
 	}
 
 	serverName := ""
@@ -739,20 +761,6 @@ func (d *Daemon) resolveServerPreferenceLocked(pref string) string {
 	return ""
 }
 
-// pickAnyServerLocked returns the ID of the server with the alphabetically
-// first Name. Deterministic ordering ensures consistent default routing
-// regardless of server registration order.
-// Must be called with d.mu held.
-func (d *Daemon) pickAnyServerLocked() string {
-	var bestID, bestName string
-	for id, sc := range d.servers {
-		if bestID == "" || sc.Name < bestName {
-			bestID = id
-			bestName = sc.Name
-		}
-	}
-	return bestID
-}
 
 // sendServerAssignedLocked sends a kServerAssignedMagic message to a player
 // with the assigned server name as payload.
