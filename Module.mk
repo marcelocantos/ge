@@ -58,7 +58,9 @@ ge/SRC = \
 	ge/src/WireSession.cpp \
 	ge/src/SessionHost.cpp \
 	ge/src/WebSocketClient.cpp \
-	ge/src/VideoEncoder_apple.mm
+	ge/src/StreamSession.cpp \
+	ge/src/VideoEncoder_apple.mm \
+	ge/src/VideoDecoder_apple.mm
 
 # Session backend objects (linked by the parent, not part of libge.a)
 ge/SESSION_WIRE_OBJ = $(BUILD_DIR)/ge/src/SessionWire.o
