@@ -14,7 +14,9 @@ public:
     Texture& operator=(Texture&&) noexcept;
 
     // Load texture from image file (PNG, etc.) - requires device and queue
-    static Texture fromFile(wgpu::Device device, wgpu::Queue queue, const char* path);
+    // maxMipLevels: 0 = full mip chain (default), 1 = no mipmaps, N = at most N levels
+    static Texture fromFile(wgpu::Device device, wgpu::Queue queue, const char* path,
+                            uint32_t maxMipLevels = 0);
 
     bool isValid() const;
     int width() const;

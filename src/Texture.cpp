@@ -460,7 +460,8 @@ TextureResult loadAstc(wgpu::Device device, wgpu::Queue queue,
     };
 }
 
-TextureResult loadSdlImage(wgpu::Device device, wgpu::Queue queue, const char* path) {
+TextureResult loadSdlImage(wgpu::Device device, wgpu::Queue queue, const char* path,
+                            uint32_t maxMipLevels = 0) {
     SDL_Surface* surface = IMG_Load(path);
     if (!surface) {
         throw std::runtime_error(
@@ -480,12 +481,15 @@ TextureResult loadSdlImage(wgpu::Device device, wgpu::Queue queue, const char* p
         surface = converted;
     }
 
-    // Calculate full mip chain so the wire filter can defer large mip levels
-    // without creating invalid texture views.
+    // Calculate mip chain. Full chain allows wire filter to defer large levels.
+    // maxMipLevels=1 creates single-level textures that bypass the wire filter.
     uint32_t mipCount = 1;
     {
         uint32_t mw = static_cast<uint32_t>(width), mh = static_cast<uint32_t>(height);
         while (mw > 1 || mh > 1) { mw = std::max(1u, mw / 2); mh = std::max(1u, mh / 2); mipCount++; }
+    }
+    if (maxMipLevels > 0 && mipCount > maxMipLevels) {
+        mipCount = maxMipLevels;
     }
 
     wgpu::TextureDescriptor texDesc{
@@ -580,7 +584,8 @@ TextureResult loadSdlImage(wgpu::Device device, wgpu::Queue queue, const char* p
 
 } // namespace
 
-Texture Texture::fromFile(wgpu::Device device, wgpu::Queue queue, const char* path) {
+Texture Texture::fromFile(wgpu::Device device, wgpu::Queue queue, const char* path,
+                           uint32_t maxMipLevels) {
     // Detect format by magic header (first 4 bytes)
     auto file = ge::openFile(path, true);
     if (!file || !*file) {
@@ -643,7 +648,7 @@ Texture Texture::fromFile(wgpu::Device device, wgpu::Queue queue, const char* pa
         r = loadAstc(device, queue, *file, path);
     } else {
         file.reset();
-        r = loadSdlImage(device, queue, path);
+        r = loadSdlImage(device, queue, path, maxMipLevels);
     }
 
 #ifdef GE_HAS_TRANSCODER

@@ -387,6 +387,10 @@ void MipTracker::scanCommands(const char* data, size_t size) {
             std::memcpy(&bgId, data + pos + kCreateBindGroupResultIdOffset, sizeof(bgId));
             nextBgId = std::max(nextBgId, bgId + 1);
 
+            // If the server reuses an ID that we previously rewrote,
+            // the old bind group was destroyed. Clear the stale rewrite.
+            bindGroupRewrites.erase(bgId);
+
             // Check if this bind group has chain extensions (skip if so — our game doesn't use them)
             uint32_t hasChain;
             std::memcpy(&hasChain, data + pos + kBindGroupDescHasChainOffset, sizeof(hasChain));
