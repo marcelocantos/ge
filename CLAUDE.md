@@ -242,7 +242,7 @@ Player → Server:  MessageHeader{kSdlEventMagic} + SDL_Event structs (input)
 
 | Constant | Value | Purpose |
 |----------|-------|---------|
-| `kProtocolVersion` | 3 | Protocol version for compatibility checking |
+| `kProtocolVersion` | 5 | Protocol version for compatibility checking |
 | `kMaxMessageSize` | 512 MB | Accommodates initial texture uploads over wire |
 | `kDeviceInfoMagic` | `0x47453244` | "GE2D" — player device info |
 | `kSessionInitMagic` | `0x47453253` | "GE2S" — server session init |
@@ -250,9 +250,24 @@ Player → Server:  MessageHeader{kSdlEventMagic} + SDL_Event structs (input)
 | `kWireCommandMagic` | `0x47453243` | "GE2C" — GPU commands |
 | `kWireResponseMagic` | `0x47453252` | "GE2R" — GPU responses |
 | `kSdlEventMagic` | `0x47453249` | "GE2I" — input events |
+| `kFrameEndMagic` | `0x47453246` | "GE2F" — server → player: frame boundary |
+| `kFrameReadyMagic` | `0x47453247` | "GE2G" — player → server: ready for next |
+| `kDeferredMipMagic` | `0x47453248` | "GE2H" — server → player: deferred mip data |
+| `kMipCacheHitMagic` | `0x4745324A` | "GE2J" — player → server: cached mip found |
+| `kMipCacheMissMagic` | `0x4745324B` | "GE2K" — player → server: cached mip not found |
+| `kSensorConfigMagic` | `0x4745324C` | "GE2L" — server → player: sensor config |
+| `kSessionEndMagic` | `0x4745324D` | "GE2M" — ged → player: server disconnected |
+| `kServerAssignedMagic` | `0x4745324E` | "GE2N" — ged → player: assigned server name |
 | `kStateRequestMagic` | `0x47453251` | "GE2Q" — server requests player's DB |
 | `kStateDataMagic` | `0x47453250` | "GE2P" — player sends raw DB bytes |
 | `kSqlpipeMsgMagic` | `0x47453254` | "GE2T" — bidirectional sqlpipe messages |
+| `kAudioDataMagic` | `0x47453241` | "GE2A" — server → player: audio asset data |
+| `kAudioCommandMagic` | `0x47453242` | "GE2B" — server → player: audio play/stop/volume |
+| `kSafeAreaMagic` | `0x47453245` | "GE2E" — player → server: safe area update |
+| `kVideoStreamMagic` | `0x47453256` | "GE2V" — player → ged: H.264 NALs |
+| `kStreamStartMagic` | `0x47453257` | "GE2W" — ged → player: start streaming |
+| `kStreamStopMagic` | `0x47453258` | "GE2X" — ged → player: stop streaming |
+| `kAspectLockMagic` | `0x47453260` | "GE2\`" — server → player: lock aspect ratio |
 
 ### Address Resolution
 
@@ -299,6 +314,16 @@ Use `-no-open` to prevent ged from opening the dashboard in the browser on first
 ```bash
 bin/ged -no-open
 ```
+
+### Dashboard Development
+
+The ged dashboard is a React/Vite app in `ge/web/`. For hot-reload iteration:
+
+```bash
+cd ge/web && npm run dev   # Hot-reload dashboard on :5173, proxies API/WS/MCP to ged
+```
+
+The Vite dev server proxies `/api`, `/ws`, and `/mcp` to ged at `localhost:42069`.
 
 ### Mobile Builds
 
@@ -364,6 +389,28 @@ The Android player's native sources are listed in `ge/tools/android/app/src/main
 - `${GE_ROOT}/tools/player_core.cpp` — Shared player logic
 - `${GE_ROOT}/src/WireTransport.cpp` — Wire transport
 - `${GE_ROOT}/src/WebSocketClient.cpp` — WebSocket client (`connectWebSocket`)
+
+## ged Features
+
+### MCP Server
+
+ged exposes an MCP server at `/mcp` (streamable HTTP) with tools: `info`, `tweak_list`, `tweak_get`, `tweak_set`, `tweak_reset`, `logs`. Configure in `.mcp.json`:
+
+```json
+{"mcpServers":{"ged":{"type":"http","url":"http://localhost:42069/mcp"}}}
+```
+
+### Server Supersede
+
+When a new game server connects with the same name as an existing one, ged sends SIGINT to the old server process. This enables seamless restarts — just `make && bin/myapp` without manually killing the old process.
+
+### launchd
+
+ged can run as a launchd agent for auto-start on login and restart-on-crash.
+
+## GPU Error Propagation
+
+WebGPU validation errors (shader compilation failures, bind group mismatches, invalid pipelines) abort the process via `std::abort()` in both `GpuContext` and `WireSession`. The error message is logged via `SPDLOG_CRITICAL` before abort. This prevents silent invalid pipeline creation over the wire, which would otherwise produce hard-to-debug rendering failures.
 
 ## Standalone iOS App (Direct Mode)
 
@@ -563,10 +610,23 @@ Use `SDL_EVENT_FINGER_*` events exclusively for touch/drag input. SDL3 synthesiz
 
 ### Animation
 
-- **`GlobeController`** — Encapsulates `DampedRotation` + drag state + input source arbitration (mouse vs finger). `event()` handles SDL touch/mouse events, `update(dt)` flushes drag accumulation and applies inertia. Header-only.
-- **`DampedRotation`** — Quaternion orientation + angular velocity with exponential decay. Supports screen-space drag, inertia, framerate-independent damping.
+- **`GlobeController`** — Encapsulates `DampedRotation` + drag state + input source arbitration (mouse vs finger). `event()` handles SDL touch/mouse events, `update(dt)` flushes drag accumulation and applies inertia. Supports two-finger pinch-rotate (log-scale zoom delta via `consumePinchDelta()`, rotation around camera view axis). `setSensitivity()` and `setDamping()` for runtime tuning. `pinching()` getter for pinch state. Velocity decays to zero during stationary drag — no residual momentum on release. Header-only.
+- **`DampedRotation`** — Quaternion orientation + angular velocity with exponential decay. Supports screen-space drag, inertia, framerate-independent damping (`damping^(60*dt)`). `setDamping()` for runtime tuning. `isMoving()` checks if velocity is above threshold. `matrix()` returns the 4x4 rotation matrix for rendering.
 - **`DampedValue`** — 1D value + velocity with exponential decay.
 - **`DeltaTimer`** — Frame delta-time helper.
+
+### Tweak System
+
+- **`Tweak<T>`** (`Tweak.h`) — Generic runtime-tunable parameter with atomic `shared_ptr` for lock-free reads. Specialized types: `EnumTweak` (int with named labels for dropdown UI), `Vec2Tweak` (float2 with per-axis screen direction via `Dir` enum), `AxisTweak` (float with drag axis vector encoding direction+sensitivity), `Color` (float4 alias). Database: `loadOverrides()` opens SQLite DB and applies saved values, `save()` persists a tweak, `resetOne()`/`resetAll()` restore defaults. JSON API: `allToJson()` emits name, value, default, and type-specific metadata; `parseAndApply()` sets a value from JSON; `parseAndReset()` resets by name or all. Global generation counter (`generation()`) increments on every `set()` for change tracking. Header-only, in `tweak::` namespace.
+
+### Text and Audio
+
+- **`TextRenderer`** (`TextRenderer.h`) — Bitmap font text renderer. Builds an ASCII glyph atlas from a TrueType font via SDL3_ttf at construction time. `drawText()` queues textured quads, `flush()` uploads and draws the batch. `measureText()` for layout. pImpl.
+- **`Audio`** (`Audio.h`) — Audio playback. `load()` loads WAV/MP3 clips (returns a clip ID), `play()`/`stop()`/`setVolume()` for control. Audio data and commands are sent to the player over the wire protocol. pImpl.
+
+### File I/O
+
+- **`FileIO`** (`FileIO.h`) — `ge::openFile(path)` returns a `std::unique_ptr<std::istream>`. Uses `SDL_IOFromFile` internally for platform-agnostic file access (Android APK assets, iOS bundles, normal filesystem).
 
 ### Testing
 
