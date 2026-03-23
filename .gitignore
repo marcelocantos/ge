@@ -6,3 +6,4 @@ ged/web/
 !/.claude/agents/
 !/.claude/settings.json
 !/.claude/CLAUDE.md
+web/sqlite_mcp_server.db
