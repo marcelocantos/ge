@@ -12,14 +12,11 @@ namespace ge {
 
 struct VideoEncoder::M {
     VTCompressionSessionRef session = nullptr;
-    NALCallback callback;
-    std::vector<uint8_t> sps_;
-    std::vector<uint8_t> pps_;
+    FrameCallback callback;
     int width;
     int height;
     int fps;
     int64_t frameCount = 0;
-    bool parameterSetsExtracted = false;
 
     void createSession();
     static void outputCallback(void* ctx, void* sourceFrameRefCon,
@@ -28,8 +25,6 @@ struct VideoEncoder::M {
 };
 
 void VideoEncoder::M::createSession() {
-    NSDictionary* encoderSpec = @{};
-
     NSDictionary* pixelBufferAttrs = @{
         (NSString*)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA),
         (NSString*)kCVPixelBufferWidthKey: @(width),
@@ -37,14 +32,13 @@ void VideoEncoder::M::createSession() {
     };
 
     OSStatus err = VTCompressionSessionCreate(
-        nullptr,                      // allocator
-        width, height,
+        nullptr, width, height,
         kCMVideoCodecType_H264,
-        (__bridge CFDictionaryRef)encoderSpec,
+        nullptr,
         (__bridge CFDictionaryRef)pixelBufferAttrs,
-        nullptr,                      // compressedDataAllocator
+        nullptr,
         &M::outputCallback,
-        this,                         // refcon
+        this,
         &session
     );
 
@@ -59,18 +53,20 @@ void VideoEncoder::M::createSession() {
     VTSessionSetProperty(session, kVTCompressionPropertyKey_AllowFrameReordering,
                          kCFBooleanFalse);
 
-    int32_t bitrate = 2000000; // 2 Mbps
+    int32_t bitrate = 4000000; // 4 Mbps
     CFNumberRef bitrateRef = CFNumberCreate(nullptr, kCFNumberSInt32Type, &bitrate);
     VTSessionSetProperty(session, kVTCompressionPropertyKey_AverageBitRate, bitrateRef);
     CFRelease(bitrateRef);
 
-    int32_t maxKeyFrameInterval = 30;
+    // Short keyframe interval for fast recovery over unreliable transport
+    int32_t maxKeyFrameInterval = fps / 2; // Keyframe every 0.5s
     CFNumberRef keyFrameRef = CFNumberCreate(nullptr, kCFNumberSInt32Type, &maxKeyFrameInterval);
     VTSessionSetProperty(session, kVTCompressionPropertyKey_MaxKeyFrameInterval, keyFrameRef);
     CFRelease(keyFrameRef);
 
     VTCompressionSessionPrepareToEncodeFrames(session);
-    SPDLOG_INFO("VideoEncoder: created {}x{} @ {} fps, 2 Mbps H.264 Baseline", width, height, fps);
+    SPDLOG_INFO("VideoEncoder: created {}x{} @ {} fps, 4 Mbps H.264 Baseline, keyframe every {}",
+                width, height, fps, maxKeyFrameInterval);
 }
 
 void VideoEncoder::M::outputCallback(void* ctx, void* /*sourceFrameRefCon*/,
@@ -83,36 +79,8 @@ void VideoEncoder::M::outputCallback(void* ctx, void* /*sourceFrameRefCon*/,
 
     auto* self = static_cast<M*>(ctx);
 
-    // Extract SPS/PPS from format description on first callback
-    if (!self->parameterSetsExtracted) {
-        CMFormatDescriptionRef formatDesc = CMSampleBufferGetFormatDescription(sampleBuffer);
-        if (formatDesc) {
-            size_t spsSize = 0, ppsSize = 0;
-            const uint8_t* spsData = nullptr;
-            const uint8_t* ppsData = nullptr;
-            size_t paramCount = 0;
-
-            CMVideoFormatDescriptionGetH264ParameterSetAtIndex(
-                formatDesc, 0, &spsData, &spsSize, &paramCount, nullptr);
-            if (spsData && spsSize > 0) {
-                self->sps_.assign(spsData, spsData + spsSize);
-            }
-
-            CMVideoFormatDescriptionGetH264ParameterSetAtIndex(
-                formatDesc, 1, &ppsData, &ppsSize, nullptr, nullptr);
-            if (ppsData && ppsSize > 0) {
-                self->pps_.assign(ppsData, ppsData + ppsSize);
-            }
-
-            if (!self->sps_.empty() && !self->pps_.empty()) {
-                SPDLOG_INFO("VideoEncoder: extracted SPS ({} bytes) + PPS ({} bytes)",
-                            self->sps_.size(), self->pps_.size());
-                self->parameterSetsExtracted = true;
-            }
-        }
-    }
-
-    // Get the H.264 data (AVCC format)
+    // Get the encoded data — this is the complete AVCC-formatted frame
+    // including parameter sets for keyframes.
     CMBlockBufferRef blockBuffer = CMSampleBufferGetDataBuffer(sampleBuffer);
     if (!blockBuffer) return;
 
@@ -122,43 +90,60 @@ void VideoEncoder::M::outputCallback(void* ctx, void* /*sourceFrameRefCon*/,
                                                      &totalLength, &dataPointer);
     if (blockErr != noErr || !dataPointer || totalLength == 0) return;
 
-    // Convert AVCC to Annex B: replace 4-byte length prefixes with start codes
-    size_t offset = 0;
-    while (offset + 4 < totalLength) {
-        // Read 4-byte AVCC length (big-endian)
-        uint32_t nalLength = 0;
-        nalLength |= static_cast<uint32_t>(static_cast<uint8_t>(dataPointer[offset + 0])) << 24;
-        nalLength |= static_cast<uint32_t>(static_cast<uint8_t>(dataPointer[offset + 1])) << 16;
-        nalLength |= static_cast<uint32_t>(static_cast<uint8_t>(dataPointer[offset + 2])) << 8;
-        nalLength |= static_cast<uint32_t>(static_cast<uint8_t>(dataPointer[offset + 3]));
-
-        if (nalLength == 0 || offset + 4 + nalLength > totalLength) break;
-
-        // Build Annex B NAL: start code + NAL data
-        std::vector<uint8_t> annexB(4 + nalLength);
-        annexB[0] = 0x00;
-        annexB[1] = 0x00;
-        annexB[2] = 0x00;
-        annexB[3] = 0x01;
-        std::memcpy(annexB.data() + 4, dataPointer + offset + 4, nalLength);
-
-        // Check NAL type for keyframe (IDR = 5)
-        uint8_t nalType = annexB[4] & 0x1F;
-        bool isKeyframe = (nalType == 5);
-
-        NALUnit nal{annexB.data(), annexB.size(), isKeyframe};
-        self->callback(nal);
-
-        offset += 4 + nalLength;
+    // Check if keyframe
+    CFArrayRef attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, false);
+    bool isKeyframe = false;
+    if (attachments && CFArrayGetCount(attachments) > 0) {
+        CFDictionaryRef dict = (CFDictionaryRef)CFArrayGetValueAtIndex(attachments, 0);
+        CFBooleanRef notSync = (CFBooleanRef)CFDictionaryGetValue(dict,
+            kCMSampleAttachmentKey_NotSync);
+        isKeyframe = !notSync || !CFBooleanGetValue(notSync);
     }
+
+    // For keyframes, prepend SPS and PPS from the format description
+    // so the decoder can initialize from any keyframe without out-of-band data.
+    std::vector<uint8_t> frameData;
+    if (isKeyframe) {
+        CMFormatDescriptionRef formatDesc = CMSampleBufferGetFormatDescription(sampleBuffer);
+        if (formatDesc) {
+            size_t paramCount = 0;
+            CMVideoFormatDescriptionGetH264ParameterSetAtIndex(
+                formatDesc, 0, nullptr, nullptr, &paramCount, nullptr);
+
+            for (size_t i = 0; i < paramCount; i++) {
+                const uint8_t* paramData = nullptr;
+                size_t paramSize = 0;
+                CMVideoFormatDescriptionGetH264ParameterSetAtIndex(
+                    formatDesc, i, &paramData, &paramSize, nullptr, nullptr);
+                if (paramData && paramSize > 0) {
+                    // AVCC length prefix
+                    uint32_t len = static_cast<uint32_t>(paramSize);
+                    uint8_t lenBytes[4] = {
+                        uint8_t(len >> 24), uint8_t(len >> 16),
+                        uint8_t(len >> 8), uint8_t(len)
+                    };
+                    frameData.insert(frameData.end(), lenBytes, lenBytes + 4);
+                    frameData.insert(frameData.end(), paramData, paramData + paramSize);
+                }
+            }
+        }
+    }
+
+    // Append the encoded frame data (already AVCC-formatted with length prefixes)
+    frameData.insert(frameData.end(),
+                     reinterpret_cast<const uint8_t*>(dataPointer),
+                     reinterpret_cast<const uint8_t*>(dataPointer) + totalLength);
+
+    Frame frame{frameData.data(), frameData.size(), isKeyframe};
+    self->callback(frame);
 }
 
-VideoEncoder::VideoEncoder(int width, int height, int fps, NALCallback onNAL)
+VideoEncoder::VideoEncoder(int width, int height, int fps, FrameCallback onFrame)
     : m(std::make_unique<M>()) {
     m->width = width;
     m->height = height;
     m->fps = fps;
-    m->callback = std::move(onNAL);
+    m->callback = std::move(onFrame);
     m->createSession();
 }
 
@@ -174,14 +159,11 @@ void VideoEncoder::encode(const uint8_t* bgraPixels, size_t bytesPerRow) {
 
     CVPixelBufferRef pixelBuffer = nullptr;
     OSStatus err = CVPixelBufferCreateWithBytes(
-        nullptr,
-        m->width, m->height,
+        nullptr, m->width, m->height,
         kCVPixelFormatType_32BGRA,
         const_cast<uint8_t*>(bgraPixels),
         bytesPerRow,
-        nullptr,  // releaseCallback
-        nullptr,  // releaseRefCon
-        nullptr,  // pixelBufferAttributes
+        nullptr, nullptr, nullptr,
         &pixelBuffer
     );
 
@@ -192,13 +174,8 @@ void VideoEncoder::encode(const uint8_t* bgraPixels, size_t bytesPerRow) {
 
     CMTime pts = CMTimeMake(m->frameCount++, m->fps);
     err = VTCompressionSessionEncodeFrame(
-        m->session,
-        pixelBuffer,
-        pts,
-        kCMTimeInvalid,  // duration
-        nullptr,         // frameProperties
-        nullptr,         // sourceFrameRefCon
-        nullptr          // infoFlagsOut
+        m->session, pixelBuffer, pts,
+        kCMTimeInvalid, nullptr, nullptr, nullptr
     );
 
     CVPixelBufferRelease(pixelBuffer);
@@ -206,14 +183,6 @@ void VideoEncoder::encode(const uint8_t* bgraPixels, size_t bytesPerRow) {
     if (err != noErr) {
         SPDLOG_ERROR("VTCompressionSessionEncodeFrame failed: {}", static_cast<int>(err));
     }
-}
-
-const std::vector<uint8_t>& VideoEncoder::sps() const {
-    return m->sps_;
-}
-
-const std::vector<uint8_t>& VideoEncoder::pps() const {
-    return m->pps_;
 }
 
 void VideoEncoder::flush() {
@@ -231,9 +200,6 @@ void VideoEncoder::resize(int width, int height) {
     m->width = width;
     m->height = height;
     m->frameCount = 0;
-    m->parameterSetsExtracted = false;
-    m->sps_.clear();
-    m->pps_.clear();
     m->createSession();
 }
 

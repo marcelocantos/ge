@@ -108,58 +108,31 @@ struct StreamSession::M {
     }
 
     void initEncoder(int width, int height) {
-        sentParameterSets = false;
         encoder = std::make_unique<VideoEncoder>(
             width, height, 30,
-            [this](VideoEncoder::NALUnit nal) {
-                sendNAL(nal);
+            [this](VideoEncoder::Frame frame) {
+                sendFrame(frame);
             });
     }
 
-    void sendNAL(const VideoEncoder::NALUnit& nal) {
+    void sendFrame(const VideoEncoder::Frame& frame) {
         if (!serializer) return;
 
-        // Wire format: [1-byte flags] [optional SPS/PPS] [NAL data]
-        // flags: bit 0 = keyframe, bit 1 = has parameter sets
-        uint8_t flags = 0;
-        if (nal.isKeyframe) flags |= 0x01;
-
-        bool includeParams = !sentParameterSets && !encoder->sps().empty();
-        if (includeParams) flags |= 0x02;
-
+        // Wire format: [1-byte flags] [AV1 frame data]
+        // flags: bit 0 = keyframe
         std::vector<char> msg;
-        msg.reserve(1 +
-            (includeParams ? 4 + encoder->sps().size() + encoder->pps().size() : 0) +
-            nal.size);
+        msg.reserve(1 + frame.size);
+        uint8_t flags = frame.isKeyframe ? 0x01 : 0x00;
         msg.push_back(static_cast<char>(flags));
-
-        if (includeParams) {
-            auto& sps = encoder->sps();
-            auto& pps = encoder->pps();
-            uint16_t spsLen = static_cast<uint16_t>(sps.size());
-            uint16_t ppsLen = static_cast<uint16_t>(pps.size());
-            msg.push_back(static_cast<char>(spsLen & 0xFF));
-            msg.push_back(static_cast<char>((spsLen >> 8) & 0xFF));
-            msg.insert(msg.end(),
-                       reinterpret_cast<const char*>(sps.data()),
-                       reinterpret_cast<const char*>(sps.data() + sps.size()));
-            msg.push_back(static_cast<char>(ppsLen & 0xFF));
-            msg.push_back(static_cast<char>((ppsLen >> 8) & 0xFF));
-            msg.insert(msg.end(),
-                       reinterpret_cast<const char*>(pps.data()),
-                       reinterpret_cast<const char*>(pps.data() + pps.size()));
-            sentParameterSets = true;
-        }
-
         msg.insert(msg.end(),
-                   reinterpret_cast<const char*>(nal.data),
-                   reinterpret_cast<const char*>(nal.data + nal.size));
+                   reinterpret_cast<const char*>(frame.data),
+                   reinterpret_cast<const char*>(frame.data + frame.size));
 
         try {
             serializer->sendMessage(wire::kVideoStreamMagic,
                                     msg.data(), msg.size());
         } catch (const std::exception&) {
-            SPDLOG_WARN("Failed to send video NAL");
+            SPDLOG_WARN("Failed to send video frame");
         }
     }
 };
@@ -284,8 +257,10 @@ bool StreamSession::run(Session::RunConfig config) {
             break;
         }
 
-        // Poll for incoming messages (non-blocking)
-        while (wsConn.available() > 0) {
+        // Poll for incoming messages — only if substantial data is available.
+        // WebSocket framing means available() can report partial frames;
+        // require enough bytes for a WebSocket header + wire MessageHeader.
+        while (wsConn.available() >= 20) {
             wire::MessageHeader hdr{};
             std::vector<char> payload;
             if (!m->serializer->recvMessage(hdr, payload)) {
@@ -319,17 +294,20 @@ bool StreamSession::run(Session::RunConfig config) {
         if (config.onRender) {
             auto view = capture.colorView();
             config.onRender(view, m->encodeW, m->encodeH);
-            // Don't call gpu.present() — we're rendering to CaptureTarget,
-            // not the window surface. GPU work is submitted by the app's
-            // encoder.Finish() + queue.Submit() in onRender.
+            // Ensure the app's GPU work completes before we readback.
+            gpu.device().Tick();
         }
 
         // Encode every Nth frame
         if (++m->frameSkipCounter >= M::kEncodeEveryN) {
             m->frameSkipCounter = 0;
 
-            // CaptureTarget is BGRA8Unorm — matches VideoEncoder's expected format.
+            // CaptureTarget.readPixels converts BGRA→RGBA. VideoEncoder expects
+            // BGRA, so swap back. TODO: add readPixelsRaw() to skip conversion.
             auto pixels = capture.readPixels(gpu.device(), gpu.queue());
+            for (size_t i = 0; i < pixels.size(); i += 4) {
+                std::swap(pixels[i], pixels[i + 2]);
+            }
             size_t bytesPerRow = static_cast<size_t>(m->encodeW) * 4;
             m->encoder->encode(pixels.data(), bytesPerRow);
         }

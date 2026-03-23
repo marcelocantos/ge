@@ -9,20 +9,19 @@
 
 namespace ge {
 
+// AV1 video decoder using VideoToolbox (macOS/iOS, M1+ for hardware decode).
+// Receives raw AV1 frame data from the encoder, decodes to BGRA pixels.
 class VideoDecoder {
 public:
-    using FrameCallback = std::function<void(const uint8_t* bgraPixels, int width, int height, size_t bytesPerRow)>;
+    using FrameCallback = std::function<void(const uint8_t* bgraPixels,
+                                              int width, int height,
+                                              size_t bytesPerRow)>;
 
-    explicit VideoDecoder(FrameCallback onFrame);
+    VideoDecoder(int width, int height, FrameCallback onFrame);
     ~VideoDecoder();
 
-    // Set SPS and PPS parameter sets (must be called before first decode).
-    // Creates the decompression session from the provided parameters.
-    void setParameterSets(const uint8_t* sps, size_t spsSize,
-                          const uint8_t* pps, size_t ppsSize);
-
-    // Decode a single NAL unit (Annex B format with 0x00000001 start code).
-    void decode(const uint8_t* nalData, size_t nalSize);
+    // Decode a single AV1 frame (raw data from encoder output).
+    void decode(const uint8_t* data, size_t size, bool isKeyframe);
 
     // Flush pending frames.
     void flush();

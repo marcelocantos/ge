@@ -6,25 +6,26 @@
 #include <cstddef>
 #include <functional>
 #include <memory>
-#include <vector>
 
 namespace ge {
 
+// H.264 video encoder using VideoToolbox (macOS/iOS).
+// Encodes BGRA frames to H.264. Output is complete encoded frames
+// (not individual NAL units) — the callback receives the full
+// CMSampleBuffer data for each frame.
 class VideoEncoder {
 public:
-    struct NALUnit {
+    struct Frame {
         const uint8_t* data;
         size_t size;
         bool isKeyframe;
     };
-    using NALCallback = std::function<void(NALUnit)>;
+    using FrameCallback = std::function<void(Frame)>;
 
-    VideoEncoder(int width, int height, int fps, NALCallback onNAL);
+    VideoEncoder(int width, int height, int fps, FrameCallback onFrame);
     ~VideoEncoder();
 
     void encode(const uint8_t* bgraPixels, size_t bytesPerRow);
-    const std::vector<uint8_t>& sps() const;
-    const std::vector<uint8_t>& pps() const;
     void flush();
     void resize(int width, int height);
 

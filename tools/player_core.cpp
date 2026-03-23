@@ -380,7 +380,12 @@ ConnectionResult Player::M::connectAndRunStream() {
     size_t frameBpr = 0;
     bool newFrameAvailable = false;
 
+    // Decoder at pixel dimensions (same as encoder on server side).
+    int encW = pixelWidth & ~1;
+    int encH = pixelHeight & ~1;
+
     auto decoder = std::make_unique<ge::VideoDecoder>(
+        encW, encH,
         [&](const uint8_t* bgraPixels, int w, int h, size_t bytesPerRow) {
             std::lock_guard<std::mutex> lock(frameMutex);
             size_t totalBytes = bytesPerRow * h;
@@ -498,40 +503,16 @@ ConnectionResult Player::M::connectAndRunStream() {
                 }
 
                 if (header.magic == wire::kVideoStreamMagic) {
-                    if (payload.empty()) continue;
+                    if (payload.size() < 2) continue;
 
                     const auto* data = reinterpret_cast<const uint8_t*>(payload.data());
                     size_t size = payload.size();
-                    size_t offset = 0;
 
-                    // Parse flags byte
-                    uint8_t flags = data[offset++];
+                    // Wire format: [1-byte flags] [AV1 frame data]
+                    uint8_t flags = data[0];
+                    bool isKeyframe = (flags & 0x01) != 0;
 
-                    // Parse optional SPS/PPS
-                    if (flags & 0x02) {
-                        if (offset + 2 > size) continue;
-                        uint16_t spsLen = static_cast<uint16_t>(data[offset]) |
-                                          (static_cast<uint16_t>(data[offset + 1]) << 8);
-                        offset += 2;
-                        if (offset + spsLen > size) continue;
-                        const uint8_t* sps = data + offset;
-                        offset += spsLen;
-
-                        if (offset + 2 > size) continue;
-                        uint16_t ppsLen = static_cast<uint16_t>(data[offset]) |
-                                          (static_cast<uint16_t>(data[offset + 1]) << 8);
-                        offset += 2;
-                        if (offset + ppsLen > size) continue;
-                        const uint8_t* pps = data + offset;
-                        offset += ppsLen;
-
-                        decoder->setParameterSets(sps, spsLen, pps, ppsLen);
-                    }
-
-                    // Decode the NAL unit
-                    if (offset < size) {
-                        decoder->decode(data + offset, size - offset);
-                    }
+                    decoder->decode(data + 1, size - 1, isKeyframe);
                 } else if (header.magic == wire::kSqlpipeMsgMagic) {
                     // Handle sqlpipe messages (game state sync) if replica is set up
                     if (replica && !payload.empty()) {
