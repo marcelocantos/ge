@@ -1,84 +1,73 @@
+// Copyright 2026 Marcelo Cantos
+// SPDX-License-Identifier: Apache-2.0
+
 #define ASIO_STANDALONE
 #include <asio.hpp>
 
 #include <ge/SessionHost.h>
 #include <ge/StreamSession.h>
 #include <ge/Protocol.h>
+#include <ge/Tweak.h>
+#include <SDL3/SDL.h>
+#include <dawn/dawn_proc.h>
+#include <dawn/native/DawnNative.h>
 #include <spdlog/spdlog.h>
 
 #include "DaemonSink.h"
 #include "WebSocketClient.h"
-#include <ge/Tweak.h>
 
-#include <SDL3/SDL.h>
-
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <csignal>
-#include <cstdlib>
 #include <mutex>
 #include <string>
 #include <thread>
-#include <unordered_map>
 #include <vector>
 
-namespace {
-
-std::atomic<bool> g_stopRequested{false};
-
-} // namespace
-
 namespace ge {
+
+// Thread-local session ID is declared in DaemonSink.h (inline thread_local).
+
+static std::atomic<bool> g_stopRequested{false};
 
 struct SessionHost::M {
     std::string daemonHost = "localhost";
     uint16_t daemonPort = 42069;
-
-    // Sideband connection to ged (owned by SessionHost, shared across sessions)
     std::shared_ptr<WsConnection> sidebandConn;
     std::shared_ptr<DaemonSink> daemonSink;
     uint64_t lastTweakGen = 0;
 
-    // Active session threads
-    std::mutex threadsMu;
-    std::unordered_map<std::string, std::thread> threads;  // sessionId -> thread
-};
+    // Player attachment signal from sideband thread to main thread
+    std::mutex attachMu;
+    std::string pendingSessionId;  // non-empty = player waiting
+    bool hasPending = false;
 
-SessionHost::SessionHost()
-    : m(std::make_unique<M>())
-{
-    // GE_DAEMON_ADDR overrides the default daemon address
-    if (auto* env = std::getenv("GE_DAEMON_ADDR")) {
-        std::string addr(env);
-        auto colon = addr.rfind(':');
-        if (colon != std::string::npos) {
-            m->daemonHost = addr.substr(0, colon);
-            m->daemonPort = static_cast<uint16_t>(std::stoi(addr.substr(colon + 1)));
-        } else {
-            m->daemonHost = addr;
+    M() {
+        // Resolve daemon address from env
+        if (auto addr = std::getenv("GE_DAEMON_ADDR")) {
+            std::string s(addr);
+            auto colon = s.rfind(':');
+            if (colon != std::string::npos) {
+                daemonHost = s.substr(0, colon);
+                daemonPort = static_cast<uint16_t>(std::stoi(s.substr(colon + 1)));
+            }
         }
     }
-}
+};
+
+SessionHost::SessionHost() : m(std::make_unique<M>()) {}
 
 SessionHost::~SessionHost() {
-    // Join any remaining session threads
-    std::lock_guard lock(m->threadsMu);
-    for (auto& [id, t] : m->threads) {
-        if (t.joinable()) t.join();
-    }
-
-    // Remove daemon log sink
     if (m->daemonSink) {
         auto& sinks = spdlog::default_logger()->sinks();
         sinks.erase(
             std::remove(sinks.begin(), sinks.end(), m->daemonSink),
             sinks.end());
-        m->daemonSink.reset();
     }
 }
 
-// Parse a JSON string value for a given key. Minimal parser for
-// simple sideband messages like {"type":"player_attached","session_id":"s1"}.
+// Parse a JSON string value for a given key.
 static std::string jsonStringValue(const std::string& json, const std::string& key) {
     std::string needle = "\"" + key + "\":\"";
     auto pos = json.find(needle);
@@ -97,7 +86,7 @@ static std::string jsonObjectValue(const std::string& json, const std::string& k
     auto bracePos = json.find('{', pos + needle.size());
     if (bracePos == std::string::npos) return {};
     int depth = 0;
-    for (size_t i = bracePos; i < json.size(); i++) {
+    for (size_t i = bracePos; i < json.size(); ++i) {
         if (json[i] == '{') depth++;
         else if (json[i] == '}') {
             depth--;
@@ -108,10 +97,26 @@ static std::string jsonObjectValue(const std::string& json, const std::string& k
 }
 
 void SessionHost::run(StreamFactory factory) {
-    // Ignore SIGPIPE — broken socket writes must return EPIPE, not kill us.
     signal(SIGPIPE, SIG_IGN);
 
-    // Connect sideband WS to ged
+    // Initialize SDL video on the main thread (required by macOS for Metal).
+    if (!SDL_Init(SDL_INIT_VIDEO)) {
+        SPDLOG_ERROR("SessionHost: SDL_Init failed: {}", SDL_GetError());
+        return;
+    }
+
+    // Set Dawn native procs for local GPU rendering.
+    dawnProcSetProcs(&dawn::native::GetProcs());
+
+    // Pre-create a hidden Metal window on the main thread.
+    SDL_Window* gpuWindow = SDL_CreateWindow(
+        "ge-stream", 640, 480, SDL_WINDOW_HIDDEN | SDL_WINDOW_METAL);
+    if (!gpuWindow) {
+        SPDLOG_ERROR("SessionHost: SDL_CreateWindow failed: {}", SDL_GetError());
+        return;
+    }
+
+    // Connect sideband to ged
     SPDLOG_INFO("SessionHost: connecting to ged at {}:{}...",
                 m->daemonHost, m->daemonPort);
 
@@ -120,10 +125,11 @@ void SessionHost::run(StreamFactory factory) {
             m->daemonHost, m->daemonPort, "/ws/server");
         if (m->sidebandConn) break;
         if (attempt >= 10) {
-            SPDLOG_ERROR("SessionHost: failed to connect to ged — is ged running?");
+            SPDLOG_ERROR("SessionHost: failed to connect to ged");
+            SDL_DestroyWindow(gpuWindow);
             return;
         }
-        SPDLOG_WARN("Sideband connect failed, retrying in 500ms... (attempt {})", attempt);
+        SPDLOG_WARN("Sideband connect failed, retrying... (attempt {})", attempt);
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
     }
 
@@ -135,7 +141,7 @@ void SessionHost::run(StreamFactory factory) {
     m->sidebandConn->sendText(std::string(hello));
     SPDLOG_INFO("Registered with ged as '{}' (pid {})", getprogname(), getpid());
 
-    // Install daemon log sink (shared across all sessions)
+    // Install daemon log sink
     m->daemonSink = std::make_shared<DaemonSink>(m->sidebandConn);
     spdlog::default_logger()->sinks().push_back(m->daemonSink);
 
@@ -147,7 +153,7 @@ void SessionHost::run(StreamFactory factory) {
         SPDLOG_INFO("Sent initial tweak state ({} tweaks)", tweak::TweakBase::all().size());
     }
 
-    // Install SIGINT handler
+    // SIGINT handler
     g_stopRequested.store(false);
     struct sigaction sa{};
     sa.sa_handler = [](int) { g_stopRequested.store(true, std::memory_order_relaxed); };
@@ -155,145 +161,109 @@ void SessionHost::run(StreamFactory factory) {
     struct sigaction oldSa{};
     sigaction(SIGINT, &sa, &oldSa);
 
-    // ── Sideband poll loop ──
-    SPDLOG_INFO("SessionHost: entering sideband poll loop");
+    // ── Sideband poll thread (background) ──
+    // Reads sideband messages, signals main thread when a player attaches.
+    auto sidebandThread = std::thread([this]() {
+        while (!g_stopRequested.load(std::memory_order_relaxed)) {
+            if (!m->sidebandConn || !m->sidebandConn->isOpen()) {
+                // Reconnect
+                SDL_Delay(500);
+                if (g_stopRequested.load()) break;
+                m->sidebandConn = connectWebSocket(
+                    m->daemonHost, m->daemonPort, "/ws/server");
+                if (!m->sidebandConn) continue;
 
-    int backoffMs = 100;
+                char hello[256];
+                snprintf(hello, sizeof(hello),
+                         R"({"type":"hello","name":"%s","pid":%d,"version":%d})",
+                         getprogname(), getpid(), wire::kProtocolVersion);
+                m->sidebandConn->sendText(std::string(hello));
+                m->daemonSink->setConnection(m->sidebandConn);
+
+                std::string tweakMsg = R"({"type":"tweaks","data":)" + tweak::allToJson() + "}";
+                m->sidebandConn->sendText(tweakMsg);
+                m->lastTweakGen = tweak::generation().load(std::memory_order_relaxed);
+                SPDLOG_INFO("SessionHost: reconnected to ged");
+            }
+
+            // Poll sideband
+            while (m->sidebandConn && m->sidebandConn->available() > 0) {
+                std::vector<char> sbData;
+                if (!m->sidebandConn->recvBinary(sbData)) break;
+                std::string msg(sbData.begin(), sbData.end());
+
+                auto type = jsonStringValue(msg, "type");
+
+                if (type == "player_attached") {
+                    auto sid = jsonStringValue(msg, "session_id");
+                    if (!sid.empty()) {
+                        std::lock_guard lock(m->attachMu);
+                        m->pendingSessionId = sid;
+                        m->hasPending = true;
+                        SPDLOG_INFO("SessionHost: player attached, session '{}'", sid);
+                    }
+                } else if (type == "player_detached") {
+                    SPDLOG_INFO("SessionHost: player detached");
+                } else if (type == "tweak_set") {
+                    auto data = jsonObjectValue(msg, "data");
+                    if (!data.empty()) tweak::parseAndApply(data);
+                } else if (type == "tweak_reset") {
+                    auto data = jsonObjectValue(msg, "data");
+                    if (!data.empty()) tweak::parseAndReset(data);
+                }
+            }
+
+            // Broadcast tweak changes
+            auto gen = tweak::generation().load(std::memory_order_relaxed);
+            if (gen != m->lastTweakGen && m->sidebandConn && m->sidebandConn->isOpen()) {
+                m->lastTweakGen = gen;
+                std::string tweakMsg = R"({"type":"tweaks","data":)" + tweak::allToJson() + "}";
+                try { m->sidebandConn->sendText(tweakMsg); } catch (...) {}
+            }
+
+            SDL_Delay(10);  // 100Hz poll
+        }
+    });
+
+    // ── Main thread: run stream sessions ──
+    // Waits for player attachment, runs StreamSession on the main thread.
+    // Single-player at a time (fine for dev mode).
+    SPDLOG_INFO("SessionHost: ready (stream mode, main thread render)");
 
     while (!g_stopRequested.load(std::memory_order_relaxed)) {
-        // Check sideband connection — reconnect with exponential backoff
-        if (!m->sidebandConn || !m->sidebandConn->isOpen()) {
-            SPDLOG_WARN("SessionHost: sideband connection lost, reconnecting in {}ms...", backoffMs);
-            SDL_Delay(backoffMs);
-            backoffMs = std::min(static_cast<int>(backoffMs * 1.2), 5000);
-
-            if (g_stopRequested.load(std::memory_order_relaxed)) break;
-
-            m->sidebandConn = connectWebSocket(
-                m->daemonHost, m->daemonPort, "/ws/server");
-            if (!m->sidebandConn) continue;
-
-            // Re-register with ged
-            char hello[256];
-            snprintf(hello, sizeof(hello),
-                     R"({"type":"hello","name":"%s","pid":%d,"version":%d})",
-                     getprogname(), getpid(), wire::kProtocolVersion);
-            m->sidebandConn->sendText(std::string(hello));
-
-            // Re-attach daemon log sink to new connection
-            m->daemonSink->setConnection(m->sidebandConn);
-
-            // Re-send tweak state
-            std::string tweakMsg = R"({"type":"tweaks","data":)" + tweak::allToJson() + "}";
-            m->sidebandConn->sendText(tweakMsg);
-            m->lastTweakGen = tweak::generation().load(std::memory_order_relaxed);
-
-            backoffMs = 100;
-            SPDLOG_INFO("SessionHost: reconnected to ged");
-        }
-
-        // Poll sideband for messages
-        while (m->sidebandConn && m->sidebandConn->available() > 0) {
-            std::vector<char> sbData;
-            if (!m->sidebandConn->recvBinary(sbData)) break;
-            std::string msg(sbData.begin(), sbData.end());
-
-            auto type = jsonStringValue(msg, "type");
-
-            if (type == "player_attached") {
-                auto sessionId = jsonStringValue(msg, "session_id");
-                if (sessionId.empty()) {
-                    SPDLOG_WARN("SessionHost: player_attached without session_id");
-                    continue;
-                }
-
-                SPDLOG_INFO("SessionHost: player attached, session '{}'", sessionId);
-
-                // Spawn a session thread
-                auto threadFn = [this, sessionId, &factory]() {
-                    ge::sessionId = sessionId;
-                    SPDLOG_INFO("Session '{}': thread started (stream)", sessionId);
-                    try {
-                        StreamSession session(m->daemonHost, m->daemonPort,
-                                              sessionId, m->daemonSink);
-                        session.connect();
-                        auto config = factory(session);
-                        session.run(std::move(config));
-                    } catch (const std::exception& e) {
-                        SPDLOG_WARN("Session '{}': {}", sessionId, e.what());
-                    }
-                    SPDLOG_INFO("Session '{}': thread exiting", sessionId);
-
-                    // Clean up: mark thread as finished (detach from map)
-                    std::lock_guard lock(m->threadsMu);
-                    auto it = m->threads.find(sessionId);
-                    if (it != m->threads.end()) {
-                        it->second.detach();
-                        m->threads.erase(it);
-                    }
-                };
-
-                std::lock_guard lock(m->threadsMu);
-                m->threads.emplace(sessionId, std::thread(std::move(threadFn)));
-
-            } else if (type == "player_detached") {
-                auto sessionId = jsonStringValue(msg, "session_id");
-                SPDLOG_INFO("SessionHost: player detached, session '{}'", sessionId);
-                // Session thread will exit on its own when wire WS closes.
-
-            } else if (type == "tweak_set") {
-                auto data = jsonObjectValue(msg, "data");
-                if (!data.empty() && tweak::parseAndApply(data)) {
-                    SPDLOG_DEBUG("SessionHost: tweak_set applied");
-                }
-
-            } else if (type == "tweak_reset") {
-                auto data = jsonObjectValue(msg, "data");
-                if (!data.empty()) {
-                    tweak::parseAndReset(data);
-                    SPDLOG_INFO("SessionHost: tweak_reset applied");
-                }
+        // Check for pending player
+        std::string sid;
+        {
+            std::lock_guard lock(m->attachMu);
+            if (m->hasPending) {
+                sid = m->pendingSessionId;
+                m->hasPending = false;
             }
         }
 
-        // Send updated tweak state if generation changed
-        auto gen = tweak::generation().load(std::memory_order_relaxed);
-        if (gen != m->lastTweakGen && m->sidebandConn && m->sidebandConn->isOpen()) {
-            m->lastTweakGen = gen;
-            std::string tweakMsg = R"({"type":"tweaks","data":)" + tweak::allToJson() + "}";
-            try { m->sidebandConn->sendText(tweakMsg); } catch (...) {}
+        if (!sid.empty()) {
+            ge::sessionId = sid;
+            SPDLOG_INFO("Session '{}': starting (stream, main thread)", sid);
+            try {
+                StreamSession session(m->daemonHost, m->daemonPort,
+                                      sid, m->daemonSink, gpuWindow);
+                session.connect();
+                auto config = factory(session);
+                session.run(std::move(config));
+            } catch (const std::exception& e) {
+                SPDLOG_WARN("Session '{}': {}", sid, e.what());
+            }
+            SPDLOG_INFO("Session '{}': ended", sid);
         }
 
-        // Join finished threads
-        {
-            std::lock_guard lock(m->threadsMu);
-            // Nothing to do — threads detach themselves on exit
-        }
-
-        SDL_Delay(10);  // avoid busy-wait
+        SDL_Delay(50);  // 20Hz check for new players
     }
 
-    SPDLOG_INFO("SessionHost: shutting down...");
-
-    // Close sideband — ged will send SessionEnd to all players
-    if (m->sidebandConn && m->sidebandConn->isOpen()) {
-        try { m->sidebandConn->close(); } catch (...) {}
-    }
-
-    // Wait for all session threads to finish
-    {
-        std::lock_guard lock(m->threadsMu);
-        for (auto& [id, t] : m->threads) {
-            SPDLOG_INFO("Waiting for session '{}' to finish...", id);
-            if (t.joinable()) t.join();
-        }
-        m->threads.clear();
-    }
-
-    // Restore SIGINT handler
+    // Cleanup
     sigaction(SIGINT, &oldSa, nullptr);
-
-    SPDLOG_INFO("SessionHost: shutdown complete");
+    g_stopRequested.store(true);
+    if (sidebandThread.joinable()) sidebandThread.join();
+    SDL_DestroyWindow(gpuWindow);
 }
 
 } // namespace ge

@@ -74,24 +74,19 @@ struct StreamSession::M {
         capture.reset();
         gpu.reset();
         if (metalView) SDL_Metal_DestroyView(metalView);
-        if (window) SDL_DestroyWindow(window);
+        // Window is NOT destroyed here — it's owned by SessionHost.
     }
 
     void initGpu(int width, int height) {
-        // Set native Dawn procs (StreamSession renders locally, not over wire)
-        dawnProcSetProcs(&dawn::native::GetProcs());
-
-        if (!SDL_Init(SDL_INIT_VIDEO)) {
-            throw std::runtime_error(
-                std::string("SDL_Init failed: ") + SDL_GetError());
-        }
-
-        window = SDL_CreateWindow("StreamSession", width, height,
-                                  SDL_WINDOW_HIDDEN | SDL_WINDOW_METAL);
+        // SDL_Init, dawnProcSetProcs, and window creation are done on the main
+        // thread by SessionHost::run before spawning session threads.
+        // The window is pre-created and passed via the constructor.
         if (!window) {
-            throw std::runtime_error(
-                std::string("SDL_CreateWindow failed: ") + SDL_GetError());
+            throw std::runtime_error("StreamSession: no GPU window provided");
         }
+
+        // Resize the pre-created window to match the player's dimensions.
+        SDL_SetWindowSize(window, width, height);
 
         metalView = SDL_Metal_CreateView(window);
         if (!metalView) {
@@ -104,10 +99,10 @@ struct StreamSession::M {
         void* metalLayer = SDL_Metal_GetLayer(metalView);
         gpu = std::make_unique<GpuContext>(metalLayer, width, height);
 
-        // CaptureTarget in RGBA8Unorm — readPixels returns RGBA without
-        // conversion. We swap R/B once before passing to VideoEncoder (BGRA).
+        // CaptureTarget must match the swap chain format (BGRA8Unorm) because
+        // the app's pipelines are created with ctx.swapChainFormat().
         capture = std::make_unique<CaptureTarget>(
-            gpu->device(), width, height, wgpu::TextureFormat::RGBA8Unorm);
+            gpu->device(), width, height, wgpu::TextureFormat::BGRA8Unorm);
 
         SPDLOG_INFO("StreamSession GPU initialized: {}x{}", width, height);
     }
@@ -171,9 +166,12 @@ struct StreamSession::M {
 
 StreamSession::StreamSession(const std::string& daemonHost, uint16_t daemonPort,
                              const std::string& sessionId,
-                             std::shared_ptr<DaemonSink> sharedSink)
+                             std::shared_ptr<DaemonSink> sharedSink,
+                             SDL_Window* gpuWindow)
     : m(std::make_unique<M>(daemonHost, daemonPort, sessionId,
-                            std::move(sharedSink))) {}
+                            std::move(sharedSink))) {
+    m->window = gpuWindow;
+}
 
 StreamSession::~StreamSession() = default;
 
@@ -263,24 +261,10 @@ bool StreamSession::run(Session::RunConfig config) {
         return false;
     }
 
-    // State sync (if requested)
-    if (config.onStateReceived && !config.appId.empty()) {
-        m->serializer->sendMessage(wire::kStateRequestMagic,
-                                   config.appId.data(), config.appId.size());
-
-        wire::MessageHeader stateHdr{};
-        std::vector<char> statePayload;
-        for (;;) {
-            if (!m->serializer->recvMessage(stateHdr, statePayload)) {
-                SPDLOG_WARN("StreamSession '{}': lost connection waiting for state",
-                            m->sessionId);
-                return true;
-            }
-            if (stateHdr.magic == wire::kStateDataMagic) {
-                config.onStateReceived(std::move(statePayload));
-                break;
-            }
-        }
+    // In stream mode, the server renders locally — no player DB to sync.
+    // Call onStateReceived with empty data so the app can initialize.
+    if (config.onStateReceived) {
+        config.onStateReceived({});
     }
 
     // Initialize H.264 encoder
@@ -331,23 +315,21 @@ bool StreamSession::run(Session::RunConfig config) {
         float dt = timer.tick();
         if (config.onUpdate) config.onUpdate(dt);
 
-        // Render to capture target
+        // Render to capture target (not the window surface)
         if (config.onRender) {
             auto view = capture.colorView();
             config.onRender(view, m->encodeW, m->encodeH);
-            gpu.present(); // Submit GPU work
+            // Don't call gpu.present() — we're rendering to CaptureTarget,
+            // not the window surface. GPU work is submitted by the app's
+            // encoder.Finish() + queue.Submit() in onRender.
         }
 
         // Encode every Nth frame
         if (++m->frameSkipCounter >= M::kEncodeEveryN) {
             m->frameSkipCounter = 0;
 
-            // readPixels returns RGBA; VideoEncoder expects BGRA.
-            // Swap R and B channels in-place.
+            // CaptureTarget is BGRA8Unorm — matches VideoEncoder's expected format.
             auto pixels = capture.readPixels(gpu.device(), gpu.queue());
-            for (size_t i = 0; i < pixels.size(); i += 4) {
-                std::swap(pixels[i], pixels[i + 2]);
-            }
             size_t bytesPerRow = static_cast<size_t>(m->encodeW) * 4;
             m->encoder->encode(pixels.data(), bytesPerRow);
         }

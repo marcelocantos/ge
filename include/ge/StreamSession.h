@@ -32,9 +32,13 @@ class Audio;
 //   stream.run(config);   // Render + encode + stream loop
 class StreamSession {
 public:
+    // gpuWindow: pre-created hidden SDL_WINDOW_METAL window (must be created
+    // on the main thread on macOS). Ownership is NOT transferred — caller
+    // must keep it alive for the session's lifetime.
     StreamSession(const std::string& daemonHost, uint16_t daemonPort,
                   const std::string& sessionId,
-                  std::shared_ptr<DaemonSink> sharedSink);
+                  std::shared_ptr<DaemonSink> sharedSink,
+                  SDL_Window* gpuWindow);
     ~StreamSession();
 
     StreamSession(const StreamSession&) = delete;
