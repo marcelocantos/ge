@@ -7,6 +7,9 @@
 #include <functional>
 #include <memory>
 
+// Forward declare CoreVideo type to avoid importing ObjC headers
+typedef struct __CVBuffer* CVPixelBufferRef;
+
 namespace ge {
 
 // H.264 video encoder using VideoToolbox (macOS/iOS).
@@ -25,7 +28,12 @@ public:
     VideoEncoder(int width, int height, int fps, FrameCallback onFrame);
     ~VideoEncoder();
 
+    // Encode from raw CPU pixels (copies data into CVPixelBuffer).
     void encode(const uint8_t* bgraPixels, size_t bytesPerRow);
+
+    // Encode from CVPixelBuffer directly — zero-copy when backed by IOSurface.
+    void encode(CVPixelBufferRef pixelBuffer);
+
     void flush();
     void resize(int width, int height);
 

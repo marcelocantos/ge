@@ -98,6 +98,10 @@ GpuContext::GpuContext(void* nativeLayer, int width, int height)
         features.push_back(wgpu::FeatureName::TextureCompressionETC2);
         SPDLOG_INFO("Requesting ETC2 texture compression");
     }
+    if (m->adapter.HasFeature(wgpu::FeatureName::SharedTextureMemoryIOSurface)) {
+        features.push_back(wgpu::FeatureName::SharedTextureMemoryIOSurface);
+        SPDLOG_INFO("Requesting SharedTextureMemory IOSurface (zero-copy video encoding)");
+    }
     if (!features.empty()) {
         deviceDesc.requiredFeatureCount = features.size();
         deviceDesc.requiredFeatures = features.data();

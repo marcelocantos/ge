@@ -56,6 +56,8 @@ ge/SRC = \
 	ge/src/SessionHost.cpp \
 	ge/src/WebSocketClient.cpp \
 	ge/src/StreamSession.cpp \
+	ge/src/SharedTexture_apple.mm \
+	ge/src/UniformRing.cpp \
 	ge/src/VideoEncoder_apple.mm \
 	ge/src/VideoDecoder_apple.mm
 

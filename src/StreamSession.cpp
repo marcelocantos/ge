@@ -7,6 +7,7 @@
 
 #include <ge/Audio.h>
 #include <ge/CaptureTarget.h>
+#include <ge/SharedTexture.h>
 #include <ge/DeltaTimer.h>
 #include <ge/Protocol.h>
 #include <ge/VideoEncoder.h>
@@ -36,6 +37,7 @@ struct StreamSession::M {
     // SDL hidden window + Metal (needed for native WebGPU)
     SDL_Window* window = nullptr;
     SDL_MetalView metalView = nullptr;
+    bool ownsWindow = false;
 
     // Native GPU
     std::unique_ptr<GpuContext> gpu;
@@ -43,6 +45,7 @@ struct StreamSession::M {
 
     // Offscreen capture + H.264 encoding
     std::unique_ptr<CaptureTarget> capture;
+    std::unique_ptr<ge::SharedTexture> sharedTex;
     std::unique_ptr<VideoEncoder> encoder;
 
     // WebSocket to ged (per-session wire path)
@@ -71,22 +74,27 @@ struct StreamSession::M {
 
     ~M() {
         encoder.reset();
+        sharedTex.reset();
         capture.reset();
         gpu.reset();
         if (metalView) SDL_Metal_DestroyView(metalView);
-        // Window is NOT destroyed here — it's owned by SessionHost.
+        if (ownsWindow && window) SDL_DestroyWindow(window);
     }
 
     void initGpu(int width, int height) {
-        // SDL_Init, dawnProcSetProcs, and window creation are done on the main
-        // thread by SessionHost::run before spawning session threads.
-        // The window is pre-created and passed via the constructor.
-        if (!window) {
-            throw std::runtime_error("StreamSession: no GPU window provided");
+        // Create a fresh hidden window at the exact dimensions needed.
+        // This runs on the main thread (SessionHost::run drives the session).
+        if (window) {
+            // Destroy the pre-created window — we need one at the right size.
+            SDL_DestroyWindow(window);
         }
-
-        // Resize the pre-created window to match the player's dimensions.
-        SDL_SetWindowSize(window, width, height);
+        window = SDL_CreateWindow("ge-stream", width, height,
+                                  SDL_WINDOW_HIDDEN | SDL_WINDOW_METAL);
+        if (!window) {
+            throw std::runtime_error(
+                std::string("SDL_CreateWindow failed: ") + SDL_GetError());
+        }
+        ownsWindow = true;
 
         metalView = SDL_Metal_CreateView(window);
         if (!metalView) {
@@ -103,6 +111,9 @@ struct StreamSession::M {
         // the app's pipelines are created with ctx.swapChainFormat().
         capture = std::make_unique<CaptureTarget>(
             gpu->device(), width, height, wgpu::TextureFormat::BGRA8Unorm);
+
+        // SharedTexture for zero-copy H.264 encoding via IOSurface
+        sharedTex = std::make_unique<ge::SharedTexture>(gpu->device(), width, height);
 
         SPDLOG_INFO("StreamSession GPU initialized: {}x{}", width, height);
     }
@@ -290,26 +301,23 @@ bool StreamSession::run(Session::RunConfig config) {
         float dt = timer.tick();
         if (config.onUpdate) config.onUpdate(dt);
 
-        // Render to capture target (not the window surface)
+        // Render to shared texture (zero-copy path for H.264 encoding)
         if (config.onRender) {
-            auto view = capture.colorView();
+            auto view = m->sharedTex ? m->sharedTex->colorView() : capture.colorView();
             config.onRender(view, m->encodeW, m->encodeH);
-            // Ensure the app's GPU work completes before we readback.
-            gpu.device().Tick();
+
+            // Present the hidden window surface to trigger Metal's swap chain
+            // completion handling, which releases ephemeral resources
+            // (createImmediateUniform buffers). Without this, resources
+            // accumulate and eventually exhaust Metal buffer handles.
+            auto surfaceView = gpu.currentFrameView();
+            gpu.present();
         }
 
-        // Encode every Nth frame
+        // Encode every Nth frame — zero-copy via SharedTexture's IOSurface
         if (++m->frameSkipCounter >= M::kEncodeEveryN) {
             m->frameSkipCounter = 0;
-
-            // CaptureTarget.readPixels converts BGRA→RGBA. VideoEncoder expects
-            // BGRA, so swap back. TODO: add readPixelsRaw() to skip conversion.
-            auto pixels = capture.readPixels(gpu.device(), gpu.queue());
-            for (size_t i = 0; i < pixels.size(); i += 4) {
-                std::swap(pixels[i], pixels[i + 2]);
-            }
-            size_t bytesPerRow = static_cast<size_t>(m->encodeW) * 4;
-            m->encoder->encode(pixels.data(), bytesPerRow);
+            m->encoder->encode(m->sharedTex->pixelBuffer());
         }
 
         // Drain outbound sqlpipe messages

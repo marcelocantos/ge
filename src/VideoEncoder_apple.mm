@@ -185,6 +185,21 @@ void VideoEncoder::encode(const uint8_t* bgraPixels, size_t bytesPerRow) {
     }
 }
 
+void VideoEncoder::encode(CVPixelBufferRef pixelBuffer) {
+    if (!m->session || !pixelBuffer) return;
+
+    CMTime pts = CMTimeMake(m->frameCount++, m->fps);
+    OSStatus err = VTCompressionSessionEncodeFrame(
+        m->session, pixelBuffer, pts,
+        kCMTimeInvalid, nullptr, nullptr, nullptr
+    );
+
+    if (err != noErr) {
+        SPDLOG_ERROR("VTCompressionSessionEncodeFrame (CVPixelBuffer) failed: {}",
+                     static_cast<int>(err));
+    }
+}
+
 void VideoEncoder::flush() {
     if (m->session) {
         VTCompressionSessionCompleteFrames(m->session, kCMTimeInvalid);
