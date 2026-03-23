@@ -10,30 +10,14 @@
 #include <string>
 #include <vector>
 
-#ifndef GE_DIRECT
-class DaemonSink;
-#endif
-
 namespace ge {
 
 class Audio;
 
-// Unified session: wire mode (default) or direct native mode (GE_DIRECT).
-// Drop-in replacement for WireSession -- same interface, backend selected
-// at compile time. Two separate compilation units (SessionWire.cpp,
-// SessionDirect.cpp) each guarded by #if, so the unused backend's
-// dependencies never enter the final binary.
+// Session for direct native rendering (in-process GPU).
 class Session {
 public:
-#ifdef GE_DIRECT
     Session();
-#else
-    // Hosted mode: SessionHost owns the sideband; this session connects
-    // its wire WS to /ws/server/wire/{sessionId}.
-    Session(const std::string& daemonHost, uint16_t daemonPort,
-            const std::string& sessionId,
-            std::shared_ptr<DaemonSink> sharedSink);
-#endif
 
     // Headless mode: wraps an existing GpuContext for testing.
     // Pass-through viewport, no SDL window or wire transport.
@@ -88,10 +72,10 @@ public:
         bool ignoreSafeArea = false;  // When true, use full surface (ignore OS safe area insets)
         uint32_t sensors = 0;  // bitmask of requested SDL_SensorType values
 
-        // State sync (wire mode only). If onStateReceived is set, the
-        // session sends kStateRequestMagic (with appId as payload) after
-        // handshake, waits for kStateDataMagic, and calls onStateReceived
-        // with the raw bytes before the render loop.
+        // State sync. If onStateReceived is set, the session sends
+        // kStateRequestMagic (with appId as payload) after handshake,
+        // waits for kStateDataMagic, and calls onStateReceived with the
+        // raw bytes before the render loop.
         std::string appId;
         std::function<void(std::vector<char> dbBytes)> onStateReceived;
 

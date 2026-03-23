@@ -6,21 +6,14 @@
 
 namespace ge {
 
-class WireTransport;  // Forward declaration
-
 // RAII wrapper for WebGPU lifecycle (device, queue, surface/swapchain).
-// Uses whatever procs are set via dawnProcSetProcs() - call that in main()
-// before creating GpuContext to choose native vs wire rendering.
 class GpuContext {
 public:
     // Initialize WebGPU with a native Metal layer (CAMetalLayer* on macOS).
-    // If wireTransport is provided, native resources are created and injected
-    // into the wire, with all subsequent operations going through the wire.
-    GpuContext(void* nativeLayer, int width, int height, WireTransport* wireTransport = nullptr);
+    GpuContext(void* nativeLayer, int width, int height);
 
-    // Wire-mode constructor: uses pre-created resources from a WireClient.
-    // No native instance/adapter creation — device, queue, and surface are
-    // already obtained through the wire and configured by the caller.
+    // External-resources constructor: uses pre-created device, queue, and surface
+    // (e.g. obtained through the Dawn wire protocol by a wire session caller).
     GpuContext(wgpu::Device device, wgpu::Queue queue, wgpu::Surface surface,
               wgpu::TextureFormat format, int width, int height);
     ~GpuContext();

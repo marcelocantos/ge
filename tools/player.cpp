@@ -3,7 +3,6 @@
 //
 // Options:
 //   --device <name>   Use a device preset (see list below)
-//   --stream          H.264 stream mode (decode video instead of Dawn wire)
 //   --maximized       Start maximized
 //   --headless        Hidden window (no UI)
 //   --profile <name>  Player profile name
@@ -97,7 +96,6 @@ int main(int argc, char* argv[]) {
     int height = kDefaultHeight;
     bool maximized = false;
     bool headless = false;
-    bool streamMode = false;
     std::string profile = "default";
 
     // Consume flags, then positional args
@@ -107,8 +105,6 @@ int main(int argc, char* argv[]) {
             maximized = true;
         } else if (std::strcmp(argv[pos], "--headless") == 0) {
             headless = true;
-        } else if (std::strcmp(argv[pos], "--stream") == 0) {
-            streamMode = true;
         } else if (std::strcmp(argv[pos], "--profile") == 0 && pos + 1 < argc) {
             profile = argv[++pos];
         } else if (std::strcmp(argv[pos], "--device") == 0 && pos + 1 < argc) {
@@ -130,13 +126,11 @@ int main(int argc, char* argv[]) {
     if (pos < argc) height = std::stoi(argv[pos++]);
 
     SPDLOG_INFO("ge player starting...");
-    SPDLOG_INFO("Target: {}:{}, dimensions: {}x{}{}{}{}, profile: {}", host, port, width, height,
+    SPDLOG_INFO("Target: {}:{}, dimensions: {}x{}{}{}, profile: {}", host, port, width, height,
                 maximized ? " (maximized)" : "",
                 headless ? " (headless)" : "",
-                streamMode ? " (stream)" : "",
                 profile);
 
-    Player player(host, port, width, height, maximized, -1, headless, profile, "mac",
-                  0, streamMode);
+    Player player(host, port, width, height, maximized, -1, headless, profile, "mac");
     return player.run();
 }

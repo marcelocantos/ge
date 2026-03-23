@@ -3,7 +3,6 @@
 #include <ge/Pipeline.h>
 #include <ge/BindGroup.h>
 #include <ge/CaptureTarget.h>
-#include <ge/WireTransport.h>
 #include <dawn/dawn_proc.h>
 #include <dawn/native/DawnNative.h>
 #include <SDL3/SDL.h>
@@ -247,25 +246,7 @@ TEST_CASE("dawnProcSetProcs with native procs") {
     SPDLOG_INFO("dawnProcSetProcs native test passed");
 }
 
-TEST_CASE("dawnProcSetProcs with wire procs") {
-    // First set up native procs for the server side
-    DawnProcTable nativeProcs = dawn::native::GetProcs();
-
-    // Create wire transport
-    ge::WireTransport transport;
-    transport.initialize(nativeProcs);
-
-    // Set wire procs globally - all wgpu* calls now go through wire
-    dawnProcSetProcs(&transport.wireProcs());
-
-    // Verify wire procs are active by checking the proc table
-    CHECK(transport.wireProcs().createInstance != nullptr);
-
-    // Reset procs to null
-    dawnProcSetProcs(nullptr);
-
-    SPDLOG_INFO("dawnProcSetProcs wire test passed");
-}
+// Wire transport test removed — Dawn wire protocol no longer used.
 
 TEST_CASE("dawnProcSetProcs GpuContext with native procs") {
     // Set native procs before creating GpuContext

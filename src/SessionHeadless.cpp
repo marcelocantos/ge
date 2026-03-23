@@ -39,6 +39,7 @@ void Session::setScissorRect(wgpu::RenderPassEncoder& pass,
     pass.SetScissorRect(x, y, w, h);
 }
 
+void Session::resizeWindow(uint16_t, uint16_t) {}
 void Session::setSessionFlags(uint16_t) {}
 void Session::flush() {}
 

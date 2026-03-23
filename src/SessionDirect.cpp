@@ -54,6 +54,7 @@ void Session::setScissorRect(wgpu::RenderPassEncoder& pass,
                              uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
     pass.SetScissorRect(x, y, w, h);
 }
+void Session::resizeWindow(uint16_t, uint16_t) { /* no-op in direct mode */ }
 void Session::setSessionFlags(uint16_t) { /* no-op in direct mode */ }
 void Session::flush() { /* no-op: Application calls present() directly */ }
 

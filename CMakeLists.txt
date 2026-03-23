@@ -26,7 +26,6 @@ set(GE_CORE_SOURCES
     src/BindGroup.cpp
     src/Resource.cpp
     src/FileIO.cpp
-    src/WireTransport.cpp
 )
 
 # Platform-specific sources
@@ -40,8 +39,6 @@ if(GE_DIRECT)
     set(GE_SOURCES ${GE_CORE_SOURCES} src/SessionDirect.cpp)
 else()
     set(GE_SOURCES ${GE_CORE_SOURCES}
-        src/SessionWire.cpp
-        src/WireSession.cpp
         src/CaptureTarget.cpp
         vendor/github.com/nayuki/QR-Code-generator/cpp/qrcodegen.cpp
     )

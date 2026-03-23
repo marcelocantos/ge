@@ -2,7 +2,6 @@
 #include <asio.hpp>
 
 #include <ge/SessionHost.h>
-#include <ge/Session.h>
 #include <ge/StreamSession.h>
 #include <ge/Protocol.h>
 #include <spdlog/spdlog.h>
@@ -34,7 +33,6 @@ namespace ge {
 struct SessionHost::M {
     std::string daemonHost = "localhost";
     uint16_t daemonPort = 42069;
-    bool streamMode = false; // GE_STREAM=1 → StreamSession instead of Session
 
     // Sideband connection to ged (owned by SessionHost, shared across sessions)
     std::shared_ptr<WsConnection> sidebandConn;
@@ -58,14 +56,6 @@ SessionHost::SessionHost()
             m->daemonPort = static_cast<uint16_t>(std::stoi(addr.substr(colon + 1)));
         } else {
             m->daemonHost = addr;
-        }
-    }
-
-    // GE_STREAM=1 enables streaming mode (local render + H.264 → player)
-    if (auto* env = std::getenv("GE_STREAM")) {
-        m->streamMode = (std::string(env) == "1");
-        if (m->streamMode) {
-            SPDLOG_INFO("SessionHost: stream mode enabled (GE_STREAM=1)");
         }
     }
 }
@@ -117,7 +107,7 @@ static std::string jsonObjectValue(const std::string& json, const std::string& k
     return {};
 }
 
-void SessionHost::run(Factory factory, StreamFactory streamFactory) {
+void SessionHost::run(StreamFactory factory) {
     // Ignore SIGPIPE — broken socket writes must return EPIPE, not kill us.
     signal(SIGPIPE, SIG_IGN);
 
@@ -220,23 +210,15 @@ void SessionHost::run(Factory factory, StreamFactory streamFactory) {
                 SPDLOG_INFO("SessionHost: player attached, session '{}'", sessionId);
 
                 // Spawn a session thread
-                auto threadFn = [this, sessionId, &factory, &streamFactory]() {
+                auto threadFn = [this, sessionId, &factory]() {
                     ge::sessionId = sessionId;
-                    SPDLOG_INFO("Session '{}': thread started ({})",
-                                sessionId, m->streamMode ? "stream" : "wire");
+                    SPDLOG_INFO("Session '{}': thread started (stream)", sessionId);
                     try {
-                        if (m->streamMode && streamFactory) {
-                            StreamSession session(m->daemonHost, m->daemonPort,
-                                                  sessionId, m->daemonSink);
-                            session.connect();
-                            auto config = streamFactory(session);
-                            session.run(std::move(config));
-                        } else {
-                            Session session(m->daemonHost, m->daemonPort,
-                                            sessionId, m->daemonSink);
-                            auto config = factory(session);
-                            session.run(std::move(config));
-                        }
+                        StreamSession session(m->daemonHost, m->daemonPort,
+                                              sessionId, m->daemonSink);
+                        session.connect();
+                        auto config = factory(session);
+                        session.run(std::move(config));
                     } catch (const std::exception& e) {
                         SPDLOG_WARN("Session '{}': {}", sessionId, e.what());
                     }

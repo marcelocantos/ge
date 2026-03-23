@@ -1,4 +1,4 @@
-// Dawn wire CommandSerializer over WebSocket.
+// WebSocket message framing class.
 // Each Flush() sends the accumulated buffer as a single WebSocket binary frame,
 // prefixed with a wire::MessageHeader. Server-side code (WireSession.cpp)
 // overrides Flush() to add deferred-mip filtering.
@@ -6,14 +6,13 @@
 
 #include "WebSocketClient.h"
 #include <ge/Protocol.h>
-#include <dawn/wire/Wire.h>
 
 #include <cstring>
 #include <vector>
 
 namespace ge {
 
-class WebSocketSerializer : public dawn::wire::CommandSerializer {
+class WebSocketSerializer {
 public:
     explicit WebSocketSerializer(std::shared_ptr<WsConnection> conn,
                                   uint32_t flushMagic = wire::kWireCommandMagic)
@@ -21,14 +20,16 @@ public:
         buffer_.reserve(64 * 1024);
     }
 
-    void* GetCmdSpace(size_t size) override {
+    ~WebSocketSerializer() = default;
+
+    void* GetCmdSpace(size_t size) {
         if (size > wire::kMaxMessageSize) return nullptr;
         size_t offset = buffer_.size();
         buffer_.resize(offset + size);
         return buffer_.data() + offset;
     }
 
-    bool Flush() override {
+    bool Flush() {
         if (buffer_.empty()) return true;
         if (discard_) {
             buffer_.clear();
@@ -42,7 +43,7 @@ public:
     /// When true, Flush() discards accumulated data instead of sending it.
     void setDiscard(bool d) { discard_ = d; }
 
-    size_t GetMaximumAllocationSize() const override {
+    size_t GetMaximumAllocationSize() const {
         return wire::kMaxMessageSize;
     }
 

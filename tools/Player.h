@@ -16,7 +16,7 @@ public:
     Player(std::string host, uint16_t port, int width, int height,
            bool maximized = false, int maxRetries = -1, bool headless = false,
            std::string profile = "default", std::string name = "",
-           int connectTimeoutMs = 0, bool streamMode = false);
+           int connectTimeoutMs = 0);
     ~Player();
     int run();
 

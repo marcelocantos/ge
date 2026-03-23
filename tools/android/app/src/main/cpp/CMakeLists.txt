@@ -17,7 +17,6 @@ add_library(main SHARED
     ${CMAKE_CURRENT_SOURCE_DIR}/player_platform_android.cpp
     ${GE_ROOT}/tools/player_core.cpp
     ${GE_ROOT}/tools/AudioPlayer.cpp
-    ${GE_ROOT}/src/WireTransport.cpp
     ${GE_ROOT}/src/WebSocketClient.cpp
     ${GE_ROOT}/vendor/src/sqlite3.c
     ${GE_ROOT}/vendor/src/sqlpipe.cpp

@@ -1,5 +1,4 @@
 #include <ge/GpuContext.h>
-#include <ge/WireTransport.h>
 #include "NativeSurface.h"
 #include <dawn/native/DawnNative.h>
 #include <dawn/dawn_proc.h>
@@ -24,23 +23,17 @@ struct GpuContext::M {
 
     // Current frame's surface texture (acquired each frame)
     wgpu::SurfaceTexture surfaceTexture;
-
-    // Wire transport (if using wire mode)
-    WireTransport* wire = nullptr;
 };
 
-GpuContext::GpuContext(void* nativeLayer, int width, int height, WireTransport* wireTransport)
+GpuContext::GpuContext(void* nativeLayer, int width, int height)
     : m(std::make_unique<M>()) {
 
     m->width = width;
     m->height = height;
-    m->wire = wireTransport;
 
     SPDLOG_INFO("Initializing WebGPU (Dawn)...");
 
-    if (!wireTransport) {
-        dawnProcSetProcs(&dawn::native::GetProcs());
-    }
+    dawnProcSetProcs(&dawn::native::GetProcs());
 
     // Create Dawn native instance (always needed for adapter enumeration)
     wgpu::InstanceDescriptor instanceDesc{};
@@ -48,30 +41,13 @@ GpuContext::GpuContext(void* nativeLayer, int width, int height, WireTransport* 
     WGPUInstance nativeInstance = m->dawnInstance->Get();
 
     // Create surface from native window handle (platform-specific helper).
-    // Surface creation requires a native window handle, can't go through wire.
-    WGPUSurface nativeSurface;
-    if (wireTransport) {
-        // Wire mode: use native procs (global procs point to wire client)
-        nativeSurface = createNativeSurface(nativeInstance, nativeLayer,
-                                            &wireTransport->nativeProcs());
-    } else {
-        // Native mode: use global procs
-        nativeSurface = createNativeSurface(nativeInstance, nativeLayer);
-    }
+    WGPUSurface nativeSurface = createNativeSurface(nativeInstance, nativeLayer);
 
     if (!nativeSurface) {
         throw std::runtime_error("Failed to create WebGPU surface");
     }
 
-    if (wireTransport) {
-        // Wire mode: for now, use native rendering but keep wire transport ready.
-        // Full wire mode requires fixing ReserveSurface blocking issue.
-        // TODO: Implement proper wire mode with surface/adapter/device injection.
-        SPDLOG_INFO("Wire: using native rendering (wire transport ready for future use)");
-    }
-
     {
-        // Native mode: use direct API
         m->instance = wgpu::Instance(nativeInstance);
         m->surface = wgpu::Surface::Acquire(nativeSurface);
 
@@ -154,10 +130,6 @@ GpuContext::GpuContext(void* nativeLayer, int width, int height, WireTransport* 
     };
     m->surface.Configure(&config);
 
-    if (wireTransport) {
-        wireTransport->flush();
-    }
-
     SPDLOG_INFO("WebGPU initialized: {}x{}, format={}",
                 width, height, static_cast<int>(m->swapChainFormat));
 }
@@ -182,7 +154,7 @@ GpuContext::GpuContext(wgpu::Device device, wgpu::Queue queue, wgpu::Surface sur
     };
     surface.Configure(&config);
 
-    SPDLOG_INFO("GpuContext (wire mode): {}x{}, format={}", width, height, static_cast<int>(format));
+    SPDLOG_INFO("GpuContext (external): {}x{}, format={}", width, height, static_cast<int>(format));
 }
 
 GpuContext::~GpuContext() {

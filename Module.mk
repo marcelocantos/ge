@@ -26,8 +26,7 @@ ge/INCLUDES = \
 # Order matters: dawn_proc first (provides switchable wgpu* stubs), then webgpu_dawn (native impl)
 ge/DAWN_PROC_LIB = ge/vendor/dawn/lib/macos-arm64/libdawn_proc.a
 ge/DAWN_LIB = ge/vendor/dawn/lib/macos-arm64/libwebgpu_dawn.a
-ge/DAWN_WIRE_LIB = ge/vendor/dawn/lib/macos-arm64/libdawn_wire.a
-ge/DAWN_LIBS = $(ge/DAWN_PROC_LIB) $(ge/DAWN_LIB) $(ge/DAWN_WIRE_LIB)
+ge/DAWN_LIBS = $(ge/DAWN_PROC_LIB) $(ge/DAWN_LIB)
 
 # SDL3 libraries (static, vendored)
 ge/SDL3_LIB = ge/vendor/sdl3/lib/macos-arm64/libSDL3.a
@@ -54,8 +53,6 @@ ge/SRC = \
 	ge/src/TextRenderer.cpp \
 	ge/src/CaptureTarget.cpp \
 	ge/src/Audio.cpp \
-	ge/src/WireTransport.cpp \
-	ge/src/WireSession.cpp \
 	ge/src/SessionHost.cpp \
 	ge/src/WebSocketClient.cpp \
 	ge/src/StreamSession.cpp \
@@ -63,7 +60,6 @@ ge/SRC = \
 	ge/src/VideoDecoder_apple.mm
 
 # Session backend objects (linked by the parent, not part of libge.a)
-ge/SESSION_WIRE_OBJ = $(BUILD_DIR)/ge/src/SessionWire.o
 ge/SESSION_DIRECT_OBJ = $(BUILD_DIR)/ge/src/SessionDirect.o
 ge/SESSION_HEADLESS_OBJ = $(BUILD_DIR)/ge/src/SessionHeadless.o
 
@@ -112,8 +108,7 @@ ge/FRAMEWORK_LIBS = $(ge/DAWN_LIBS)
 ge/TEST_SRC = \
 	ge/src/main_test.cpp \
 	ge/src/GpuContext_test.cpp \
-	ge/src/DampedRotation_test.cpp \
-	ge/src/WireTransport_test.cpp
+	ge/src/DampedRotation_test.cpp
 ge/TEST_OBJ = $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(ge/TEST_SRC))
 
 # Shared variables (parent can += to extend)
