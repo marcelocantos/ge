@@ -24,9 +24,19 @@ public:
     // Automatically converts from BGRA if the texture format is BGRA8Unorm.
     std::vector<uint8_t> readPixels(wgpu::Device device, wgpu::Queue queue);
 
+    // Async two-phase readback: submitCopy issues the GPU copy command,
+    // collectPixels maps and reads the result. Call submitCopy after render,
+    // then collectPixels on the NEXT frame (gives the GPU time to complete).
+    void submitCopy(wgpu::Device device, wgpu::Queue queue);
+    std::vector<uint8_t> collectPixels(wgpu::Device device);
+
 private:
     WgpuTexture colorTexture_;
     WgpuTextureView colorView_;
+    wgpu::Buffer stagingBuffers_[2];  // Ping-pong staging buffers
+    int currentStaging_ = 0;
+    size_t stagingSize_ = 0;
+    uint32_t alignedBytesPerRow_ = 0;
     wgpu::TextureFormat format_ = wgpu::TextureFormat::RGBA8Unorm;
     int width_ = 0;
     int height_ = 0;

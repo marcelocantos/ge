@@ -32,6 +32,19 @@ CaptureTarget::CaptureTarget(wgpu::Device device, int width, int height,
         .arrayLayerCount = 1,
     };
     colorView_ = WgpuTextureView(colorTexture_.get().CreateView(&viewDesc));
+
+    // Pre-allocate two staging buffers for ping-pong readPixels
+    uint32_t bytesPerRow = width * 4;
+    alignedBytesPerRow_ = (bytesPerRow + 255) & ~255;
+    stagingSize_ = alignedBytesPerRow_ * height;
+
+    for (int i = 0; i < 2; i++) {
+        wgpu::BufferDescriptor bufDesc{
+            .usage = wgpu::BufferUsage::CopyDst | wgpu::BufferUsage::MapRead,
+            .size = stagingSize_,
+        };
+        stagingBuffers_[i] = device.CreateBuffer(&bufDesc);
+    }
 }
 
 wgpu::TextureView CaptureTarget::colorView() const {
@@ -39,19 +52,17 @@ wgpu::TextureView CaptureTarget::colorView() const {
 }
 
 std::vector<uint8_t> CaptureTarget::readPixels(wgpu::Device device, wgpu::Queue queue) {
-    uint32_t bytesPerRow = width_ * 4;
-    // WebGPU requires bytesPerRow to be aligned to 256
-    uint32_t alignedBytesPerRow = (bytesPerRow + 255) & ~255;
-    size_t bufferSize = alignedBytesPerRow * height_;
+    // Ping-pong: use current buffer for the copy, alternate each call.
+    auto& buf = stagingBuffers_[currentStaging_];
+    currentStaging_ = 1 - currentStaging_;
 
-    // Create staging buffer
-    wgpu::BufferDescriptor bufDesc{
-        .usage = wgpu::BufferUsage::CopyDst | wgpu::BufferUsage::MapRead,
-        .size = bufferSize,
-    };
-    wgpu::Buffer stagingBuffer = device.CreateBuffer(&bufDesc);
+    // Ensure buffer is unmapped before use as copy destination.
+    // (It may still be mapped from a previous readPixels call.)
+    if (buf.GetMapState() == wgpu::BufferMapState::Mapped) {
+        buf.Unmap();
+    }
 
-    // Copy texture to buffer
+    // Copy texture to staging buffer
     wgpu::CommandEncoder encoder = device.CreateCommandEncoder();
     wgpu::TexelCopyTextureInfo src{
         .texture = colorTexture_.get(),
@@ -62,10 +73,10 @@ std::vector<uint8_t> CaptureTarget::readPixels(wgpu::Device device, wgpu::Queue 
     wgpu::TexelCopyBufferInfo dst{
         .layout = {
             .offset = 0,
-            .bytesPerRow = alignedBytesPerRow,
+            .bytesPerRow = alignedBytesPerRow_,
             .rowsPerImage = static_cast<uint32_t>(height_),
         },
-        .buffer = stagingBuffer,
+        .buffer = buf,
     };
     wgpu::Extent3D extent{static_cast<uint32_t>(width_), static_cast<uint32_t>(height_), 1};
     encoder.CopyTextureToBuffer(&src, &dst, &extent);
@@ -73,58 +84,122 @@ std::vector<uint8_t> CaptureTarget::readPixels(wgpu::Device device, wgpu::Queue 
     wgpu::CommandBuffer commands = encoder.Finish();
     queue.Submit(1, &commands);
 
-    // Wait for GPU work to complete
+    // Wait for the copy to complete before mapping
     bool workDone = false;
     queue.OnSubmittedWorkDone(
         wgpu::CallbackMode::AllowSpontaneous,
         [&](wgpu::QueueWorkDoneStatus, const char*) { workDone = true; });
-
-    for (int i = 0; i < 100000 && !workDone; ++i) {
+    for (int i = 0; i < 1000000 && !workDone; ++i) {
         device.Tick();
     }
 
-    // Map buffer
-    wgpu::MapAsyncStatus mapStatus = wgpu::MapAsyncStatus::Success;
-    wgpu::StringView mapMessage;
-    stagingBuffer.MapAsync(
-        wgpu::MapMode::Read, 0, bufferSize,
+    // Map the buffer
+    buf.MapAsync(
+        wgpu::MapMode::Read, 0, stagingSize_,
         wgpu::CallbackMode::AllowSpontaneous,
-        [&mapStatus, &mapMessage](wgpu::MapAsyncStatus status, wgpu::StringView message) {
-            mapStatus = status;
-            mapMessage = message;
-        });
+        [](wgpu::MapAsyncStatus, wgpu::StringView) {});
 
-    // Poll until buffer is mapped
     for (int i = 0; i < 100000; ++i) {
         device.Tick();
-        if (stagingBuffer.GetMapState() == wgpu::BufferMapState::Mapped) {
+        if (buf.GetMapState() == wgpu::BufferMapState::Mapped) {
             break;
         }
     }
 
-    if (stagingBuffer.GetMapState() != wgpu::BufferMapState::Mapped) {
-        std::string errorMsg = "Failed to map staging buffer";
-        if (mapStatus != wgpu::MapAsyncStatus::Success) {
-            errorMsg += " (status: " + std::to_string(static_cast<int>(mapStatus)) + ", message: " + std::string(mapMessage.data, mapMessage.length) + ")";
-        }
-        throw std::runtime_error(errorMsg);
+    if (buf.GetMapState() != wgpu::BufferMapState::Mapped) {
+        throw std::runtime_error("Failed to map staging buffer");
     }
 
     // Copy data, removing row padding
-    const uint8_t* mapped = static_cast<const uint8_t*>(stagingBuffer.GetConstMappedRange(0, bufferSize));
+    const uint8_t* mapped = static_cast<const uint8_t*>(
+        buf.GetConstMappedRange(0, stagingSize_));
 
     std::vector<uint8_t> pixels(width_ * height_ * 4);
     for (int y = 0; y < height_; ++y) {
         std::memcpy(
             pixels.data() + y * width_ * 4,
-            mapped + y * alignedBytesPerRow,
+            mapped + y * alignedBytesPerRow_,
             width_ * 4
         );
     }
 
-    stagingBuffer.Unmap();
+    buf.Unmap();
 
     // Convert BGRA → RGBA if needed so callers always get RGBA
+    if (format_ == wgpu::TextureFormat::BGRA8Unorm) {
+        for (size_t i = 0; i < pixels.size(); i += 4) {
+            std::swap(pixels[i], pixels[i + 2]);
+        }
+    }
+
+    return pixels;
+}
+
+void CaptureTarget::submitCopy(wgpu::Device device, wgpu::Queue queue) {
+    auto& buf = stagingBuffers_[currentStaging_];
+
+    if (buf.GetMapState() == wgpu::BufferMapState::Mapped) {
+        buf.Unmap();
+    }
+
+    wgpu::CommandEncoder encoder = device.CreateCommandEncoder();
+    wgpu::TexelCopyTextureInfo src{
+        .texture = colorTexture_.get(),
+        .mipLevel = 0,
+        .origin = {0, 0, 0},
+        .aspect = wgpu::TextureAspect::All,
+    };
+    wgpu::TexelCopyBufferInfo dst{
+        .layout = {
+            .offset = 0,
+            .bytesPerRow = alignedBytesPerRow_,
+            .rowsPerImage = static_cast<uint32_t>(height_),
+        },
+        .buffer = buf,
+    };
+    wgpu::Extent3D extent{static_cast<uint32_t>(width_), static_cast<uint32_t>(height_), 1};
+    encoder.CopyTextureToBuffer(&src, &dst, &extent);
+
+    wgpu::CommandBuffer commands = encoder.Finish();
+    queue.Submit(1, &commands);
+
+    // Start async map — will complete by the time collectPixels is called
+    buf.MapAsync(
+        wgpu::MapMode::Read, 0, stagingSize_,
+        wgpu::CallbackMode::AllowSpontaneous,
+        [](wgpu::MapAsyncStatus, wgpu::StringView) {});
+}
+
+std::vector<uint8_t> CaptureTarget::collectPixels(wgpu::Device device) {
+    auto& buf = stagingBuffers_[currentStaging_];
+    currentStaging_ = 1 - currentStaging_;
+
+    // Check if mapped — should already be done since present() processes
+    // callbacks. No device.Tick() here to avoid interfering with the
+    // render pipeline's resource lifecycle.
+    if (buf.GetMapState() != wgpu::BufferMapState::Mapped) {
+        // Not ready yet — try one Tick and check again
+        device.Tick();
+    }
+
+    if (buf.GetMapState() != wgpu::BufferMapState::Mapped) {
+        return {};  // Not ready — skip this frame
+    }
+
+    const uint8_t* mapped = static_cast<const uint8_t*>(
+        buf.GetConstMappedRange(0, stagingSize_));
+
+    std::vector<uint8_t> pixels(width_ * height_ * 4);
+    for (int y = 0; y < height_; ++y) {
+        std::memcpy(
+            pixels.data() + y * width_ * 4,
+            mapped + y * alignedBytesPerRow_,
+            width_ * 4
+        );
+    }
+
+    buf.Unmap();
+
     if (format_ == wgpu::TextureFormat::BGRA8Unorm) {
         for (size_t i = 0; i < pixels.size(); i += 4) {
             std::swap(pixels[i], pixels[i + 2]);
