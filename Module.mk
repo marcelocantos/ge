@@ -16,17 +16,10 @@ ge/INCLUDES = \
 	-Ige/include \
 	-Ige/vendor/include \
 	-Ige/vendor/github.com/gabime/spdlog/include \
-	-Ige/vendor/dawn/include \
 	-Ige/vendor/github.com/libsdl-org/SDL/include \
 	-Ige/vendor/sdl3/include \
 	-Ige/vendor/github.com/erincatto/box2d/include \
 	-DSQLITE_ENABLE_SESSION -DSQLITE_ENABLE_PREUPDATE_HOOK -DSQLITE_ENABLE_DESERIALIZE
-
-# Dawn (WebGPU) libraries
-# Order matters: dawn_proc first (provides switchable wgpu* stubs), then webgpu_dawn (native impl)
-ge/DAWN_PROC_LIB = ge/vendor/dawn/lib/macos-arm64/libdawn_proc.a
-ge/DAWN_LIB = ge/vendor/dawn/lib/macos-arm64/libwebgpu_dawn.a
-ge/DAWN_LIBS = $(ge/DAWN_PROC_LIB) $(ge/DAWN_LIB)
 
 # bgfx + bx + bimg (vendored, compiled from source)
 ge/BX_DIR = ge/vendor/github.com/bkaradzic/bx
@@ -66,31 +59,8 @@ ge/PLUTOVG_LIB = ge/vendor/sdl3/lib/macos-arm64/libplutovg.a
 ge/SDL_LIBS = $(ge/SDL3_LIB) $(ge/SDL3_IMAGE_LIB) $(ge/SDL3_TTF_LIB) $(ge/FREETYPE_LIB) $(ge/HARFBUZZ_LIB) $(ge/PLUTOSVG_LIB) $(ge/PLUTOVG_LIB)
 
 ge/SRC = \
-	ge/src/GpuContext.cpp \
-	ge/src/SdlContext.cpp \
-	ge/src/NativeSurface_apple.cpp \
-	ge/src/Texture.cpp \
-	ge/src/Mesh.cpp \
-	ge/src/Model.cpp \
-	ge/src/ManifestLoader.cpp \
-	ge/src/Pipeline.cpp \
-	ge/src/BindGroup.cpp \
 	ge/src/Resource.cpp \
-	ge/src/FileIO.cpp \
-	ge/src/TextRenderer.cpp \
-	ge/src/CaptureTarget.cpp \
-	ge/src/Audio.cpp \
-	ge/src/SessionHost.cpp \
-	ge/src/WebSocketClient.cpp \
-	ge/src/StreamSession.cpp \
-	ge/src/SharedTexture_apple.mm \
-	ge/src/UniformRing.cpp \
-	ge/src/VideoEncoder_apple.mm \
-	ge/src/VideoDecoder_apple.mm
-
-# Session backend objects (linked by the parent, not part of libge.a)
-ge/SESSION_DIRECT_OBJ = $(BUILD_DIR)/ge/src/SessionDirect.o
-ge/SESSION_HEADLESS_OBJ = $(BUILD_DIR)/ge/src/SessionHeadless.o
+	ge/src/FileIO.cpp
 
 ge/OBJ = $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(filter %.cpp,$(ge/SRC))) \
          $(patsubst %.mm,$(BUILD_DIR)/%.o,$(filter %.mm,$(ge/SRC)))
@@ -123,31 +93,15 @@ ge/LZ4_OBJ = $(BUILD_DIR)/ge/vendor/lz4.o
 ge/VENDOR_CPP_SRC = ge/vendor/src/sqlift.cpp ge/vendor/src/sqlpipe.cpp
 ge/VENDOR_CPP_OBJ = $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(ge/VENDOR_CPP_SRC))
 
-# Player tool (standalone binary)
-ge/PLAYER_SRC = ge/tools/player.cpp ge/tools/player_core.cpp ge/tools/player_platform_apple.cpp ge/tools/AudioPlayer.cpp \
-	ge/tools/player_capture_apple.mm
-ge/PLAYER_OBJ = $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(filter %.cpp,$(ge/PLAYER_SRC))) \
-                $(patsubst %.mm,$(BUILD_DIR)/%.o,$(filter %.mm,$(ge/PLAYER_SRC)))
-ge/PLAYER = bin/player
-
-# bgfx spike test
-ge/BGFX_TEST_SRC = ge/tools/bgfx_test.cpp
-ge/BGFX_TEST_OBJ = $(BUILD_DIR)/ge/tools/bgfx_test.o
-ge/BGFX_TEST = bin/bgfx_test
-
-# Framework libraries (Dawn WebGPU)
-ge/FRAMEWORK_LIBS = $(ge/DAWN_LIBS)
-
 # Test sources
 ge/TEST_SRC = \
 	ge/src/main_test.cpp \
-	ge/src/GpuContext_test.cpp \
 	ge/src/DampedRotation_test.cpp
 ge/TEST_OBJ = $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(ge/TEST_SRC))
 
 # Shared variables (parent can += to extend)
 CLEAN = bin build deps.dot deps.svg deps.png ge/ged/web
-COMPILE_DB_DEPS = $(ge/SRC) $(ge/TEST_SRC) $(ge/PLAYER_SRC) ge/Module.mk
+COMPILE_DB_DEPS = $(ge/SRC) $(ge/TEST_SRC) ge/Module.mk
 ge/DEPGRAPH_DEPS = $(ge/SRC) $(wildcard ge/include/ge/*.h) ge/tools/depgraph.py
 
 # ────────────────────────────────────────────────
@@ -193,32 +147,6 @@ $(ge/LZ4_OBJ): $(ge/LZ4_SRC)
 $(ge/TRIANGLE_OBJ): $(ge/TRIANGLE_SRC)
 	@mkdir -p $(dir $@)
 	$(CC) $(ge/TRIANGLE_CFLAGS) -c $< -o $@
-
-# Player objects
-$(BUILD_DIR)/ge/tools/%.o: ge/tools/%.cpp
-	@mkdir -p $(dir $@)
-	$(CXX) $(CXXFLAGS) $(SDL_CFLAGS) -MMD -MP -c $< -o $@
-
-# Player ObjC++ objects (.mm)
-$(BUILD_DIR)/ge/tools/%.o: ge/tools/%.mm
-	@mkdir -p $(dir $@)
-	$(CXX) $(CXXFLAGS) $(SDL_CFLAGS) -MMD -MP -c $< -o $@
-
-# Player binary
-$(ge/PLAYER): $(ge/PLAYER_OBJ) $(ge/LIB) $(ge/DAWN_LIBS)
-	@mkdir -p bin
-	$(CXX) $(ge/PLAYER_OBJ) $(ge/LIB) $(ge/DAWN_LIBS) $(FRAMEWORKS) $(SDL_LIBS) -o $@
-
-# bgfx spike test binary
-$(ge/BGFX_TEST_OBJ): $(ge/BGFX_TEST_SRC)
-	@mkdir -p $(dir $@)
-	$(CXX) -std=c++20 -O2 $(ge/BGFX_ALL_INCLUDES) -Ige/include -Ige/vendor/github.com/gabime/spdlog/include -Ige/vendor/github.com/libsdl-org/SDL/include -Ige/vendor/sdl3/include -DBX_CONFIG_DEBUG=0 -MMD -MP -c $< -o $@
-
-$(ge/BGFX_TEST): $(ge/BGFX_TEST_OBJ) $(ge/BGFX_LIBS) $(ge/SDL3_LIB)
-	@mkdir -p bin
-	$(CXX) $(ge/BGFX_TEST_OBJ) $(ge/BGFX_LIBS) $(ge/SDL3_LIB) -framework Metal -framework QuartzCore -framework IOKit -framework Foundation -framework Cocoa -framework Carbon -framework CoreAudio -framework AudioToolbox -framework CoreHaptics -framework GameController -framework CoreVideo -framework ForceFeedback -framework CoreFoundation -framework AVFoundation -framework CoreMedia -framework UniformTypeIdentifiers -framework CoreGraphics -o $@
-
-# Dawn libraries are prebuilt; no build rule needed
 
 # bx (amalgamated build)
 $(ge/BX_OBJ): $(ge/BX_DIR)/src/amalgamated.cpp
@@ -305,7 +233,7 @@ ge/ios-init:
 	ge/tools/init-ios.sh "$(APP_ID)" "$(APP_NAME)" "$(IOS_DEVELOPMENT_TEAM)"
 
 # ────────────────────────────────────────────────
-# Generic targets (use CLEAN, CLEAN_SHADERS, COMPILE_DB_DEPS)
+# Generic targets (use CLEAN, COMPILE_DB_DEPS)
 # ────────────────────────────────────────────────
 
 .PHONY: clean
@@ -350,12 +278,6 @@ ge/init:
 	@git lfs install
 	@git lfs pull
 	@echo "  Dependencies installed"
-	@mkdir -p .vscode
-	@(cat .vscode/settings.json 2>/dev/null || echo '{}') | \
-		jq '. + {"files.associations": ((."files.associations" // {}) + {"*.wgsl": "wgsl"})}' \
-		> .vscode/settings.json.tmp && \
-		mv .vscode/settings.json.tmp .vscode/settings.json
-	@echo "  VS Code: .wgsl -> WGSL association configured"
 	@brew install compiledb
 	@$(MAKE) compile_commands.json
 	@echo "  compile_commands.json generated"
