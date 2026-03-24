@@ -28,6 +28,33 @@ ge/DAWN_PROC_LIB = ge/vendor/dawn/lib/macos-arm64/libdawn_proc.a
 ge/DAWN_LIB = ge/vendor/dawn/lib/macos-arm64/libwebgpu_dawn.a
 ge/DAWN_LIBS = $(ge/DAWN_PROC_LIB) $(ge/DAWN_LIB)
 
+# bgfx + bx + bimg (vendored, compiled from source)
+ge/BX_DIR = ge/vendor/github.com/bkaradzic/bx
+ge/BIMG_DIR = ge/vendor/github.com/bkaradzic/bimg
+ge/BGFX_DIR = ge/vendor/github.com/bkaradzic/bgfx
+
+ge/BX_INCLUDES = -I$(ge/BX_DIR)/include -I$(ge/BX_DIR)/include/compat/osx
+ge/BIMG_INCLUDES = -I$(ge/BIMG_DIR)/include
+ge/BGFX_INCLUDES = -I$(ge/BGFX_DIR)/include
+
+ge/BGFX_ALL_INCLUDES = $(ge/BGFX_INCLUDES) $(ge/BX_INCLUDES) $(ge/BIMG_INCLUDES)
+ge/BGFX_CXXFLAGS = -std=c++20 -O2 $(ge/BGFX_ALL_INCLUDES) -DBX_CONFIG_DEBUG=0 -DBGFX_CONFIG_RENDERER_METAL=1
+
+# bx: platform abstraction (amalgamated minus crtnone.cpp — handled by #ifdef internally)
+ge/BX_OBJ = $(BUILD_DIR)/ge/vendor/bx.o
+ge/BX_LIB = $(BUILD_DIR)/libbx.a
+
+# bimg: image processing (image.cpp + image_gnf.cpp — decode/encode not needed for bgfx runtime)
+ge/BIMG_SRC = $(ge/BIMG_DIR)/src/image.cpp $(ge/BIMG_DIR)/src/image_gnf.cpp
+ge/BIMG_OBJ = $(patsubst $(ge/BIMG_DIR)/src/%.cpp,$(BUILD_DIR)/ge/vendor/bimg_%.o,$(ge/BIMG_SRC))
+ge/BIMG_LIB = $(BUILD_DIR)/libbimg.a
+
+# bgfx: rendering
+ge/BGFX_OBJ = $(BUILD_DIR)/ge/vendor/bgfx.o
+ge/BGFX_LIB = $(BUILD_DIR)/libbgfx.a
+
+ge/BGFX_LIBS = $(ge/BGFX_LIB) $(ge/BIMG_LIB) $(ge/BX_LIB)
+
 # SDL3 libraries (static, vendored)
 ge/SDL3_LIB = ge/vendor/sdl3/lib/macos-arm64/libSDL3.a
 ge/SDL3_IMAGE_LIB = ge/vendor/sdl3/lib/macos-arm64/libSDL3_image.a
@@ -103,6 +130,11 @@ ge/PLAYER_OBJ = $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(filter %.cpp,$(ge/PLAYER_SRC
                 $(patsubst %.mm,$(BUILD_DIR)/%.o,$(filter %.mm,$(ge/PLAYER_SRC)))
 ge/PLAYER = bin/player
 
+# bgfx spike test
+ge/BGFX_TEST_SRC = ge/tools/bgfx_test.cpp
+ge/BGFX_TEST_OBJ = $(BUILD_DIR)/ge/tools/bgfx_test.o
+ge/BGFX_TEST = bin/bgfx_test
+
 # Framework libraries (Dawn WebGPU)
 ge/FRAMEWORK_LIBS = $(ge/DAWN_LIBS)
 
@@ -177,7 +209,43 @@ $(ge/PLAYER): $(ge/PLAYER_OBJ) $(ge/LIB) $(ge/DAWN_LIBS)
 	@mkdir -p bin
 	$(CXX) $(ge/PLAYER_OBJ) $(ge/LIB) $(ge/DAWN_LIBS) $(FRAMEWORKS) $(SDL_LIBS) -o $@
 
+# bgfx spike test binary
+$(ge/BGFX_TEST_OBJ): $(ge/BGFX_TEST_SRC)
+	@mkdir -p $(dir $@)
+	$(CXX) -std=c++20 -O2 $(ge/BGFX_ALL_INCLUDES) -Ige/include -Ige/vendor/github.com/gabime/spdlog/include -Ige/vendor/github.com/libsdl-org/SDL/include -Ige/vendor/sdl3/include -DBX_CONFIG_DEBUG=0 -MMD -MP -c $< -o $@
+
+$(ge/BGFX_TEST): $(ge/BGFX_TEST_OBJ) $(ge/BGFX_LIBS) $(ge/SDL3_LIB)
+	@mkdir -p bin
+	$(CXX) $(ge/BGFX_TEST_OBJ) $(ge/BGFX_LIBS) $(ge/SDL3_LIB) -framework Metal -framework QuartzCore -framework IOKit -framework Foundation -framework Cocoa -framework Carbon -framework CoreAudio -framework AudioToolbox -framework CoreHaptics -framework GameController -framework CoreVideo -framework ForceFeedback -framework CoreFoundation -framework AVFoundation -framework CoreMedia -framework UniformTypeIdentifiers -framework CoreGraphics -o $@
+
 # Dawn libraries are prebuilt; no build rule needed
+
+# bx (amalgamated build)
+$(ge/BX_OBJ): $(ge/BX_DIR)/src/amalgamated.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(ge/BGFX_CXXFLAGS) -I$(ge/BX_DIR)/3rdparty -MMD -MP -c $< -o $@
+
+$(ge/BX_LIB): $(ge/BX_OBJ)
+	@mkdir -p $(dir $@)
+	$(AR) rcs $@ $^
+
+# bimg (amalgamated build — needs bx + bimg internal headers)
+$(BUILD_DIR)/ge/vendor/bimg_%.o: $(ge/BIMG_DIR)/src/%.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(ge/BGFX_CXXFLAGS) -DBIMG_CONFIG_DECODE_ENABLE=0 -I$(ge/BIMG_DIR)/3rdparty -I$(ge/BIMG_DIR)/3rdparty/astc-encoder/include -MMD -MP -c $< -o $@
+
+$(ge/BIMG_LIB): $(ge/BIMG_OBJ)
+	@mkdir -p $(dir $@)
+	$(AR) rcs $@ $^
+
+# bgfx (amalgamated build — Metal renderer needs ObjC++ for MTLCopyAllDevicesWithObserver)
+$(ge/BGFX_OBJ): $(ge/BGFX_DIR)/src/amalgamated.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) -ObjC++ $(ge/BGFX_CXXFLAGS) -I$(ge/BGFX_DIR)/3rdparty -I$(ge/BGFX_DIR)/3rdparty/khronos -I$(ge/BGFX_DIR)/src -MMD -MP -c $< -o $@
+
+$(ge/BGFX_LIB): $(ge/BGFX_OBJ)
+	@mkdir -p $(dir $@)
+	$(AR) rcs $@ $^
 
 # iOS Xcode project generation
 .PHONY: ge/ios
