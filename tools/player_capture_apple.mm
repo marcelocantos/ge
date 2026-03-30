@@ -7,13 +7,16 @@
 #import <SDL3/SDL_metal.h>
 #include <spdlog/spdlog.h>
 
-static CaptureMetalLayer* g_captureLayer = nil;
+// Store last drawable in a global (safe — only one capture layer).
+static id<CAMetalDrawable> g_lastDrawable = nil;
+static CAMetalLayer* g_captureLayer = nil;
 
 @implementation CaptureMetalLayer
 
 - (id<CAMetalDrawable>)nextDrawable {
-    self.lastDrawable = [super nextDrawable];
-    return self.lastDrawable;
+    id<CAMetalDrawable> d = [super nextDrawable];
+    g_lastDrawable = d;
+    return d;
 }
 
 @end
@@ -28,19 +31,18 @@ void enableCapture(SDL_MetalView view) {
     }
     layer.framebufferOnly = NO;
     object_setClass(layer, [CaptureMetalLayer class]);
-    g_captureLayer = (CaptureMetalLayer*)layer;
+    g_captureLayer = layer;
     SPDLOG_INFO("Capture enabled ({}x{})",
                 (int)layer.drawableSize.width,
                 (int)layer.drawableSize.height);
 }
 
 bool hasDrawable() {
-    return g_captureLayer && g_captureLayer.lastDrawable;
+    return g_lastDrawable != nil;
 }
 
 bool readLastFrame(uint8_t* dst, int width, int height, size_t bytesPerRow) {
-    if (!g_captureLayer) return false;
-    id<CAMetalDrawable> drawable = g_captureLayer.lastDrawable;
+    id<CAMetalDrawable> drawable = g_lastDrawable;
     if (!drawable) return false;
     id<MTLTexture> texture = drawable.texture;
     if (!texture) return false;
