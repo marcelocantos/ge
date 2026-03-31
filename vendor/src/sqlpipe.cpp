@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cstring>
+#include <deque>
 #include <map>
 #include <format>
 #include <lz4.h>
@@ -150,6 +151,11 @@ std::string get_schema_sql(
 
 /// Get the CREATE TABLE SQL for a single table.
 std::string get_table_create_sql(sqlite3* db, const std::string& table);
+
+/// Migrate the local schema to match the remote schema using sqlift.
+/// Returns true if migration succeeded, false on error.
+bool auto_migrate_schema(sqlite3* db, const std::string& remote_schema_sql,
+                         const LogCallback& on_log);
 
 /// Check if a table uses WITHOUT ROWID.
 bool is_without_rowid(sqlite3* db, const std::string& table);
@@ -411,12 +417,11 @@ std::vector<std::uint8_t> serialize(const Message& msg) {
             put_u8(buf, static_cast<std::uint8_t>(MessageTag::Hello));
             put_u32(buf, m.protocol_version);
             put_i32(buf, m.schema_version);
-            if (!m.owned_tables.empty()) {
-                put_u32(buf, static_cast<std::uint32_t>(m.owned_tables.size()));
-                for (const auto& t : m.owned_tables) {
-                    put_string(buf, t);
-                }
+            put_u32(buf, static_cast<std::uint32_t>(m.owned_tables.size()));
+            for (const auto& t : m.owned_tables) {
+                put_string(buf, t);
             }
+            put_i64(buf, m.last_seq);
         }
         else if constexpr (std::is_same_v<T, ChangesetMsg>) {
             put_u8(buf, static_cast<std::uint8_t>(MessageTag::Changeset));
@@ -436,6 +441,9 @@ std::vector<std::uint8_t> serialize(const Message& msg) {
         }
         else if constexpr (std::is_same_v<T, BucketHashesMsg>) {
             put_u8(buf, static_cast<std::uint8_t>(MessageTag::BucketHashes));
+            put_i64(buf, m.last_seq);
+            put_u32(buf, m.protocol_version);
+            put_i32(buf, m.schema_version);
             put_u32(buf, static_cast<std::uint32_t>(m.buckets.size()));
             for (const auto& b : m.buckets) {
                 put_string(buf, b.table);
@@ -527,13 +535,14 @@ Message deserialize(std::span<const std::uint8_t> buf) {
         HelloMsg m;
         m.protocol_version = r.read_u32();
         m.schema_version = r.read_i32();
-        if (!r.at_end()) {
+        {
             auto count = r.read_u32();
             check_count(count);
             for (std::uint32_t i = 0; i < count; ++i) {
                 m.owned_tables.insert(r.read_string());
             }
         }
+        m.last_seq = r.read_i64();
         return m;
     }
     case MessageTag::Changeset: {
@@ -557,6 +566,9 @@ Message deserialize(std::span<const std::uint8_t> buf) {
     }
     case MessageTag::BucketHashes: {
         BucketHashesMsg m;
+        m.last_seq = r.read_i64();
+        m.protocol_version = r.read_u32();
+        m.schema_version = r.read_i32();
         auto count = r.read_u32();
         check_count(count);
         m.buckets.resize(count);
@@ -721,6 +733,7 @@ std::vector<std::string> get_tracked_tables(
         "SELECT name FROM sqlite_master "
         "WHERE type='table' "
         "  AND name NOT LIKE '_sqlpipe_%' "
+        "  AND name NOT LIKE '_sqlift_%' "
         "  AND name NOT LIKE 'sqlite_%' "
         "ORDER BY name");
 
@@ -773,6 +786,70 @@ std::string get_schema_sql(
     }
     if (!sql.empty()) sql += ";";
     return sql;
+}
+
+bool auto_migrate_schema(sqlite3* db, const std::string& remote_schema_sql,
+                         const LogCallback& on_log) {
+    int err_type = 0;
+    char* err_msg = nullptr;
+
+    // Parse the remote (desired) schema.
+    char* desired_json = sqlift_parse(remote_schema_sql.c_str(),
+                                      &err_type, &err_msg);
+    if (!desired_json) {
+        SQLPIPE_LOG(on_log, LogLevel::Error,
+                    "auto_migrate: failed to parse remote schema: {}",
+                    err_msg ? err_msg : "unknown");
+        sqlift_free(err_msg);
+        return false;
+    }
+
+    // Get the local user-table schema (excludes _sqlpipe_meta and other
+    // internal tables), then parse it with sqlift.
+    auto local_sql = get_schema_sql(db);
+    char* current_json = sqlift_parse(
+        local_sql.empty() ? "" : local_sql.c_str(),
+        &err_type, &err_msg);
+    if (!current_json) {
+        SQLPIPE_LOG(on_log, LogLevel::Error,
+                    "auto_migrate: failed to parse local schema: {}",
+                    err_msg ? err_msg : "unknown");
+        sqlift_free(err_msg);
+        sqlift_free(desired_json);
+        return false;
+    }
+
+    // Diff current → desired.
+    char* plan_json = sqlift_diff(current_json, desired_json,
+                                  &err_type, &err_msg);
+    sqlift_free(current_json);
+    sqlift_free(desired_json);
+    if (!plan_json) {
+        SQLPIPE_LOG(on_log, LogLevel::Error,
+                    "auto_migrate: failed to diff schemas: {}",
+                    err_msg ? err_msg : "unknown");
+        sqlift_free(err_msg);
+        return false;
+    }
+
+    // Apply the migration plan (allow destructive — master is authoritative).
+    sqlift_db* sdb = sqlift_db_wrap(db);
+    int rc = sqlift_apply(sdb, plan_json, /*allow_destructive=*/1,
+                          &err_type, &err_msg);
+    sqlift_free(plan_json);
+    sqlift_db_close(sdb);
+
+    if (rc != 0) {
+        SQLPIPE_LOG(on_log, LogLevel::Error,
+                    "auto_migrate: failed to apply migration: {}",
+                    err_msg ? err_msg : "unknown");
+        sqlift_free(err_msg);
+        return false;
+    }
+
+    SQLPIPE_LOG(on_log, LogLevel::Info,
+                "auto_migrate: schema migrated to match master");
+    return true;
 }
 
 std::string get_table_create_sql(sqlite3* db, const std::string& table) {
@@ -1271,6 +1348,21 @@ struct Master::Impl {
     Seq                      seq = 0;
     SchemaVersion            cached_sv = 0;
 
+    // Changeset queue for replay on reconnect.
+    struct QueuedChangeset {
+        Seq       seq;
+        Changeset data;
+    };
+    std::deque<QueuedChangeset> changeset_queue;
+
+    void enqueue_changeset(Seq s, const Changeset& data) {
+        if (config.changeset_queue_size == 0) return;
+        changeset_queue.push_back({s, data});
+        while (changeset_queue.size() > config.changeset_queue_size) {
+            changeset_queue.pop_front();
+        }
+    }
+
     // Diff handshake state.
     enum class HSState : std::uint8_t {
         Idle,
@@ -1294,12 +1386,58 @@ struct Master::Impl {
         }
     }
 
+    bool flush_pending = false;
+    bool in_auto_flush = false;
+
+    static int commit_hook_cb(void* ctx) {
+        auto* self = static_cast<Impl*>(ctx);
+        if (!self->in_auto_flush) {
+            self->flush_pending = true;
+        }
+        return 0;
+    }
+
+    void auto_flush() {
+        in_auto_flush = true;
+
+        // Check for schema changes.
+        auto sv = detail::compute_schema_fingerprint(db, filter());
+        if (sv != cached_sv) {
+            cached_sv = sv;
+            scan_tables();
+            recreate_session();
+        }
+
+        auto cs = extract_changeset();
+        if (!cs.empty()) {
+            recreate_session();
+            seq++;
+            detail::write_seq(db, seq, config.seq_key);
+
+            SQLPIPE_LOG(config.on_log, LogLevel::Debug,
+                        "auto-flushed changeset seq={} ({} bytes)", seq, cs.size());
+
+            enqueue_changeset(seq, cs);
+
+            std::vector<Message> msgs = {
+                Message{ChangesetMsg{seq, std::move(cs)}}};
+            config.on_flush(msgs);
+        }
+
+        in_auto_flush = false;
+    }
+
     void init() {
         detail::ensure_meta_table(db);
         seq = detail::read_seq(db, config.seq_key);
         cached_sv = detail::compute_schema_fingerprint(db, filter());
         scan_tables();
         recreate_session();
+
+        if (config.on_flush) {
+            sqlite3_commit_hook(db, &Impl::commit_hook_cb, this);
+        }
+
         SQLPIPE_LOG(config.on_log, LogLevel::Info, "master initialized at seq={}", seq);
     }
 
@@ -1349,9 +1487,9 @@ struct Master::Impl {
 
     std::vector<Message> handle_hello(const HelloMsg& hello) {
         if (hello.protocol_version != kProtocolVersion) {
-            return {ErrorMsg{ErrorCode::ProtocolError,
+            return {Message{ErrorMsg{ErrorCode::ProtocolError,
                 "unsupported protocol version: " +
-                std::to_string(hello.protocol_version)}};
+                std::to_string(hello.protocol_version)}}};
         }
 
         auto my_sv = detail::compute_schema_fingerprint(db, filter());
@@ -1370,24 +1508,129 @@ struct Master::Impl {
                 SQLPIPE_LOG(config.on_log, LogLevel::Info,
                             "schema mismatch (replica={}, master={})",
                             hello.schema_version, my_sv);
-                return {ErrorMsg{ErrorCode::SchemaMismatch,
+                return {Message{ErrorMsg{ErrorCode::SchemaMismatch,
                     "schema mismatch: replica=" +
                     std::to_string(hello.schema_version) +
                     " master=" + std::to_string(my_sv),
                     my_sv,
-                    detail::get_schema_sql(db, filter())}};
+                    detail::get_schema_sql(db, filter())}}};
+            }
+        }
+
+        // Fast reconnect: if replica's seq matches ours and both > 0,
+        // skip diff sync entirely.
+        if (hello.last_seq > 0 && hello.last_seq == seq) {
+            hs_state = HSState::Live;
+            SQLPIPE_LOG(config.on_log, LogLevel::Info,
+                        "hello ok, seq match ({}), skipping diff sync", seq);
+            return {Message{HelloMsg{kProtocolVersion, my_sv, {}, seq}}};
+        }
+
+        // Queue replay: if replica's seq is behind but still within our
+        // changeset queue, replay the queued changesets instead of
+        // running full diff sync. Send HelloMsg with last_seq matching
+        // the replica's seq so it triggers fast reconnect to Live,
+        // then the queued changesets apply in Live state.
+        if (hello.last_seq > 0 && !changeset_queue.empty() &&
+            hello.last_seq >= changeset_queue.front().seq - 1) {
+            // Find the first changeset after the replica's seq.
+            std::vector<Message> result;
+            result.push_back(Message{
+                HelloMsg{kProtocolVersion, my_sv, {}, hello.last_seq}});
+            std::size_t replayed = 0;
+            for (const auto& qc : changeset_queue) {
+                if (qc.seq > hello.last_seq) {
+                    result.push_back(Message{
+                        ChangesetMsg{qc.seq, qc.data}});
+                    ++replayed;
+                }
+            }
+            if (replayed > 0) {
+                hs_state = HSState::Live;
+                SQLPIPE_LOG(config.on_log, LogLevel::Info,
+                            "queue replay: {} changesets (seq {}→{})",
+                            replayed, hello.last_seq + 1, seq);
+                return result;
             }
         }
 
         hs_state = HSState::WaitBucketHashes;
         SQLPIPE_LOG(config.on_log, LogLevel::Info, "hello ok, waiting for bucket hashes");
-        return {HelloMsg{kProtocolVersion, my_sv, {}}};
+        return {Message{HelloMsg{kProtocolVersion, my_sv, {}, -1}}};
     }
 
     std::vector<Message> handle_bucket_hashes(const BucketHashesMsg& msg) {
-        if (hs_state != HSState::WaitBucketHashes) {
-            return {ErrorMsg{ErrorCode::InvalidState,
-                "unexpected BucketHashesMsg"}};
+        // Accept BucketHashes in any state — enables convergence loop
+        // where the replica can initiate diff sync at any time, including
+        // re-convergence checks while already Live.
+        //
+        // Clear any pending state from a previous round. If the replica
+        // calls converge() while a previous round is in flight, this
+        // ensures the master starts fresh rather than mixing rounds.
+        pending_ranges.clear();
+
+        // Protocol version check (if provided).
+        if (msg.protocol_version != 0 &&
+            msg.protocol_version != kProtocolVersion) {
+            return {Message{ErrorMsg{ErrorCode::ProtocolError,
+                "unsupported protocol version: " +
+                std::to_string(msg.protocol_version)}}};
+        }
+
+        // Schema check (if provided).
+        if (msg.schema_version != 0) {
+            auto my_sv = detail::compute_schema_fingerprint(db, filter());
+            if (msg.schema_version != my_sv) {
+                if (config.on_schema_mismatch &&
+                    config.on_schema_mismatch(msg.schema_version, my_sv, "")) {
+                    cached_sv = detail::compute_schema_fingerprint(db, filter());
+                    scan_tables();
+                    recreate_session();
+                    my_sv = cached_sv;
+                }
+                if (msg.schema_version != my_sv) {
+                    SQLPIPE_LOG(config.on_log, LogLevel::Info,
+                                "schema mismatch (replica={}, master={})",
+                                msg.schema_version, my_sv);
+                    return {Message{ErrorMsg{ErrorCode::SchemaMismatch,
+                        "schema mismatch: replica=" +
+                        std::to_string(msg.schema_version) +
+                        " master=" + std::to_string(my_sv),
+                        my_sv,
+                        detail::get_schema_sql(db, filter())}}};
+                }
+            }
+        }
+
+        // Fast path: if the replica's seq is behind but within the
+        // changeset queue, replay from the queue instead of diffing.
+        if (msg.last_seq > 0 && msg.last_seq < seq &&
+            !changeset_queue.empty() &&
+            msg.last_seq >= changeset_queue.front().seq - 1) {
+            std::vector<Message> result;
+            std::size_t replayed = 0;
+            for (const auto& qc : changeset_queue) {
+                if (qc.seq > msg.last_seq) {
+                    result.push_back(Message{
+                        ChangesetMsg{qc.seq, qc.data}});
+                    ++replayed;
+                }
+            }
+            if (replayed > 0) {
+                // Send an empty DiffReady first to transition the replica
+                // from DiffBuckets to Live, then the queued changesets.
+                std::vector<Message> out;
+                out.push_back(Message{
+                    NeedBucketsMsg{}});
+                out.push_back(Message{
+                    DiffReadyMsg{msg.last_seq, {}, {}}});
+                out.insert(out.end(), result.begin(), result.end());
+                hs_state = HSState::Live;
+                SQLPIPE_LOG(config.on_log, LogLevel::Info,
+                            "converge: queue replay {} changesets (seq {}→{})",
+                            replayed, msg.last_seq + 1, seq);
+                return out;
+            }
         }
 
         // Compute our own bucket hashes.
@@ -1475,20 +1718,23 @@ struct Master::Impl {
             // All buckets match. Skip row-hash exchange.
             hs_state = HSState::Live;
             SQLPIPE_LOG(config.on_log, LogLevel::Info, "all buckets match, entering live at seq={}", seq);
-            return {NeedBucketsMsg{},
-                    DiffReadyMsg{seq, {}, {}}};
+            return {Message{NeedBucketsMsg{}},
+                    Message{DiffReadyMsg{seq, {}, {}}}};
         }
 
         pending_ranges = need.ranges;
         hs_state = HSState::WaitRowHashes;
         SQLPIPE_LOG(config.on_log, LogLevel::Info, "{} mismatched bucket ranges", need.ranges.size());
-        return {std::move(need)};
+        return {Message{std::move(need)}};
     }
 
     std::vector<Message> handle_row_hashes(const RowHashesMsg& msg) {
-        if (hs_state != HSState::WaitRowHashes) {
-            return {ErrorMsg{ErrorCode::InvalidState,
-                "unexpected RowHashesMsg"}};
+        // Accept RowHashes when we have pending ranges (from a prior
+        // BucketHashes comparison). This enables convergence loop
+        // without strict state gating.
+        if (pending_ranges.empty()) {
+            return {Message{ErrorMsg{ErrorCode::InvalidState,
+                "RowHashesMsg without pending ranges"}}};
         }
 
         // Build map of replica's rows: table → (rowid → hash).
@@ -1596,7 +1842,7 @@ struct Master::Impl {
         pending_ranges.clear();
         SQLPIPE_LOG(config.on_log, LogLevel::Info, "diff computed, entering live at seq={}", seq);
 
-        return {DiffReadyMsg{seq, std::move(combined), std::move(deletes)}};
+        return {Message{DiffReadyMsg{seq, std::move(combined), std::move(deletes)}}};
     }
 };
 
@@ -1609,9 +1855,20 @@ Master::Master(sqlite3* db, MasterConfig config)
     impl_->init();
 }
 
-Master::~Master() = default;
+Master::~Master() {
+    if (impl_ && impl_->config.on_flush) {
+        sqlite3_commit_hook(impl_->db, nullptr, nullptr);
+    }
+}
 Master::Master(Master&&) noexcept = default;
 Master& Master::operator=(Master&&) noexcept = default;
+
+void Master::exec(const std::string& sql) {
+    detail::exec(impl_->db, sql.c_str());
+    if (impl_->config.on_flush && impl_->flush_pending) {
+        impl_->auto_flush();
+    }
+}
 
 std::vector<Message> Master::flush() {
     // If DDL ran since last flush, the tracked table set may have changed.
@@ -1632,7 +1889,9 @@ std::vector<Message> Master::flush() {
 
     SQLPIPE_LOG(impl_->config.on_log, LogLevel::Debug, "flushed changeset seq={} ({} bytes)", impl_->seq, cs.size());
 
-    return {ChangesetMsg{impl_->seq, std::move(cs)}};
+    impl_->enqueue_changeset(impl_->seq, cs);
+
+    return {Message{ChangesetMsg{impl_->seq, std::move(cs)}}};
 }
 
 std::vector<Message> Master::handle_message(const Message& msg) {
@@ -1653,8 +1912,8 @@ std::vector<Message> Master::handle_message(const Message& msg) {
             return {};
         }
         else {
-            return {ErrorMsg{ErrorCode::InvalidState,
-                "unexpected message from replica"}};
+            return {Message{ErrorMsg{ErrorCode::InvalidState,
+                "unexpected message from replica"}}};
         }
     }, msg);
 }
@@ -1667,21 +1926,2150 @@ SchemaVersion Master::schema_version() const {
 
 } // namespace sqlpipe
 
-// ── replica.cpp ─────────────────────────────────────────────────
+// ── relational_algebra.cpp ─────────────────────────────────────
+
+#include <liteparser.h>
+
+namespace sqlpipe::detail {
+
+// ── Schema map ─────────────────────────────────────────────────
+
+/// Column metadata for RA analysis.
+struct ColumnInfo {
+    std::string name;
+    int         index;  // 0-based position in table
+};
+
+/// Per-table schema: column name → index.
+using TableSchema = std::vector<ColumnInfo>;
+
+/// Database schema: table name → columns.
+using SchemaMap = std::unordered_map<std::string, TableSchema>;
+
+/// Build a schema map from the database.
+SchemaMap build_schema_map(sqlite3* db) {
+    SchemaMap schema;
+    auto stmt = prepare(db,
+        "SELECT name FROM sqlite_master WHERE type='table' "
+        "AND name NOT LIKE '_sqlpipe_%' AND name NOT LIKE 'sqlite_%'");
+    while (sqlite3_step(stmt.get()) == SQLITE_ROW) {
+        std::string table(reinterpret_cast<const char*>(
+            sqlite3_column_text(stmt.get(), 0)));
+        std::string pragma = "PRAGMA table_info('" + table + "')";
+        auto col_stmt = prepare(db, pragma.c_str());
+        TableSchema cols;
+        while (sqlite3_step(col_stmt.get()) == SQLITE_ROW) {
+            int idx = sqlite3_column_int(col_stmt.get(), 0);
+            const char* name = reinterpret_cast<const char*>(
+                sqlite3_column_text(col_stmt.get(), 1));
+            cols.push_back({name ? name : "", idx});
+        }
+        schema[table] = std::move(cols);
+    }
+    return schema;
+}
+
+/// Look up a column's index in a table. Returns -1 if not found.
+int column_index(const SchemaMap& schema, const std::string& table,
+                 const std::string& column) {
+    auto it = schema.find(table);
+    if (it == schema.end()) return -1;
+    for (const auto& ci : it->second) {
+        if (ci.name == column) return ci.index;
+    }
+    return -1;
+}
+
+// ── Relational algebra nodes ───────────────────────────────────
+
+struct RANode {
+    enum Kind { Scan, Filter, Project, Join, Aggregate, SetOp };
+    Kind kind;
+
+    virtual ~RANode() = default;
+
+    /// Collect all table names referenced by this subtree.
+    virtual void collect_tables(std::set<std::string>& out) const = 0;
+};
+
+using RAPtr = std::unique_ptr<RANode>;
+
+/// Comparison operator for predicate checks.
+enum class CheckOp : std::uint8_t {
+    Eq,         // column = value
+    Ne,         // column != value
+    Lt,         // column < value
+    Le,         // column <= value
+    Gt,         // column > value
+    Ge,         // column >= value
+    IsNull,     // column IS NULL
+    IsNotNull,  // column IS NOT NULL
+    InList,     // column IN (v1, v2, ...)
+};
+
+/// A resolved predicate: table.column <op> literal value(s).
+struct ResolvedPredicate {
+    std::string        table;
+    std::string        column;
+    int                column_index;  // position in table schema (-1 if unknown)
+    CheckOp            op = CheckOp::Eq;
+    Value              value;    // for Eq/Ne/Lt/Le/Gt/Ge
+    std::vector<Value> values;   // for InList
+    bool               negated = false;  // emit Not after the check
+};
+
+/// A resolved column reference: (table, column_index).
+struct ColumnRef {
+    std::string table;
+    int         column_index;
+    bool operator<(const ColumnRef& o) const {
+        if (table != o.table) return table < o.table;
+        return column_index < o.column_index;
+    }
+    bool operator==(const ColumnRef& o) const {
+        return table == o.table && column_index == o.column_index;
+    }
+};
+
+/// Set of column references read by an RA subtree.
+using ColumnRefSet = std::set<ColumnRef>;
+
+struct RAScan : RANode {
+    std::string table;
+    RAScan(std::string t) : table(std::move(t)) { kind = Scan; }
+    void collect_tables(std::set<std::string>& out) const override {
+        out.insert(table);
+    }
+};
+
+struct RAFilter : RANode {
+    RAPtr child;
+    /// Equality predicates extractable from this filter.
+    std::vector<ResolvedPredicate> predicates;
+    /// True if the filter contains terms we couldn't analyze.
+    /// When true, we can still use extracted predicates but must
+    /// conservatively assume non-analyzed terms could match anything.
+    bool has_opaque_terms = false;
+    /// All column references in the filter expression (including
+    /// columns in predicates and opaque terms).
+    ColumnRefSet columns_read;
+
+    RAFilter(RAPtr c) : child(std::move(c)) { kind = Filter; }
+    void collect_tables(std::set<std::string>& out) const override {
+        child->collect_tables(out);
+    }
+};
+
+struct RAProject : RANode {
+    RAPtr child;
+    /// Column references in the SELECT list.
+    ColumnRefSet columns_read;
+
+    RAProject(RAPtr c) : child(std::move(c)) { kind = Project; }
+    void collect_tables(std::set<std::string>& out) const override {
+        child->collect_tables(out);
+    }
+};
+
+/// A column equivalence from an equijoin ON clause:
+/// left_table.left_column = right_table.right_column.
+struct JoinEquality {
+    std::string left_table;
+    std::string left_column;
+    int         left_index;    // column position (-1 if unknown)
+    std::string right_table;
+    std::string right_column;
+    int         right_index;   // column position (-1 if unknown)
+};
+
+struct RAJoin : RANode {
+    RAPtr left, right;
+    /// Equijoin conditions extracted from the ON clause.
+    std::vector<JoinEquality> equalities;
+    /// All column references in ON expressions.
+    ColumnRefSet columns_read;
+
+    RAJoin(RAPtr l, RAPtr r) : left(std::move(l)), right(std::move(r)) {
+        kind = Join;
+    }
+    void collect_tables(std::set<std::string>& out) const override {
+        left->collect_tables(out);
+        right->collect_tables(out);
+    }
+};
+
+struct RAAggregate : RANode {
+    RAPtr child;
+    /// Column references in GROUP BY / aggregate expressions.
+    ColumnRefSet columns_read;
+
+    RAAggregate(RAPtr c) : child(std::move(c)) { kind = Aggregate; }
+    void collect_tables(std::set<std::string>& out) const override {
+        child->collect_tables(out);
+    }
+};
+
+struct RASetOp : RANode {
+    RAPtr left, right;
+    RASetOp(RAPtr l, RAPtr r) : left(std::move(l)), right(std::move(r)) {
+        kind = SetOp;
+    }
+    void collect_tables(std::set<std::string>& out) const override {
+        left->collect_tables(out);
+        right->collect_tables(out);
+    }
+};
+
+// ── Alias resolution scope ─────────────────────────────────────
+
+/// Maps alias → real table name within a FROM clause scope.
+using AliasMap = std::unordered_map<std::string, std::string>;
+
+/// Resolve a possibly-aliased table reference to the real table name.
+std::string resolve_table(const AliasMap& aliases, const std::string& name) {
+    auto it = aliases.find(name);
+    return (it != aliases.end()) ? it->second : name;
+}
+
+/// Resolve an unqualified column name to a table. Returns empty string
+/// if ambiguous or not found.
+std::string resolve_unqualified_column(
+        const SchemaMap& schema, const AliasMap& aliases,
+        const std::string& column) {
+    std::string found;
+    // Check all tables in scope (values of alias map + any direct table refs).
+    std::set<std::string> tables_in_scope;
+    for (const auto& [alias, table] : aliases) {
+        tables_in_scope.insert(table);
+    }
+    for (const auto& table : tables_in_scope) {
+        auto it = schema.find(table);
+        if (it == schema.end()) continue;
+        for (const auto& ci : it->second) {
+            if (ci.name == column) {
+                if (!found.empty() && found != table) return {};  // ambiguous
+                found = table;
+            }
+        }
+    }
+    return found;
+}
+
+// ── AST → RA transform ────────────────────────────────────────
+
+/// Convert a liteparser expression literal to a sqlpipe::Value.
+Value lp_literal_to_value(const LpNode* node) {
+    switch (node->kind) {
+        case LP_EXPR_LITERAL_INT:
+            return static_cast<std::int64_t>(
+                std::strtoll(node->u.literal.value, nullptr, 10));
+        case LP_EXPR_LITERAL_FLOAT:
+            return std::strtod(node->u.literal.value, nullptr);
+        case LP_EXPR_LITERAL_STRING:
+            return std::string(node->u.literal.value);
+        case LP_EXPR_LITERAL_NULL:
+            return std::monostate{};
+        case LP_EXPR_LITERAL_BLOB: {
+            // Blob literals: X'hex...'
+            const char* hex = node->u.literal.value;
+            std::vector<std::uint8_t> blob;
+            size_t len = std::strlen(hex);
+            blob.reserve(len / 2);
+            for (size_t i = 0; i + 1 < len; i += 2) {
+                char buf[3] = {hex[i], hex[i+1], 0};
+                blob.push_back(
+                    static_cast<std::uint8_t>(std::strtoul(buf, nullptr, 16)));
+            }
+            return blob;
+        }
+        case LP_EXPR_LITERAL_BOOL:
+            return static_cast<std::int64_t>(
+                node->u.literal.value[0] == '1' ||
+                node->u.literal.value[0] == 't' ||
+                node->u.literal.value[0] == 'T' ? 1 : 0);
+        default:
+            return std::monostate{};
+    }
+}
+
+/// Check if a liteparser node is a literal value.
+bool is_literal(const LpNode* node) {
+    return node && (
+        node->kind == LP_EXPR_LITERAL_INT ||
+        node->kind == LP_EXPR_LITERAL_FLOAT ||
+        node->kind == LP_EXPR_LITERAL_STRING ||
+        node->kind == LP_EXPR_LITERAL_NULL ||
+        node->kind == LP_EXPR_LITERAL_BLOB ||
+        node->kind == LP_EXPR_LITERAL_BOOL);
+}
+
+/// Check if a liteparser node is a column reference.
+bool is_column_ref(const LpNode* node) {
+    return node && node->kind == LP_EXPR_COLUMN_REF;
+}
+
+/// Extract equality predicates from a WHERE expression.
+/// Walks AND-connected terms looking for `column = literal` patterns.
+/// Walk an AST expression and collect all column references.
+void collect_expr_columns(const LpNode* expr, const SchemaMap& schema,
+                          const AliasMap& aliases, ColumnRefSet& out) {
+    if (!expr) return;
+    switch (expr->kind) {
+        case LP_EXPR_COLUMN_REF: {
+            std::string table, col;
+            col = expr->u.column_ref.column;
+            if (expr->u.column_ref.table) {
+                table = resolve_table(aliases,
+                    std::string(expr->u.column_ref.table));
+            } else {
+                table = resolve_unqualified_column(schema, aliases, col);
+            }
+            if (!table.empty()) {
+                int idx = column_index(schema, table, col);
+                if (idx >= 0) out.insert({table, idx});
+            }
+            break;
+        }
+        case LP_EXPR_STAR: {
+            // SELECT * or table.* — all columns of the referenced table(s).
+            if (expr->u.star.table) {
+                std::string table = resolve_table(aliases,
+                    std::string(expr->u.star.table));
+                auto it = schema.find(table);
+                if (it != schema.end()) {
+                    for (const auto& ci : it->second) {
+                        out.insert({table, ci.index});
+                    }
+                }
+            } else {
+                // Bare * — all columns of all tables in scope.
+                for (const auto& [alias, table] : aliases) {
+                    auto it = schema.find(table);
+                    if (it != schema.end()) {
+                        for (const auto& ci : it->second) {
+                            out.insert({table, ci.index});
+                        }
+                    }
+                }
+            }
+            break;
+        }
+        case LP_EXPR_BINARY_OP:
+            collect_expr_columns(expr->u.binary.left, schema, aliases, out);
+            collect_expr_columns(expr->u.binary.right, schema, aliases, out);
+            break;
+        case LP_EXPR_UNARY_OP:
+            collect_expr_columns(expr->u.unary.operand, schema, aliases, out);
+            break;
+        case LP_EXPR_FUNCTION:
+            for (int i = 0; i < expr->u.function.args.count; ++i) {
+                collect_expr_columns(
+                    expr->u.function.args.items[i], schema, aliases, out);
+            }
+            break;
+        case LP_EXPR_CAST:
+            collect_expr_columns(expr->u.cast.expr, schema, aliases, out);
+            break;
+        case LP_EXPR_BETWEEN:
+            collect_expr_columns(expr->u.between.expr, schema, aliases, out);
+            collect_expr_columns(expr->u.between.low, schema, aliases, out);
+            collect_expr_columns(expr->u.between.high, schema, aliases, out);
+            break;
+        case LP_EXPR_IN:
+            collect_expr_columns(expr->u.in.expr, schema, aliases, out);
+            for (int i = 0; i < expr->u.in.values.count; ++i) {
+                collect_expr_columns(
+                    expr->u.in.values.items[i], schema, aliases, out);
+            }
+            break;
+        case LP_EXPR_CASE:
+            collect_expr_columns(expr->u.case_.operand, schema, aliases, out);
+            for (int i = 0; i < expr->u.case_.when_exprs.count; ++i) {
+                collect_expr_columns(
+                    expr->u.case_.when_exprs.items[i], schema, aliases, out);
+            }
+            collect_expr_columns(expr->u.case_.else_expr, schema, aliases, out);
+            break;
+        case LP_EXPR_COLLATE:
+            collect_expr_columns(expr->u.collate.expr, schema, aliases, out);
+            break;
+        case LP_EXPR_SUBQUERY:
+            // Subquery — conservatively don't descend. The subquery's
+            // dependencies are handled when/if we analyze it separately.
+            break;
+        case LP_EXPR_EXISTS:
+            break;
+        default:
+            break;
+    }
+}
+
+/// Resolve a column reference to (table, column, column_index).
+/// Returns false if resolution fails.
+bool resolve_column(const LpNode* col_node, const SchemaMap& schema,
+                    const AliasMap& aliases, std::string& table_out,
+                    std::string& col_out, int& idx_out) {
+    if (!is_column_ref(col_node)) return false;
+    col_out = col_node->u.column_ref.column;
+    if (col_node->u.column_ref.table) {
+        table_out = resolve_table(aliases,
+            std::string(col_node->u.column_ref.table));
+    } else {
+        table_out = resolve_unqualified_column(schema, aliases, col_out);
+    }
+    if (table_out.empty()) return false;
+    idx_out = column_index(schema, table_out, col_out);
+    return true;
+}
+
+/// Map liteparser binary op to CheckOp. Returns nullopt for non-comparison ops.
+std::optional<CheckOp> binop_to_checkop(LpBinOp op) {
+    switch (op) {
+        case LP_OP_EQ:  return CheckOp::Eq;
+        case LP_OP_NE:  return CheckOp::Ne;
+        case LP_OP_LT:  return CheckOp::Lt;
+        case LP_OP_LE:  return CheckOp::Le;
+        case LP_OP_GT:  return CheckOp::Gt;
+        case LP_OP_GE:  return CheckOp::Ge;
+        case LP_OP_IS:  return CheckOp::Eq;  // IS is like = for non-NULL
+        case LP_OP_ISNOT: return CheckOp::Ne;
+        default:        return std::nullopt;
+    }
+}
+
+/// Flip a comparison op (for normalizing literal on left).
+CheckOp flip_checkop(CheckOp op) {
+    switch (op) {
+        case CheckOp::Lt: return CheckOp::Gt;
+        case CheckOp::Le: return CheckOp::Ge;
+        case CheckOp::Gt: return CheckOp::Lt;
+        case CheckOp::Ge: return CheckOp::Le;
+        default: return op;  // Eq, Ne are symmetric
+    }
+}
+
+void extract_predicates(
+        const LpNode* expr,
+        const SchemaMap& schema,
+        const AliasMap& aliases,
+        std::vector<ResolvedPredicate>& out,
+        bool& has_opaque) {
+    if (!expr) return;
+
+    // AND → recurse into branches.
+    if (expr->kind == LP_EXPR_BINARY_OP && expr->u.binary.op == LP_OP_AND) {
+        extract_predicates(
+            expr->u.binary.left, schema, aliases, out, has_opaque);
+        extract_predicates(
+            expr->u.binary.right, schema, aliases, out, has_opaque);
+        return;
+    }
+
+    // OR → try to merge equalities on the same column into InList.
+    // e.g., x = 1 OR x = 2 OR x = 3 → InList(x, {1, 2, 3}).
+    // Nested ORs are flattened: OR(OR(a=1, a=2), a=3) → {1, 2, 3}.
+    if (expr->kind == LP_EXPR_BINARY_OP && expr->u.binary.op == LP_OP_OR) {
+        // Collect all equality leaves from the OR tree.
+        struct EqLeaf { std::string table; std::string col; int idx; Value val; };
+        std::vector<EqLeaf> leaves;
+        bool all_eq = true;
+
+        std::function<void(const LpNode*)> collect_or = [&](const LpNode* n) {
+            if (!n) { all_eq = false; return; }
+            if (n->kind == LP_EXPR_BINARY_OP && n->u.binary.op == LP_OP_OR) {
+                collect_or(n->u.binary.left);
+                collect_or(n->u.binary.right);
+                return;
+            }
+            // Must be column = literal.
+            if (n->kind == LP_EXPR_BINARY_OP &&
+                (n->u.binary.op == LP_OP_EQ || n->u.binary.op == LP_OP_IS)) {
+                const LpNode* lhs = n->u.binary.left;
+                const LpNode* rhs = n->u.binary.right;
+                if (is_literal(lhs) && is_column_ref(rhs)) std::swap(lhs, rhs);
+                if (is_column_ref(lhs) && is_literal(rhs) &&
+                    rhs->kind != LP_EXPR_LITERAL_NULL) {
+                    std::string table, col;
+                    int idx;
+                    if (resolve_column(lhs, schema, aliases, table, col, idx)) {
+                        leaves.push_back({table, col, idx,
+                                          lp_literal_to_value(rhs)});
+                        return;
+                    }
+                }
+            }
+            all_eq = false;
+        };
+        collect_or(expr);
+
+        if (all_eq && !leaves.empty()) {
+            // Check all leaves reference the same (table, column).
+            bool same_col = true;
+            for (size_t i = 1; i < leaves.size(); ++i) {
+                if (leaves[i].table != leaves[0].table ||
+                    leaves[i].col != leaves[0].col) {
+                    same_col = false;
+                    break;
+                }
+            }
+            if (same_col) {
+                std::vector<Value> vals;
+                vals.reserve(leaves.size());
+                for (auto& l : leaves) vals.push_back(std::move(l.val));
+                out.push_back({leaves[0].table, leaves[0].col, leaves[0].idx,
+                               CheckOp::InList, {}, std::move(vals)});
+                return;
+            }
+        }
+        // OR branches we can't merge → opaque.
+        has_opaque = true;
+        return;
+    }
+
+    // Comparison operators: =, !=, <, <=, >, >=, IS, IS NOT.
+    if (expr->kind == LP_EXPR_BINARY_OP) {
+        auto check_op = binop_to_checkop(expr->u.binary.op);
+        if (check_op) {
+            const LpNode* lhs = expr->u.binary.left;
+            const LpNode* rhs = expr->u.binary.right;
+
+            // IS NULL / IS NOT NULL: must check before general comparison
+            // because is_literal() matches LP_EXPR_LITERAL_NULL, and
+            // we need IsNull/IsNotNull opcodes (not Eq/Ne which return
+            // NULL under three-valued logic).
+            if (expr->u.binary.op == LP_OP_IS ||
+                expr->u.binary.op == LP_OP_ISNOT) {
+                // Normalize: column on left.
+                if (rhs && rhs->kind == LP_EXPR_LITERAL_NULL &&
+                    is_column_ref(lhs)) {
+                    std::string table, col;
+                    int idx;
+                    if (resolve_column(lhs, schema, aliases, table, col, idx)) {
+                        auto op = (expr->u.binary.op == LP_OP_IS)
+                            ? CheckOp::IsNull : CheckOp::IsNotNull;
+                        out.push_back({table, col, idx, op, {}, {}});
+                        return;
+                    }
+                }
+                if (lhs && lhs->kind == LP_EXPR_LITERAL_NULL &&
+                    is_column_ref(rhs)) {
+                    std::string table, col;
+                    int idx;
+                    if (resolve_column(rhs, schema, aliases, table, col, idx)) {
+                        auto op = (expr->u.binary.op == LP_OP_IS)
+                            ? CheckOp::IsNull : CheckOp::IsNotNull;
+                        out.push_back({table, col, idx, op, {}, {}});
+                        return;
+                    }
+                }
+            }
+
+            // General comparison: column <op> literal.
+            // Normalize: column on left, literal on right.
+            bool flipped = false;
+            if (is_literal(lhs) && is_column_ref(rhs)) {
+                std::swap(lhs, rhs);
+                flipped = true;
+            }
+
+            if (is_column_ref(lhs) && is_literal(rhs) &&
+                rhs->kind != LP_EXPR_LITERAL_NULL) {
+                // Skip NULL literals here — they're handled above as IS/IS NOT.
+                std::string table, col;
+                int idx;
+                if (resolve_column(lhs, schema, aliases, table, col, idx)) {
+                    auto op = flipped ? flip_checkop(*check_op) : *check_op;
+                    out.push_back({table, col, idx, op,
+                                   lp_literal_to_value(rhs), {}});
+                    return;
+                }
+            }
+        }
+    }
+
+    // IN / NOT IN list: column [NOT] IN (val1, val2, ...).
+    if (expr->kind == LP_EXPR_IN) {
+        const LpNode* col_expr = expr->u.in.expr;
+        // Only handle literal value lists (not subqueries).
+        if (is_column_ref(col_expr) && !expr->u.in.select &&
+            expr->u.in.values.count > 0) {
+            std::string table, col;
+            int idx;
+            if (resolve_column(col_expr, schema, aliases, table, col, idx)) {
+                // Check all values are literals.
+                std::vector<Value> vals;
+                bool all_literal = true;
+                for (int i = 0; i < expr->u.in.values.count; ++i) {
+                    if (is_literal(expr->u.in.values.items[i])) {
+                        vals.push_back(
+                            lp_literal_to_value(expr->u.in.values.items[i]));
+                    } else {
+                        all_literal = false;
+                        break;
+                    }
+                }
+                if (all_literal) {
+                    out.push_back({table, col, idx, CheckOp::InList,
+                                   {}, std::move(vals), expr->u.in.is_not != 0});
+                    return;
+                }
+            }
+        }
+    }
+
+    // BETWEEN: column BETWEEN low AND high → column >= low AND column <= high.
+    // NOT BETWEEN: treated as opaque (requires OR composition in the program).
+    if (expr->kind == LP_EXPR_BETWEEN && !expr->u.between.is_not) {
+        const LpNode* col_expr = expr->u.between.expr;
+        if (is_column_ref(col_expr) &&
+            is_literal(expr->u.between.low) &&
+            is_literal(expr->u.between.high)) {
+            std::string table, col;
+            int idx;
+            if (resolve_column(col_expr, schema, aliases, table, col, idx)) {
+                out.push_back({table, col, idx, CheckOp::Ge,
+                               lp_literal_to_value(expr->u.between.low), {}});
+                out.push_back({table, col, idx, CheckOp::Le,
+                               lp_literal_to_value(expr->u.between.high), {}});
+                return;
+            }
+        }
+    }
+
+    // ISNULL / NOTNULL unary expressions.
+    // These appear as expr kind LP_EXPR_UNARY_OP with various forms.
+    // liteparser may represent `x IS NULL` as a binary IS op (handled above).
+    // For explicit `x ISNULL` / `x NOTNULL`, check unary forms if needed.
+
+    // Any term we couldn't extract is opaque.
+    has_opaque = true;
+}
+
+/// Extract column=column equalities from a JOIN ON expression.
+void extract_join_equalities(
+        const LpNode* expr,
+        const SchemaMap& schema,
+        const AliasMap& aliases,
+        std::vector<JoinEquality>& out) {
+    if (!expr) return;
+
+    if (expr->kind == LP_EXPR_BINARY_OP && expr->u.binary.op == LP_OP_AND) {
+        extract_join_equalities(
+            expr->u.binary.left, schema, aliases, out);
+        extract_join_equalities(
+            expr->u.binary.right, schema, aliases, out);
+        return;
+    }
+
+    if (expr->kind == LP_EXPR_BINARY_OP && expr->u.binary.op == LP_OP_EQ) {
+        const LpNode* lhs = expr->u.binary.left;
+        const LpNode* rhs = expr->u.binary.right;
+
+        // Both sides must be column references for an equijoin.
+        if (is_column_ref(lhs) && is_column_ref(rhs)) {
+            std::string lt, lc, rt, rc;
+            lc = lhs->u.column_ref.column;
+            rc = rhs->u.column_ref.column;
+
+            if (lhs->u.column_ref.table) {
+                lt = resolve_table(aliases,
+                    std::string(lhs->u.column_ref.table));
+            } else {
+                lt = resolve_unqualified_column(schema, aliases, lc);
+            }
+            if (rhs->u.column_ref.table) {
+                rt = resolve_table(aliases,
+                    std::string(rhs->u.column_ref.table));
+            } else {
+                rt = resolve_unqualified_column(schema, aliases, rc);
+            }
+
+            if (!lt.empty() && !rt.empty()) {
+                int li = column_index(schema, lt, lc);
+                int ri = column_index(schema, rt, rc);
+                out.push_back({lt, lc, li, rt, rc, ri});
+            }
+        }
+    }
+}
+
+/// Build equijoins from USING clause columns.
+void extract_using_equalities(
+        const LpNodeList& using_cols,
+        const LpNode* left_from,
+        const LpNode* right_from,
+        const SchemaMap& schema,
+        const AliasMap& aliases,
+        std::vector<JoinEquality>& out) {
+    // Resolve table names from the immediate FROM items.
+    auto resolve_from = [&](const LpNode* from) -> std::string {
+        if (from && from->kind == LP_FROM_TABLE) {
+            std::string name = from->u.from_table.name;
+            if (from->u.from_table.alias) {
+                return resolve_table(aliases,
+                    std::string(from->u.from_table.alias));
+            }
+            return name;
+        }
+        return {};
+    };
+
+    // For USING, we need the table names from both sides.
+    // For nested joins, the "table" is the result of the join —
+    // we'd need to search deeper. For now, handle the simple case.
+    std::string lt = resolve_from(left_from);
+    std::string rt = resolve_from(right_from);
+    if (lt.empty() || rt.empty()) return;
+
+    for (int i = 0; i < using_cols.count; ++i) {
+        const LpNode* col_node = using_cols.items[i];
+        if (!col_node) continue;
+        // USING columns are column references or identifiers.
+        std::string col;
+        if (col_node->kind == LP_EXPR_COLUMN_REF) {
+            col = col_node->u.column_ref.column;
+        } else if (col_node->kind == LP_EXPR_LITERAL_STRING) {
+            col = col_node->u.literal.value;
+        }
+        if (col.empty()) continue;
+
+        int li = column_index(schema, lt, col);
+        int ri = column_index(schema, rt, col);
+        if (li >= 0 && ri >= 0) {
+            out.push_back({lt, col, li, rt, col, ri});
+        }
+    }
+}
+
+/// Build equijoins from NATURAL join by finding matching column names.
+void extract_natural_equalities(
+        const LpNode* left_from,
+        const LpNode* right_from,
+        const SchemaMap& schema,
+        const AliasMap& aliases,
+        std::vector<JoinEquality>& out) {
+    auto resolve_from = [&](const LpNode* from) -> std::string {
+        if (from && from->kind == LP_FROM_TABLE) {
+            if (from->u.from_table.alias) {
+                return resolve_table(aliases,
+                    std::string(from->u.from_table.alias));
+            }
+            return std::string(from->u.from_table.name);
+        }
+        return {};
+    };
+
+    std::string lt = resolve_from(left_from);
+    std::string rt = resolve_from(right_from);
+    if (lt.empty() || rt.empty()) return;
+
+    auto lit = schema.find(lt);
+    auto rit = schema.find(rt);
+    if (lit == schema.end() || rit == schema.end()) return;
+
+    // Find columns present in both tables.
+    for (const auto& lci : lit->second) {
+        for (const auto& rci : rit->second) {
+            if (lci.name == rci.name) {
+                out.push_back({lt, lci.name, lci.index,
+                               rt, rci.name, rci.index});
+            }
+        }
+    }
+}
+
+/// Build the RA tree for a FROM clause (table refs and joins).
+RAPtr build_from(const LpNode* from, const SchemaMap& schema,
+                 AliasMap& aliases) {
+    if (!from) return nullptr;
+
+    if (from->kind == LP_FROM_TABLE) {
+        std::string table = from->u.from_table.name;
+        std::string alias = from->u.from_table.alias
+            ? from->u.from_table.alias : table;
+        aliases[alias] = table;
+        return std::make_unique<RAScan>(table);
+    }
+
+    if (from->kind == LP_FROM_SUBQUERY) {
+        // Subqueries in FROM: conservatively collect tables from the
+        // inner select. We don't push predicates into subqueries.
+        // For now, treat as opaque — the outer query depends on
+        // all tables the subquery references.
+        // TODO: recurse into subquery for deeper analysis.
+        return nullptr;
+    }
+
+    if (from->kind == LP_JOIN_CLAUSE) {
+        auto left = build_from(from->u.join.left, schema, aliases);
+        auto right = build_from(from->u.join.right, schema, aliases);
+        if (left && right) {
+            auto join = std::make_unique<RAJoin>(
+                std::move(left), std::move(right));
+
+            // Extract equijoin conditions and column refs from ON clause.
+            if (from->u.join.on_expr) {
+                extract_join_equalities(
+                    from->u.join.on_expr, schema, aliases,
+                    join->equalities);
+                collect_expr_columns(
+                    from->u.join.on_expr, schema, aliases,
+                    join->columns_read);
+            }
+
+            // USING clause → explicit equijoins.
+            if (from->u.join.using_columns.count > 0) {
+                extract_using_equalities(
+                    from->u.join.using_columns,
+                    from->u.join.left, from->u.join.right,
+                    schema, aliases, join->equalities);
+            }
+
+            // NATURAL join → equijoins on all matching column names.
+            if (from->u.join.join_type & LP_JOIN_NATURAL) {
+                extract_natural_equalities(
+                    from->u.join.left, from->u.join.right,
+                    schema, aliases, join->equalities);
+            }
+
+            return join;
+        }
+        return left ? std::move(left) : std::move(right);
+    }
+
+    return nullptr;
+}
+
+/// Extract implicit equijoin conditions from a WHERE expression.
+/// Finds column=column predicates where the two columns belong to
+/// different tables (comma-join style). These are added to the
+/// nearest enclosing Join node.
+void extract_implicit_equijoins(
+        const LpNode* expr,
+        const SchemaMap& schema,
+        const AliasMap& aliases,
+        std::vector<JoinEquality>& equijoins) {
+    if (!expr) return;
+
+    if (expr->kind == LP_EXPR_BINARY_OP && expr->u.binary.op == LP_OP_AND) {
+        extract_implicit_equijoins(
+            expr->u.binary.left, schema, aliases, equijoins);
+        extract_implicit_equijoins(
+            expr->u.binary.right, schema, aliases, equijoins);
+        return;
+    }
+
+    if (expr->kind == LP_EXPR_BINARY_OP && expr->u.binary.op == LP_OP_EQ) {
+        const LpNode* lhs = expr->u.binary.left;
+        const LpNode* rhs = expr->u.binary.right;
+        if (is_column_ref(lhs) && is_column_ref(rhs)) {
+            std::string lt, lc, rt, rc;
+            lc = lhs->u.column_ref.column;
+            rc = rhs->u.column_ref.column;
+
+            if (lhs->u.column_ref.table) {
+                lt = resolve_table(aliases,
+                    std::string(lhs->u.column_ref.table));
+            } else {
+                lt = resolve_unqualified_column(schema, aliases, lc);
+            }
+            if (rhs->u.column_ref.table) {
+                rt = resolve_table(aliases,
+                    std::string(rhs->u.column_ref.table));
+            } else {
+                rt = resolve_unqualified_column(schema, aliases, rc);
+            }
+
+            // Only capture cross-table equalities (implicit joins).
+            if (!lt.empty() && !rt.empty() && lt != rt) {
+                int li = column_index(schema, lt, lc);
+                int ri = column_index(schema, rt, rc);
+                equijoins.push_back({lt, lc, li, rt, rc, ri});
+            }
+        }
+    }
+}
+
+// ── RA optimization passes ─────────────────────────────────────
+
+/// Collect the set of tables reachable from an RA subtree.
+std::set<std::string> tables_of(const RANode* node) {
+    std::set<std::string> t;
+    if (node) node->collect_tables(t);
+    return t;
+}
+
+/// Check if a predicate's table is reachable from an RA subtree.
+bool predicate_applies_to(const ResolvedPredicate& pred, const RANode* node) {
+    auto t = tables_of(node);
+    return t.count(pred.table) > 0;
+}
+
+/// Push Filter predicates down through the RA tree toward Scan nodes.
+/// Returns the optimized tree. Modifies the tree in place where possible.
+RAPtr push_filters_down(RAPtr node) {
+    if (!node) return nullptr;
+
+    switch (node->kind) {
+        case RANode::Filter: {
+            auto* f = static_cast<RAFilter*>(node.get());
+            // First, recursively optimize the child.
+            f->child = push_filters_down(std::move(f->child));
+
+            // If child is a Join, try to push predicates into the
+            // join's left or right subtree.
+            if (f->child && f->child->kind == RANode::Join) {
+                auto* j = static_cast<RAJoin*>(f->child.get());
+                std::vector<ResolvedPredicate> remaining;
+
+                for (auto& pred : f->predicates) {
+                    bool pushed = false;
+                    // Can push to left if predicate's table is in left subtree.
+                    if (predicate_applies_to(pred, j->left.get()) &&
+                        !predicate_applies_to(pred, j->right.get())) {
+                        // Wrap left in a Filter with this predicate.
+                        auto lf = std::make_unique<RAFilter>(std::move(j->left));
+                        lf->predicates.push_back(std::move(pred));
+                        j->left = push_filters_down(std::move(lf));
+                        pushed = true;
+                    }
+                    // Can push to right if predicate's table is in right subtree.
+                    else if (predicate_applies_to(pred, j->right.get()) &&
+                             !predicate_applies_to(pred, j->left.get())) {
+                        auto rf = std::make_unique<RAFilter>(std::move(j->right));
+                        rf->predicates.push_back(std::move(pred));
+                        j->right = push_filters_down(std::move(rf));
+                        pushed = true;
+                    }
+
+                    if (!pushed) {
+                        remaining.push_back(std::move(pred));
+                    }
+                }
+
+                f->predicates = std::move(remaining);
+
+                // If all predicates were pushed down, elide the empty Filter.
+                if (f->predicates.empty() && !f->has_opaque_terms) {
+                    return std::move(f->child);
+                }
+            }
+
+            // If child is a Project, push through it (project doesn't filter).
+            if (f->child && f->child->kind == RANode::Project) {
+                auto* p = static_cast<RAProject*>(f->child.get());
+                // Move filter below project: Filter(Project(x)) → Project(Filter(x))
+                auto inner = std::move(p->child);
+                auto new_filter = std::make_unique<RAFilter>(std::move(inner));
+                new_filter->predicates = std::move(f->predicates);
+                new_filter->has_opaque_terms = f->has_opaque_terms;
+                p->child = push_filters_down(std::move(new_filter));
+                return std::move(f->child);
+            }
+
+            return std::move(node);
+        }
+
+        case RANode::Join: {
+            auto* j = static_cast<RAJoin*>(node.get());
+            j->left = push_filters_down(std::move(j->left));
+            j->right = push_filters_down(std::move(j->right));
+            return std::move(node);
+        }
+
+        case RANode::Project: {
+            auto* p = static_cast<RAProject*>(node.get());
+            p->child = push_filters_down(std::move(p->child));
+            return std::move(node);
+        }
+
+        case RANode::Aggregate: {
+            auto* a = static_cast<RAAggregate*>(node.get());
+            a->child = push_filters_down(std::move(a->child));
+            return std::move(node);
+        }
+
+        case RANode::SetOp: {
+            auto* s = static_cast<RASetOp*>(node.get());
+            s->left = push_filters_down(std::move(s->left));
+            s->right = push_filters_down(std::move(s->right));
+            return std::move(node);
+        }
+
+        default:
+            return std::move(node);
+    }
+}
+
+/// Create per-predicate Filter nodes from a Filter with multiple predicates.
+/// Filter({a.x=1, b.y=2}, child) → Filter(a.x=1, Filter(b.y=2, child))
+RAPtr split_filters(RAPtr node) {
+    if (!node) return nullptr;
+
+    switch (node->kind) {
+        case RANode::Filter: {
+            auto* f = static_cast<RAFilter*>(node.get());
+            f->child = split_filters(std::move(f->child));
+
+            if (f->predicates.size() <= 1) return std::move(node);
+
+            // Build a chain: innermost first.
+            RAPtr result = std::move(f->child);
+            for (auto& pred : f->predicates) {
+                auto new_f = std::make_unique<RAFilter>(std::move(result));
+                new_f->predicates.push_back(std::move(pred));
+                result = std::move(new_f);
+            }
+            // If the original had opaque terms, add an opaque filter at top.
+            if (f->has_opaque_terms) {
+                auto opaque = std::make_unique<RAFilter>(std::move(result));
+                opaque->has_opaque_terms = true;
+                result = std::move(opaque);
+            }
+            return result;
+        }
+
+        case RANode::Join: {
+            auto* j = static_cast<RAJoin*>(node.get());
+            j->left = split_filters(std::move(j->left));
+            j->right = split_filters(std::move(j->right));
+            return std::move(node);
+        }
+
+        case RANode::Project: {
+            auto* p = static_cast<RAProject*>(node.get());
+            p->child = split_filters(std::move(p->child));
+            return std::move(node);
+        }
+
+        case RANode::Aggregate: {
+            auto* a = static_cast<RAAggregate*>(node.get());
+            a->child = split_filters(std::move(a->child));
+            return std::move(node);
+        }
+
+        case RANode::SetOp: {
+            auto* s = static_cast<RASetOp*>(node.get());
+            s->left = split_filters(std::move(s->left));
+            s->right = split_filters(std::move(s->right));
+            return std::move(node);
+        }
+
+        default:
+            return std::move(node);
+    }
+}
+
+/// Add propagated predicates as new Filter nodes above relevant Scans.
+/// For each (table, predicate) derived from equijoin propagation,
+/// wraps the matching Scan in a Filter if one doesn't already exist.
+RAPtr inject_propagated_predicates(
+        RAPtr node,
+        const std::vector<ResolvedPredicate>& propagated) {
+    if (!node || propagated.empty()) return std::move(node);
+
+    switch (node->kind) {
+        case RANode::Scan: {
+            auto* s = static_cast<RAScan*>(node.get());
+            // Collect predicates for this table.
+            std::vector<ResolvedPredicate> mine;
+            for (const auto& p : propagated) {
+                if (p.table == s->table) mine.push_back(p);
+            }
+            if (mine.empty()) return std::move(node);
+            auto f = std::make_unique<RAFilter>(std::move(node));
+            f->predicates = std::move(mine);
+            return f;
+        }
+
+        case RANode::Filter: {
+            auto* f = static_cast<RAFilter*>(node.get());
+            f->child = inject_propagated_predicates(
+                std::move(f->child), propagated);
+            return std::move(node);
+        }
+
+        case RANode::Join: {
+            auto* j = static_cast<RAJoin*>(node.get());
+            j->left = inject_propagated_predicates(
+                std::move(j->left), propagated);
+            j->right = inject_propagated_predicates(
+                std::move(j->right), propagated);
+            return std::move(node);
+        }
+
+        case RANode::Project: {
+            auto* p = static_cast<RAProject*>(node.get());
+            p->child = inject_propagated_predicates(
+                std::move(p->child), propagated);
+            return std::move(node);
+        }
+
+        case RANode::Aggregate: {
+            auto* a = static_cast<RAAggregate*>(node.get());
+            a->child = inject_propagated_predicates(
+                std::move(a->child), propagated);
+            return std::move(node);
+        }
+
+        case RANode::SetOp: {
+            auto* s = static_cast<RASetOp*>(node.get());
+            s->left = inject_propagated_predicates(
+                std::move(s->left), propagated);
+            s->right = inject_propagated_predicates(
+                std::move(s->right), propagated);
+            return std::move(node);
+        }
+
+        default:
+            return std::move(node);
+    }
+}
+
+// RA-RA transforms for optimization.
+RAPtr optimize_ra(RAPtr ra);
+
+/// Transform a SELECT AST into an RA tree.
+RAPtr select_to_ra(const LpNode* select, const SchemaMap& schema,
+                   AliasMap& aliases) {
+    if (!select || select->kind != LP_STMT_SELECT) return nullptr;
+
+    // Build FROM (scans + joins), extracting equijoin conditions.
+    RAPtr ra = build_from(select->u.select.from, schema, aliases);
+    if (!ra) {
+        // No FROM clause — e.g. SELECT 1. No table dependencies.
+        return nullptr;
+    }
+
+    // WHERE → Filter with predicate extraction + implicit join detection.
+    if (select->u.select.where) {
+        auto filter = std::make_unique<RAFilter>(std::move(ra));
+        extract_predicates(
+            select->u.select.where, schema, aliases,
+            filter->predicates, filter->has_opaque_terms);
+        // Collect all column references in WHERE (including opaque terms).
+        collect_expr_columns(
+            select->u.select.where, schema, aliases, filter->columns_read);
+
+        // Extract implicit equijoin conditions (column=column across tables)
+        // from WHERE and add to the nearest Join node.
+        if (filter->child && filter->child->kind == RANode::Join) {
+            auto* j = static_cast<RAJoin*>(filter->child.get());
+            extract_implicit_equijoins(
+                select->u.select.where, schema, aliases,
+                j->equalities);
+        }
+
+        ra = std::move(filter);
+    }
+
+    // GROUP BY → Aggregate with column tracking.
+    if (select->u.select.group_by.count > 0) {
+        auto agg = std::make_unique<RAAggregate>(std::move(ra));
+        for (int i = 0; i < select->u.select.group_by.count; ++i) {
+            collect_expr_columns(
+                select->u.select.group_by.items[i], schema, aliases,
+                agg->columns_read);
+        }
+        ra = std::move(agg);
+    }
+
+    // HAVING → another Filter (on aggregated results).
+    if (select->u.select.having) {
+        auto filter = std::make_unique<RAFilter>(std::move(ra));
+        filter->has_opaque_terms = true;  // HAVING predicates are post-aggregate
+        collect_expr_columns(
+            select->u.select.having, schema, aliases, filter->columns_read);
+        ra = std::move(filter);
+    }
+
+    // SELECT list → Project with column tracking.
+    {
+        auto proj = std::make_unique<RAProject>(std::move(ra));
+        for (int i = 0; i < select->u.select.result_columns.count; ++i) {
+            auto* rc = select->u.select.result_columns.items[i];
+            if (rc && rc->kind == LP_RESULT_COLUMN) {
+                collect_expr_columns(
+                    rc->u.result_column.expr, schema, aliases,
+                    proj->columns_read);
+            }
+        }
+        // ORDER BY columns are also relevant — changing an ORDER BY column
+        // can reorder results, which changes the query output.
+        for (int i = 0; i < select->u.select.order_by.count; ++i) {
+            auto* ot = select->u.select.order_by.items[i];
+            if (ot && ot->kind == LP_ORDER_TERM) {
+                collect_expr_columns(
+                    ot->u.order_term.expr, schema, aliases,
+                    proj->columns_read);
+            }
+        }
+        ra = std::move(proj);
+    }
+
+    return ra;
+}
+
+/// Transform a compound SELECT (UNION/INTERSECT/EXCEPT) into an RA tree.
+RAPtr compound_to_ra(const LpNode* node, const SchemaMap& schema) {
+    if (node->kind == LP_STMT_SELECT) {
+        AliasMap aliases;
+        return select_to_ra(node, schema, aliases);
+    }
+    if (node->kind == LP_COMPOUND_SELECT) {
+        auto left = compound_to_ra(node->u.compound.left, schema);
+        auto right = compound_to_ra(node->u.compound.right, schema);
+        if (left && right) {
+            return std::make_unique<RASetOp>(std::move(left), std::move(right));
+        }
+        return left ? std::move(left) : std::move(right);
+    }
+    return nullptr;
+}
+
+/// Top-level: parse SQL, produce an RA tree, and optimize it.
+/// Returns nullptr if the SQL can't be analyzed (not a SELECT, parse error).
+RAPtr sql_to_ra(const std::string& sql, const SchemaMap& schema) {
+    arena_t* arena = arena_create(4096);
+    if (!arena) return nullptr;
+    const char* err = nullptr;
+    LpNode* ast = lp_parse(sql.c_str(), arena, &err);
+    if (!ast) {
+        arena_destroy(arena);
+        return nullptr;
+    }
+
+    RAPtr ra;
+    if (ast->kind == LP_STMT_SELECT) {
+        AliasMap aliases;
+        ra = select_to_ra(ast, schema, aliases);
+    } else if (ast->kind == LP_COMPOUND_SELECT) {
+        ra = compound_to_ra(ast, schema);
+    }
+
+    arena_destroy(arena);
+
+    // Optimize: propagate predicates through equijoins, split, push to leaves.
+    ra = optimize_ra(std::move(ra));
+
+    return ra;
+}
+
+/// Collect all equality predicates from an RA tree (from all Filter nodes).
+/// Collect all column references from the RA tree.
+void collect_all_columns(const RANode* node, ColumnRefSet& out) {
+    if (!node) return;
+    switch (node->kind) {
+        case RANode::Scan:
+            break;  // Scan itself doesn't read columns; parent nodes do.
+        case RANode::Filter: {
+            auto* f = static_cast<const RAFilter*>(node);
+            out.insert(f->columns_read.begin(), f->columns_read.end());
+            // Also include predicate columns.
+            for (const auto& pred : f->predicates) {
+                if (pred.column_index >= 0)
+                    out.insert({pred.table, pred.column_index});
+            }
+            collect_all_columns(f->child.get(), out);
+            break;
+        }
+        case RANode::Project: {
+            auto* p = static_cast<const RAProject*>(node);
+            out.insert(p->columns_read.begin(), p->columns_read.end());
+            collect_all_columns(p->child.get(), out);
+            break;
+        }
+        case RANode::Join: {
+            auto* j = static_cast<const RAJoin*>(node);
+            out.insert(j->columns_read.begin(), j->columns_read.end());
+            for (const auto& eq : j->equalities) {
+                if (eq.left_index >= 0) out.insert({eq.left_table, eq.left_index});
+                if (eq.right_index >= 0) out.insert({eq.right_table, eq.right_index});
+            }
+            collect_all_columns(j->left.get(), out);
+            collect_all_columns(j->right.get(), out);
+            break;
+        }
+        case RANode::Aggregate: {
+            auto* a = static_cast<const RAAggregate*>(node);
+            out.insert(a->columns_read.begin(), a->columns_read.end());
+            collect_all_columns(a->child.get(), out);
+            break;
+        }
+        case RANode::SetOp: {
+            auto* s = static_cast<const RASetOp*>(node);
+            collect_all_columns(s->left.get(), out);
+            collect_all_columns(s->right.get(), out);
+            break;
+        }
+        default:
+            break;
+    }
+}
+
+/// Get the set of column indices referenced by a query for a specific table.
+std::set<int> columns_for_table(const RANode* ra, const std::string& table) {
+    ColumnRefSet all;
+    collect_all_columns(ra, all);
+    std::set<int> result;
+    for (const auto& cr : all) {
+        if (cr.table == table) result.insert(cr.column_index);
+    }
+    return result;
+}
+
+void collect_predicates(const RANode* node,
+                        std::vector<ResolvedPredicate>& out) {
+    if (!node) return;
+    switch (node->kind) {
+        case RANode::Filter: {
+            auto* f = static_cast<const RAFilter*>(node);
+            out.insert(out.end(), f->predicates.begin(), f->predicates.end());
+            collect_predicates(f->child.get(), out);
+            break;
+        }
+        case RANode::Project:
+            collect_predicates(
+                static_cast<const RAProject*>(node)->child.get(), out);
+            break;
+        case RANode::Aggregate:
+            collect_predicates(
+                static_cast<const RAAggregate*>(node)->child.get(), out);
+            break;
+        case RANode::Join: {
+            auto* j = static_cast<const RAJoin*>(node);
+            collect_predicates(j->left.get(), out);
+            collect_predicates(j->right.get(), out);
+            break;
+        }
+        case RANode::SetOp: {
+            auto* s = static_cast<const RASetOp*>(node);
+            collect_predicates(s->left.get(), out);
+            collect_predicates(s->right.get(), out);
+            break;
+        }
+        default:
+            break;
+    }
+}
+
+/// Collect all equijoin conditions from an RA tree.
+void collect_equijoins(const RANode* node,
+                       std::vector<JoinEquality>& out) {
+    if (!node) return;
+    switch (node->kind) {
+        case RANode::Join: {
+            auto* j = static_cast<const RAJoin*>(node);
+            out.insert(out.end(), j->equalities.begin(), j->equalities.end());
+            collect_equijoins(j->left.get(), out);
+            collect_equijoins(j->right.get(), out);
+            break;
+        }
+        case RANode::Filter:
+            collect_equijoins(
+                static_cast<const RAFilter*>(node)->child.get(), out);
+            break;
+        case RANode::Project:
+            collect_equijoins(
+                static_cast<const RAProject*>(node)->child.get(), out);
+            break;
+        case RANode::Aggregate:
+            collect_equijoins(
+                static_cast<const RAAggregate*>(node)->child.get(), out);
+            break;
+        case RANode::SetOp: {
+            auto* s = static_cast<const RASetOp*>(node);
+            collect_equijoins(s->left.get(), out);
+            collect_equijoins(s->right.get(), out);
+            break;
+        }
+        default:
+            break;
+    }
+}
+
+/// Propagate predicates through equijoin conditions.
+/// For each predicate {table.column = value} and equijoin
+/// {A.col1 = B.col2}, if table.column matches one side, derive
+/// a predicate for the other side.
+/// Repeats until no new predicates are derived (transitive closure).
+/// Check if two predicates are structurally identical.
+bool predicates_match(const ResolvedPredicate& a, const ResolvedPredicate& b) {
+    return a.table == b.table && a.column == b.column &&
+           a.op == b.op && a.value == b.value && a.values == b.values &&
+           a.negated == b.negated;
+}
+
+void propagate_predicates(
+        std::vector<ResolvedPredicate>& predicates,
+        const std::vector<JoinEquality>& equijoins) {
+    if (equijoins.empty()) return;
+
+    bool changed = true;
+    while (changed) {
+        changed = false;
+        for (const auto& eq : equijoins) {
+            for (size_t i = 0, n = predicates.size(); i < n; ++i) {
+                const auto& pred = predicates[i];
+
+                // Check if predicate matches the left side of the equijoin.
+                if (pred.table == eq.left_table &&
+                    pred.column == eq.left_column) {
+                    ResolvedPredicate derived{
+                        eq.right_table, eq.right_column,
+                        eq.right_index, pred.op, pred.value, pred.values};
+                    bool exists = false;
+                    for (const auto& p : predicates) {
+                        if (predicates_match(p, derived)) {
+                            exists = true; break;
+                        }
+                    }
+                    if (!exists) {
+                        predicates.push_back(std::move(derived));
+                        changed = true;
+                    }
+                }
+
+                // Check the right side.
+                if (pred.table == eq.right_table &&
+                    pred.column == eq.right_column) {
+                    ResolvedPredicate derived{
+                        eq.left_table, eq.left_column,
+                        eq.left_index, pred.op, pred.value, pred.values};
+                    bool exists = false;
+                    for (const auto& p : predicates) {
+                        if (predicates_match(p, derived)) {
+                            exists = true; break;
+                        }
+                    }
+                    if (!exists) {
+                        predicates.push_back(std::move(derived));
+                        changed = true;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Run all optimization passes on an RA tree:
+/// 1. Propagate predicates through equijoins
+/// 2. Inject propagated predicates at leaf Scans
+/// 3. Split multi-predicate Filters
+/// 4. Push Filters toward leaves
+RAPtr optimize_ra(RAPtr ra) {
+    if (!ra) return nullptr;
+
+    // Collect all predicates and equijoins.
+    std::vector<ResolvedPredicate> predicates;
+    collect_predicates(ra.get(), predicates);
+    std::vector<JoinEquality> equijoins;
+    collect_equijoins(ra.get(), equijoins);
+
+    // Propagate predicates through equijoins to derive new ones.
+    auto original_count = predicates.size();
+    propagate_predicates(predicates, equijoins);
+
+    // Inject any newly derived predicates at the relevant Scans.
+    if (predicates.size() > original_count) {
+        std::vector<ResolvedPredicate> new_preds(
+            predicates.begin() + static_cast<std::ptrdiff_t>(original_count),
+            predicates.end());
+        ra = inject_propagated_predicates(std::move(ra), new_preds);
+    }
+
+    // Split and push filters down.
+    ra = split_filters(std::move(ra));
+    ra = push_filters_down(std::move(ra));
+
+    return ra;
+}
+
+// ── Predicate VM ────────────────────────────────────────────────
+//
+// A small bytecode VM that evaluates subscription predicates against
+// changeset rows. Compiled once at subscribe time from the RA's
+// pushed-down Filter predicates. Evaluated per changeset row.
+//
+// The program is run twice per row — once against old values, once
+// against new values. If either run returns true, the subscription
+// is affected. This correctly handles AND semantics: all predicates
+// must match on the SAME row state (old or new), not across states.
+
+/// VM opcodes.
+enum class VMOp : std::uint8_t {
+    LoadCol,    // push column value; next byte = column index
+    ConstInt,   // push int64; next 8 bytes = value (LE)
+    ConstFloat, // push double; next 8 bytes = value (LE)
+    ConstStr,   // push string; next 2 bytes = length (LE), then chars
+    ConstNull,  // push null
+    ConstBlob,  // push blob; next 4 bytes = length (LE), then bytes
+    Eq,         // pop 2, push (a == b)
+    Ne,         // pop 2, push (a != b)
+    Lt,         // pop 2, push (a < b)
+    Le,         // pop 2, push (a <= b)
+    Gt,         // pop 2, push (a > b)
+    Ge,         // pop 2, push (a >= b)
+    IsNull,     // pop 1, push (a is null)
+    IsNotNull,  // pop 1, push (a is not null)
+    InList,     // next byte = count N; pop value + N items, push (value in items)
+    And,        // pop 2 bools, push (a && b)
+    Or,         // pop 2 bools, push (a || b)
+    Not,        // pop 1 bool, push (!a)
+    True,       // push true
+    Halt,       // stop; result = top of stack as bool
+};
+
+/// A compiled predicate program for one (subscription, table) pair.
+using Program = std::vector<std::uint8_t>;
+
+/// Compilation: emit helpers.
+void emit_op(Program& p, VMOp op) { p.push_back(static_cast<uint8_t>(op)); }
+void emit_u8(Program& p, uint8_t v) { p.push_back(v); }
+void emit_u16(Program& p, uint16_t v) {
+    p.push_back(v & 0xFF); p.push_back((v >> 8) & 0xFF);
+}
+void emit_i64(Program& p, int64_t v) {
+    auto u = static_cast<uint64_t>(v);
+    for (int i = 0; i < 8; ++i) p.push_back((u >> (i * 8)) & 0xFF);
+}
+void emit_f64(Program& p, double v) {
+    uint64_t u;
+    std::memcpy(&u, &v, 8);
+    for (int i = 0; i < 8; ++i) p.push_back((u >> (i * 8)) & 0xFF);
+}
+
+/// Emit a constant value push.
+void emit_const(Program& p, const Value& val) {
+    std::visit([&](const auto& v) {
+        using T = std::decay_t<decltype(v)>;
+        if constexpr (std::is_same_v<T, std::monostate>) {
+            emit_op(p, VMOp::ConstNull);
+        } else if constexpr (std::is_same_v<T, std::int64_t>) {
+            emit_op(p, VMOp::ConstInt);
+            emit_i64(p, v);
+        } else if constexpr (std::is_same_v<T, double>) {
+            emit_op(p, VMOp::ConstFloat);
+            emit_f64(p, v);
+        } else if constexpr (std::is_same_v<T, std::string>) {
+            emit_op(p, VMOp::ConstStr);
+            emit_u16(p, static_cast<uint16_t>(v.size()));
+            p.insert(p.end(), v.begin(), v.end());
+        } else if constexpr (std::is_same_v<T, std::vector<uint8_t>>) {
+            emit_op(p, VMOp::ConstBlob);
+            uint32_t len = static_cast<uint32_t>(v.size());
+            for (int i = 0; i < 4; ++i)
+                p.push_back((len >> (i * 8)) & 0xFF);
+            p.insert(p.end(), v.begin(), v.end());
+        }
+    }, val);
+}
+
+/// Emit a single predicate check: [LoadCol col][const value][cmp op].
+void emit_predicate(Program& p, const ResolvedPredicate& pred) {
+    if (pred.column_index < 0) {
+        // Unknown column → conservative: always true.
+        emit_op(p, VMOp::True);
+        return;
+    }
+
+    switch (pred.op) {
+        case CheckOp::Eq: case CheckOp::Ne:
+        case CheckOp::Lt: case CheckOp::Le:
+        case CheckOp::Gt: case CheckOp::Ge:
+            emit_op(p, VMOp::LoadCol);
+            emit_u8(p, static_cast<uint8_t>(pred.column_index));
+            emit_const(p, pred.value);
+            switch (pred.op) {
+                case CheckOp::Eq: emit_op(p, VMOp::Eq); break;
+                case CheckOp::Ne: emit_op(p, VMOp::Ne); break;
+                case CheckOp::Lt: emit_op(p, VMOp::Lt); break;
+                case CheckOp::Le: emit_op(p, VMOp::Le); break;
+                case CheckOp::Gt: emit_op(p, VMOp::Gt); break;
+                case CheckOp::Ge: emit_op(p, VMOp::Ge); break;
+                default: break;
+            }
+            break;
+        case CheckOp::IsNull:
+            emit_op(p, VMOp::LoadCol);
+            emit_u8(p, static_cast<uint8_t>(pred.column_index));
+            emit_op(p, VMOp::IsNull);
+            break;
+        case CheckOp::IsNotNull:
+            emit_op(p, VMOp::LoadCol);
+            emit_u8(p, static_cast<uint8_t>(pred.column_index));
+            emit_op(p, VMOp::IsNotNull);
+            break;
+        case CheckOp::InList:
+            // Push the column value, then all list values, then InList.
+            emit_op(p, VMOp::LoadCol);
+            emit_u8(p, static_cast<uint8_t>(pred.column_index));
+            for (const auto& v : pred.values) emit_const(p, v);
+            emit_op(p, VMOp::InList);
+            emit_u8(p, static_cast<uint8_t>(pred.values.size()));
+            break;
+    }
+    // Apply negation if set (e.g., NOT IN).
+    if (pred.negated) {
+        emit_op(p, VMOp::Not);
+    }
+}
+
+/// Compile predicates for a specific table into a bytecode program.
+/// All predicates for the table are AND-connected.
+/// Returns an empty program if no predicates apply (= always affected).
+/// Compile result: program bytecode and whether preloading is needed.
+struct CompileResult {
+    Program program;
+    bool    needs_preload = false;
+};
+
+CompileResult compile_predicates(
+        const std::vector<ResolvedPredicate>& predicates,
+        const std::string& table) {
+    // Collect predicates for this table.
+    std::vector<const ResolvedPredicate*> mine;
+    for (const auto& pred : predicates) {
+        if (pred.table == table && pred.column_index >= 0) {
+            mine.push_back(&pred);
+        }
+    }
+    if (mine.empty()) return {};  // no predicates → no program
+
+    // Check if predicates reference more than one distinct column.
+    // Multi-column predicates need preloading for UPDATE changesets.
+    std::set<int> pred_columns;
+    for (const auto* p : mine) pred_columns.insert(p->column_index);
+    bool needs_preload = pred_columns.size() > 1;
+
+    Program prog;
+    emit_predicate(prog, *mine[0]);
+    for (size_t i = 1; i < mine.size(); ++i) {
+        emit_predicate(prog, *mine[i]);
+        emit_op(prog, VMOp::And);
+    }
+    emit_op(prog, VMOp::Halt);
+    return {std::move(prog), needs_preload};
+}
+
+// ── VM evaluator ────────────────────────────────────────────────
+
+/// Convert a sqlite3_value to a sqlpipe::Value.
+Value sqlite3_value_to_value(sqlite3_value* v) {
+    if (!v) return std::monostate{};
+    switch (sqlite3_value_type(v)) {
+        case SQLITE_INTEGER:
+            return sqlite3_value_int64(v);
+        case SQLITE_FLOAT:
+            return sqlite3_value_double(v);
+        case SQLITE_TEXT: {
+            const char* t = reinterpret_cast<const char*>(
+                sqlite3_value_text(v));
+            return t ? std::string(t) : std::string{};
+        }
+        case SQLITE_BLOB: {
+            int len = sqlite3_value_bytes(v);
+            auto* p = static_cast<const std::uint8_t*>(sqlite3_value_blob(v));
+            return std::vector<std::uint8_t>(p, p + len);
+        }
+        default:
+            return std::monostate{};
+    }
+}
+
+/// Compare two Values. Returns <0, 0, >0 following SQLite affinity rules.
+int compare_values(const Value& a, const Value& b) {
+    bool a_null = std::holds_alternative<std::monostate>(a);
+    bool b_null = std::holds_alternative<std::monostate>(b);
+    if (a_null && b_null) return 0;
+    if (a_null) return -1;
+    if (b_null) return 1;
+
+    if (auto* ai = std::get_if<std::int64_t>(&a)) {
+        if (auto* bi = std::get_if<std::int64_t>(&b))
+            return (*ai < *bi) ? -1 : (*ai > *bi) ? 1 : 0;
+        if (auto* bd = std::get_if<double>(&b))
+            return (static_cast<double>(*ai) < *bd) ? -1 :
+                   (static_cast<double>(*ai) > *bd) ? 1 : 0;
+    }
+    if (auto* ad = std::get_if<double>(&a)) {
+        if (auto* bd = std::get_if<double>(&b))
+            return (*ad < *bd) ? -1 : (*ad > *bd) ? 1 : 0;
+        if (auto* bi = std::get_if<std::int64_t>(&b))
+            return (*ad < static_cast<double>(*bi)) ? -1 :
+                   (*ad > static_cast<double>(*bi)) ? 1 : 0;
+    }
+    if (auto* as = std::get_if<std::string>(&a)) {
+        if (auto* bs = std::get_if<std::string>(&b))
+            return as->compare(*bs);
+    }
+    if (auto* ab = std::get_if<std::vector<std::uint8_t>>(&a)) {
+        if (auto* bb = std::get_if<std::vector<std::uint8_t>>(&b)) {
+            auto minlen = std::min(ab->size(), bb->size());
+            int cmp = std::memcmp(ab->data(), bb->data(), minlen);
+            if (cmp != 0) return cmp;
+            return (ab->size() < bb->size()) ? -1 :
+                   (ab->size() > bb->size()) ? 1 : 0;
+        }
+    }
+
+    auto type_rank = [](const Value& v) -> int {
+        if (std::holds_alternative<std::monostate>(v)) return 0;
+        if (std::holds_alternative<std::int64_t>(v)) return 1;
+        if (std::holds_alternative<double>(v)) return 1;
+        if (std::holds_alternative<std::string>(v)) return 2;
+        return 3;
+    };
+    return type_rank(a) < type_rank(b) ? -1 :
+           type_rank(a) > type_rank(b) ? 1 : 0;
+}
+
+/// Loaded row values for UPDATE operations where the changeset
+/// doesn't carry all columns needed by multi-column predicates.
+struct LoadedRow {
+    std::vector<Value> old_values;
+    std::vector<Value> new_values;
+};
+
+/// Load old and new row state for an UPDATE changeset entry.
+/// The changeset has already been applied, so the current DB state
+/// is the new row. Old state is reconstructed by overlaying changeset
+/// old values (PK + changed columns) onto the current row (unchanged
+/// columns are the same in old and new).
+LoadedRow load_update_row(sqlite3* db, const std::string& table,
+                          sqlite3_changeset_iter* iter, int ncol) {
+    LoadedRow row;
+    // Get rowid from changeset PK.
+    sqlite3_value* pk_val = nullptr;
+    sqlite3changeset_old(iter, 0, &pk_val);
+    if (!pk_val) return row;
+    int64_t rowid = sqlite3_value_int64(pk_val);
+
+    // Read current row from DB (= new state).
+    std::string sql = "SELECT * FROM \"" + table + "\" WHERE rowid = ?";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
+        if (stmt) sqlite3_finalize(stmt);
+        return row;
+    }
+    sqlite3_bind_int64(stmt, 1, rowid);
+
+    row.new_values.resize(static_cast<size_t>(ncol));
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        for (int i = 0; i < ncol; ++i) {
+            row.new_values[static_cast<size_t>(i)] =
+                sqlite3_value_to_value(sqlite3_column_value(stmt, i));
+        }
+    }
+    sqlite3_finalize(stmt);
+
+    // Old = new, then overlay changeset old values for changed columns.
+    row.old_values = row.new_values;
+    for (int i = 0; i < ncol; ++i) {
+        sqlite3_value* val = nullptr;
+        sqlite3changeset_old(iter, i, &val);
+        if (val) {
+            row.old_values[static_cast<size_t>(i)] =
+                sqlite3_value_to_value(val);
+        }
+    }
+    return row;
+}
+
+/// VM execution context: provides column values for LoadCol.
+struct VMContext {
+    sqlite3_changeset_iter* iter;
+    int op;   // SQLITE_INSERT, SQLITE_UPDATE, or SQLITE_DELETE
+    bool use_new;  // true = LoadCol reads new values, false = old values
+
+    /// Loaded full row for UPDATE with multi-column predicates.
+    /// When set, LoadCol reads from here instead of the changeset.
+    const LoadedRow* loaded = nullptr;
+};
+
+/// Read a LE uint16 from program at position pc. Advances pc.
+uint16_t read_u16(const Program& p, size_t& pc) {
+    uint16_t v = p[pc] | (p[pc+1] << 8);
+    pc += 2;
+    return v;
+}
+
+/// Read a LE int64 from program at position pc. Advances pc.
+int64_t read_i64(const Program& p, size_t& pc) {
+    uint64_t v = 0;
+    for (int i = 0; i < 8; ++i) v |= static_cast<uint64_t>(p[pc+i]) << (i*8);
+    pc += 8;
+    return static_cast<int64_t>(v);
+}
+
+/// Read a LE double from program at position pc. Advances pc.
+double read_f64(const Program& p, size_t& pc) {
+    uint64_t v = 0;
+    for (int i = 0; i < 8; ++i) v |= static_cast<uint64_t>(p[pc+i]) << (i*8);
+    pc += 8;
+    double d;
+    std::memcpy(&d, &v, 8);
+    return d;
+}
+
+/// Run a program against a changeset row context. Returns true if matched.
+bool vm_run(const Program& prog, VMContext& ctx) {
+    if (prog.empty()) return true;  // no program → conservative match
+
+    std::vector<Value> stack;
+    stack.reserve(8);
+    size_t pc = 0;
+
+    while (pc < prog.size()) {
+        auto op = static_cast<VMOp>(prog[pc++]);
+        switch (op) {
+            case VMOp::LoadCol: {
+                uint8_t col = prog[pc++];
+
+                // If we have a loaded full row, use it directly.
+                if (ctx.loaded) {
+                    const auto& row = ctx.use_new
+                        ? ctx.loaded->new_values
+                        : ctx.loaded->old_values;
+                    stack.push_back(col < row.size()
+                        ? row[col] : Value{std::monostate{}});
+                    break;
+                }
+
+                // Read directly from changeset.
+                sqlite3_value* val = nullptr;
+                if (ctx.op == SQLITE_INSERT) {
+                    sqlite3changeset_new(ctx.iter, col, &val);
+                } else if (ctx.op == SQLITE_DELETE) {
+                    sqlite3changeset_old(ctx.iter, col, &val);
+                } else if (ctx.op == SQLITE_UPDATE) {
+                    // Single-column predicate path: try preferred direction,
+                    // fall back to other. If neither has a value, bail.
+                    if (ctx.use_new) {
+                        sqlite3changeset_new(ctx.iter, col, &val);
+                        if (!val) sqlite3changeset_old(ctx.iter, col, &val);
+                    } else {
+                        sqlite3changeset_old(ctx.iter, col, &val);
+                        if (!val) sqlite3changeset_new(ctx.iter, col, &val);
+                    }
+                    if (!val) return true;  // conservative
+                }
+                stack.push_back(sqlite3_value_to_value(val));
+                break;
+            }
+            case VMOp::ConstInt:
+                stack.push_back(read_i64(prog, pc));
+                break;
+            case VMOp::ConstFloat:
+                stack.push_back(read_f64(prog, pc));
+                break;
+            case VMOp::ConstStr: {
+                uint16_t len = read_u16(prog, pc);
+                stack.push_back(std::string(
+                    reinterpret_cast<const char*>(&prog[pc]), len));
+                pc += len;
+                break;
+            }
+            case VMOp::ConstNull:
+                stack.push_back(std::monostate{});
+                break;
+            case VMOp::ConstBlob: {
+                uint32_t len = 0;
+                for (int i = 0; i < 4; ++i)
+                    len |= static_cast<uint32_t>(prog[pc+i]) << (i*8);
+                pc += 4;
+                stack.push_back(std::vector<uint8_t>(&prog[pc], &prog[pc+len]));
+                pc += len;
+                break;
+            }
+            case VMOp::Eq: case VMOp::Ne:
+            case VMOp::Lt: case VMOp::Le:
+            case VMOp::Gt: case VMOp::Ge: {
+                auto b = stack.back(); stack.pop_back();
+                auto a = stack.back(); stack.pop_back();
+                // SQL: any comparison with NULL yields NULL.
+                bool a_null = std::holds_alternative<std::monostate>(a);
+                bool b_null = std::holds_alternative<std::monostate>(b);
+                if (a_null || b_null) {
+                    stack.push_back(std::monostate{});
+                    break;
+                }
+                int cmp = compare_values(a, b);
+                bool result;
+                switch (op) {
+                    case VMOp::Eq: result = (a == b); break;
+                    case VMOp::Ne: result = (a != b); break;
+                    case VMOp::Lt: result = cmp < 0; break;
+                    case VMOp::Le: result = cmp <= 0; break;
+                    case VMOp::Gt: result = cmp > 0; break;
+                    case VMOp::Ge: result = cmp >= 0; break;
+                    default: result = true; break;
+                }
+                stack.push_back(result ? std::int64_t{1} : std::int64_t{0});
+                break;
+            }
+            case VMOp::IsNull: {
+                auto v = stack.back(); stack.pop_back();
+                stack.push_back(std::holds_alternative<std::monostate>(v)
+                    ? std::int64_t{1} : std::int64_t{0});
+                break;
+            }
+            case VMOp::IsNotNull: {
+                auto v = stack.back(); stack.pop_back();
+                stack.push_back(!std::holds_alternative<std::monostate>(v)
+                    ? std::int64_t{1} : std::int64_t{0});
+                break;
+            }
+            case VMOp::InList: {
+                uint8_t count = prog[pc++];
+                // Stack: [... value, list_item_0, ..., list_item_(count-1)]
+                std::vector<Value> items(
+                    stack.end() - count, stack.end());
+                stack.resize(stack.size() - count);
+                auto val = stack.back(); stack.pop_back();
+                // SQL IN: NULL value → NULL. NULL in list → NULL if no match.
+                if (std::holds_alternative<std::monostate>(val)) {
+                    stack.push_back(std::monostate{});
+                } else {
+                    bool found = false;
+                    bool has_null_item = false;
+                    for (const auto& item : items) {
+                        if (std::holds_alternative<std::monostate>(item)) {
+                            has_null_item = true;
+                        } else if (val == item) {
+                            found = true; break;
+                        }
+                    }
+                    if (found) {
+                        stack.push_back(std::int64_t{1});
+                    } else if (has_null_item) {
+                        stack.push_back(std::monostate{});
+                    } else {
+                        stack.push_back(std::int64_t{0});
+                    }
+                }
+                break;
+            }
+            case VMOp::And: {
+                // SQL three-valued AND:
+                // false AND _ = false, _ AND false = false
+                // true AND true = true
+                // NULL AND true = NULL, true AND NULL = NULL
+                // NULL AND NULL = NULL
+                auto bv = stack.back(); stack.pop_back();
+                auto av = stack.back(); stack.pop_back();
+                bool a_null = std::holds_alternative<std::monostate>(av);
+                bool b_null = std::holds_alternative<std::monostate>(bv);
+                if (!a_null && std::get<std::int64_t>(av) == 0) {
+                    stack.push_back(std::int64_t{0});  // false AND _ = false
+                } else if (!b_null && std::get<std::int64_t>(bv) == 0) {
+                    stack.push_back(std::int64_t{0});  // _ AND false = false
+                } else if (a_null || b_null) {
+                    stack.push_back(std::monostate{});  // NULL involved = NULL
+                } else {
+                    stack.push_back(std::int64_t{1});   // true AND true = true
+                }
+                break;
+            }
+            case VMOp::Or: {
+                // SQL three-valued OR:
+                // true OR _ = true, _ OR true = true
+                // false OR false = false
+                // NULL OR false = NULL, false OR NULL = NULL
+                // NULL OR NULL = NULL
+                auto bv = stack.back(); stack.pop_back();
+                auto av = stack.back(); stack.pop_back();
+                bool a_null = std::holds_alternative<std::monostate>(av);
+                bool b_null = std::holds_alternative<std::monostate>(bv);
+                if (!a_null && std::get<std::int64_t>(av) != 0) {
+                    stack.push_back(std::int64_t{1});  // true OR _ = true
+                } else if (!b_null && std::get<std::int64_t>(bv) != 0) {
+                    stack.push_back(std::int64_t{1});  // _ OR true = true
+                } else if (a_null || b_null) {
+                    stack.push_back(std::monostate{});  // NULL involved = NULL
+                } else {
+                    stack.push_back(std::int64_t{0});   // false OR false = false
+                }
+                break;
+            }
+            case VMOp::Not: {
+                auto v = stack.back(); stack.pop_back();
+                if (std::holds_alternative<std::monostate>(v)) {
+                    stack.push_back(std::monostate{});  // NOT NULL = NULL
+                } else {
+                    auto a = std::get<std::int64_t>(v);
+                    stack.push_back(std::int64_t{a ? 0 : 1});
+                }
+                break;
+            }
+            case VMOp::True:
+                stack.push_back(std::int64_t{1});
+                break;
+            case VMOp::Halt:
+                goto done;
+        }
+    }
+done:
+    if (stack.empty()) return true;  // empty program → conservative
+    return std::holds_alternative<std::int64_t>(stack.back()) &&
+           std::get<std::int64_t>(stack.back()) != 0;
+}
+
+// ── Predicate index using VM programs ───────────────────────────
+
+/// Per-(subscription, table) compiled program + relevant column set.
+struct SubProgram {
+    SubscriptionId sub_id;
+    Program        program;       // empty = no predicates for this table → always affected
+    std::set<int>  columns_used;  // columns the query reads from this table
+                                  // empty = unknown → conservative (all columns relevant)
+    bool needs_preload = false;   // true if program has multi-column predicates
+};
+
+/// The predicate index: maps table → list of compiled programs.
+using ProgramIndex = std::unordered_map<std::string, std::vector<SubProgram>>;
+
+/// Evaluate a changeset against compiled VM programs.
+/// Runs each program twice (old values, new values) per changeset row.
+/// Returns the set of subscription IDs affected.
+std::set<SubscriptionId> evaluate_changeset(
+        sqlite3* db,
+        const Changeset& data,
+        const ProgramIndex& index,
+        const std::unordered_map<std::string, std::set<SubscriptionId>>& table_subs) {
+    std::set<SubscriptionId> affected;
+    if (data.empty()) return affected;
+
+    sqlite3_changeset_iter* iter = nullptr;
+    int rc = sqlite3changeset_start(&iter,
+        static_cast<int>(data.size()),
+        const_cast<void*>(static_cast<const void*>(data.data())));
+    if (rc != SQLITE_OK) {
+        for (const auto& [_, subs] : table_subs) {
+            affected.insert(subs.begin(), subs.end());
+        }
+        return affected;
+    }
+
+    while (sqlite3changeset_next(iter) == SQLITE_ROW) {
+        const char* tbl = nullptr;
+        int ncol = 0, cs_op = 0, indirect = 0;
+        sqlite3changeset_op(iter, &tbl, &ncol, &cs_op, &indirect);
+        if (!tbl) continue;
+
+        std::string table_name(tbl);
+        auto idx_it = index.find(table_name);
+
+        // Subscriptions with no program for this table → check table_subs.
+        auto ts_it = table_subs.find(table_name);
+        if (ts_it == table_subs.end()) continue;
+
+        if (idx_it == index.end()) {
+            // No programs at all for this table → all subs are affected.
+            for (auto sub_id : ts_it->second) {
+                affected.insert(sub_id);
+            }
+            continue;
+        }
+
+        // For UPDATE, determine which columns changed.
+        std::set<int> changed_cols;
+        if (cs_op == SQLITE_UPDATE) {
+            for (int col = 0; col < ncol; ++col) {
+                sqlite3_value* val = nullptr;
+                sqlite3changeset_new(iter, col, &val);
+                if (val) changed_cols.insert(col);
+            }
+        }
+
+        // Run each subscription's program.
+        for (const auto& sp : idx_it->second) {
+            if (affected.count(sp.sub_id)) continue;
+
+            // For UPDATE: if the subscription's relevant columns don't
+            // overlap with the changed columns, the result can't change.
+            if (cs_op == SQLITE_UPDATE && !sp.columns_used.empty()) {
+                bool any_overlap = false;
+                for (int col : changed_cols) {
+                    if (sp.columns_used.count(col)) {
+                        any_overlap = true;
+                        break;
+                    }
+                }
+                if (!any_overlap) continue;  // no relevant column changed
+            }
+
+            if (sp.program.empty()) {
+                // No predicates for this table → always affected.
+                affected.insert(sp.sub_id);
+                continue;
+            }
+
+            VMContext ctx{iter, cs_op, false, nullptr};
+            bool old_match = false, new_match = false;
+
+            // For UPDATE with multi-column predicates, load the full
+            // row from the DB to provide unchanged column values.
+            LoadedRow loaded_row;
+            if (cs_op == SQLITE_UPDATE && sp.needs_preload && db) {
+                loaded_row = load_update_row(db, table_name, iter, ncol);
+                if (!loaded_row.old_values.empty()) {
+                    ctx.loaded = &loaded_row;
+                }
+            }
+
+            // Run against old values (UPDATE, DELETE).
+            if (cs_op == SQLITE_UPDATE || cs_op == SQLITE_DELETE) {
+                ctx.use_new = false;
+                old_match = vm_run(sp.program, ctx);
+            }
+
+            // Run against new values (INSERT, UPDATE).
+            if (!old_match &&
+                (cs_op == SQLITE_INSERT || cs_op == SQLITE_UPDATE)) {
+                ctx.use_new = true;
+                new_match = vm_run(sp.program, ctx);
+            }
+
+            if (old_match || new_match) {
+                affected.insert(sp.sub_id);
+            }
+        }
+
+        // Also check for subscriptions on this table with NO entry in
+        // the program index (they have no predicates at all).
+        for (auto sub_id : ts_it->second) {
+            if (affected.count(sub_id)) continue;
+            bool has_program = false;
+            for (const auto& sp : idx_it->second) {
+                if (sp.sub_id == sub_id) { has_program = true; break; }
+            }
+            if (!has_program) {
+                affected.insert(sub_id);
+            }
+        }
+    }
+
+    sqlite3changeset_finalize(iter);
+    return affected;
+}
+
+} // namespace sqlpipe::detail
+
+// ── query_watch.cpp ─────────────────────────────────────────────
 
 namespace sqlpipe {
 
-struct Replica::Impl {
-    sqlite3*       db;
-    ReplicaConfig  config;
-    Seq            seq = 0;
-    Replica::State state = Replica::State::Init;
+struct QueryWatch::Impl {
+    sqlite3* db;
+    detail::SchemaMap schema;
 
-    // Subscription state.
     struct Subscription {
         SubscriptionId               id;
         std::string                  sql;
         std::set<std::string>        tables;
+        detail::RAPtr                ra;        // relational algebra tree
+        std::vector<detail::ResolvedPredicate> predicates;  // extracted filters
         detail::StmtGuard            stmt;     // cached prepared statement
         std::vector<std::string>     columns;  // cached column names
         std::uint64_t                result_hash = 0;  // hash of last delivered result
@@ -1689,41 +4077,65 @@ struct Replica::Impl {
     std::map<SubscriptionId, Subscription> subscriptions;
     // Reverse index: table name → subscription IDs that depend on it.
     std::unordered_map<std::string, std::set<SubscriptionId>> table_subs;
+    // Program index: table → compiled VM programs per subscription.
+    detail::ProgramIndex prog_index;
+    // Subscriptions registered since last notify — need initial evaluation.
+    std::set<SubscriptionId> pending_new;
     SubscriptionId next_sub_id = 1;
 
-    const std::set<std::string>* filter() const {
-        return config.table_filter ? &*config.table_filter : nullptr;
-    }
-
-    void report(DiffPhase phase, const std::string& table,
-                std::int64_t done, std::int64_t total) {
-        if (config.on_progress) {
-            config.on_progress(DiffProgress{phase, table, done, total});
+    /// Rebuild the program index from all subscriptions.
+    void rebuild_prog_index() {
+        prog_index.clear();
+        for (const auto& [id, sub] : subscriptions) {
+            for (const auto& table : sub.tables) {
+                auto cr = detail::compile_predicates(
+                    sub.predicates, table);
+                std::set<int> cols;
+                if (sub.ra) {
+                    cols = detail::columns_for_table(sub.ra.get(), table);
+                }
+                prog_index[table].push_back(
+                    {id, std::move(cr.program), std::move(cols),
+                     cr.needs_preload});
+            }
         }
     }
 
-    std::set<std::string> discover_tables(const std::string& sql) {
+    /// Analyze a subscription query using the RA transform.
+    /// Returns table dependencies and extracts predicates.
+    std::set<std::string> analyze_query(const std::string& sql,
+                                        detail::RAPtr& ra_out,
+                                        std::vector<detail::ResolvedPredicate>& preds_out) {
+        // Ensure schema is current.
+        schema = detail::build_schema_map(db);
+
+        ra_out = detail::sql_to_ra(sql, schema);
         std::set<std::string> tables;
-        sqlite3_set_authorizer(db, [](void* ctx, int action,
-                const char* a1, const char*, const char*, const char*) -> int {
-            if (action == SQLITE_READ && a1) {
-                std::string name(a1);
-                if (name.compare(0, 9, "_sqlpipe_") != 0 &&
-                    name.compare(0, 7, "sqlite_") != 0) {
-                    static_cast<std::set<std::string>*>(ctx)->insert(name);
+
+        if (ra_out) {
+            ra_out->collect_tables(tables);
+            // After optimization, predicates are pushed to leaf Filters.
+            // Collect them all for changeset checking.
+            detail::collect_predicates(ra_out.get(), preds_out);
+        } else {
+            // RA transform failed (non-SELECT or parse error).
+            // Fall back to authorizer-based table discovery.
+            sqlite3_set_authorizer(db, [](void* ctx, int action,
+                    const char* a1, const char*, const char*, const char*) -> int {
+                if (action == SQLITE_READ && a1) {
+                    std::string name(a1);
+                    if (name.compare(0, 9, "_sqlpipe_") != 0 &&
+                        name.compare(0, 7, "sqlite_") != 0) {
+                        static_cast<std::set<std::string>*>(ctx)->insert(name);
+                    }
                 }
-            }
-            return SQLITE_OK;
-        }, &tables);
+                return SQLITE_OK;
+            }, &tables);
 
-        sqlite3_stmt* stmt = nullptr;
-        int rc = sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr);
-        if (stmt) sqlite3_finalize(stmt);
-        sqlite3_set_authorizer(db, nullptr, nullptr);
-
-        if (rc != SQLITE_OK) {
-            throw Error(ErrorCode::SqliteError,
-                std::string("subscribe prepare: ") + sqlite3_errmsg(db));
+            sqlite3_stmt* stmt = nullptr;
+            sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr);
+            if (stmt) sqlite3_finalize(stmt);
+            sqlite3_set_authorizer(db, nullptr, nullptr);
         }
         return tables;
     }
@@ -1752,28 +4164,177 @@ struct Replica::Impl {
     }
 
     std::vector<QueryResult> evaluate_invalidated(
-            const std::set<std::string>& affected) {
-        // Collect unique subscription IDs via reverse index.
+            const std::set<std::string>& affected,
+            const Changeset* changeset = nullptr) {
+        // Determine which subscriptions to evaluate.
         std::set<SubscriptionId> ids;
-        for (const auto& table : affected) {
-            auto it = table_subs.find(table);
-            if (it != table_subs.end()) {
-                ids.insert(it->second.begin(), it->second.end());
+
+        if (changeset && !changeset->empty() && !prog_index.empty()) {
+            // VM evaluation: iterate changeset once, run compiled
+            // programs for each subscription.
+            ids = detail::evaluate_changeset(
+                db, *changeset, prog_index, table_subs);
+        } else {
+            // No changeset or no predicates — table-level invalidation.
+            for (const auto& table : affected) {
+                auto it = table_subs.find(table);
+                if (it != table_subs.end()) {
+                    ids.insert(it->second.begin(), it->second.end());
+                }
             }
         }
+
+        // Also include any newly registered subscriptions that haven't
+        // been evaluated yet (their initial result delivery).
+        ids.insert(pending_new.begin(), pending_new.end());
+        pending_new.clear();
 
         std::vector<QueryResult> results;
         for (auto id : ids) {
             auto it = subscriptions.find(id);
-            if (it != subscriptions.end()) {
-                auto [result, hash] = evaluate_query(it->second);
-                if (hash != it->second.result_hash) {
-                    it->second.result_hash = hash;
-                    results.push_back(std::move(result));
-                }
+            if (it == subscriptions.end()) continue;
+            auto& sub = it->second;
+
+            auto [result, hash] = evaluate_query(sub);
+            if (hash != sub.result_hash) {
+                sub.result_hash = hash;
+                results.push_back(std::move(result));
             }
         }
         return results;
+    }
+};
+
+QueryWatch::QueryWatch(sqlite3* db)
+    : impl_(std::make_unique<Impl>()) {
+    impl_->db = db;
+}
+
+QueryWatch::~QueryWatch() = default;
+QueryWatch::QueryWatch(QueryWatch&&) noexcept = default;
+QueryWatch& QueryWatch::operator=(QueryWatch&&) noexcept = default;
+
+SubscriptionId QueryWatch::subscribe(const std::string& sql) {
+    detail::RAPtr ra;
+    std::vector<detail::ResolvedPredicate> predicates;
+    auto tables = impl_->analyze_query(sql, ra, predicates);
+    auto id = impl_->next_sub_id++;
+
+    // Prepare statement once and cache column names.
+    auto stmt = detail::prepare(impl_->db, sql.c_str());
+    int ncols = sqlite3_column_count(stmt.get());
+    std::vector<std::string> columns;
+    columns.reserve(static_cast<std::size_t>(ncols));
+    for (int i = 0; i < ncols; ++i) {
+        const char* name = sqlite3_column_name(stmt.get(), i);
+        columns.push_back(name ? name : "");
+    }
+
+    // Build reverse index entries.
+    for (const auto& t : tables) {
+        impl_->table_subs[t].insert(id);
+    }
+
+    // Register with hash=0 (never evaluated). The next notify() will
+    // evaluate and deliver the initial result.
+    impl_->subscriptions[id] = {id, sql, std::move(tables), std::move(ra),
+                                std::move(predicates), std::move(stmt),
+                                std::move(columns), 0};
+    impl_->pending_new.insert(id);
+    impl_->rebuild_prog_index();
+    return id;
+}
+
+void QueryWatch::unsubscribe(SubscriptionId id) {
+    auto it = impl_->subscriptions.find(id);
+    if (it != impl_->subscriptions.end()) {
+        // Remove reverse index entries.
+        for (const auto& t : it->second.tables) {
+            auto ts_it = impl_->table_subs.find(t);
+            if (ts_it != impl_->table_subs.end()) {
+                ts_it->second.erase(id);
+                if (ts_it->second.empty()) {
+                    impl_->table_subs.erase(ts_it);
+                }
+            }
+        }
+        impl_->pending_new.erase(id);
+        impl_->subscriptions.erase(it);
+        impl_->rebuild_prog_index();
+    }
+}
+
+std::vector<QueryResult> QueryWatch::notify(
+        const std::set<std::string>& affected_tables) {
+    return impl_->evaluate_invalidated(affected_tables);
+}
+
+std::vector<QueryResult> QueryWatch::notify(
+        const std::set<std::string>& affected_tables,
+        const Changeset& changeset_data) {
+    return impl_->evaluate_invalidated(affected_tables, &changeset_data);
+}
+
+bool QueryWatch::empty() const {
+    return impl_->subscriptions.empty();
+}
+
+
+// ── query (one-shot) ────────────────────────────────────────────
+
+QueryResult query(sqlite3* db, const std::string& sql) {
+    auto stmt = detail::prepare(db, sql.c_str());
+    int ncols = sqlite3_column_count(stmt.get());
+
+    QueryResult result;
+    result.id = 0;
+    result.columns.reserve(static_cast<std::size_t>(ncols));
+    for (int i = 0; i < ncols; ++i) {
+        const char* name = sqlite3_column_name(stmt.get(), i);
+        result.columns.push_back(name ? name : "");
+    }
+
+    while (sqlite3_step(stmt.get()) == SQLITE_ROW) {
+        std::vector<Value> row;
+        row.reserve(static_cast<std::size_t>(ncols));
+        for (int i = 0; i < ncols; ++i) {
+            row.push_back(detail::to_value(
+                sqlite3_column_value(stmt.get(), i)));
+        }
+        result.rows.push_back(std::move(row));
+    }
+    return result;
+}
+
+} // namespace sqlpipe
+
+// ── replica.cpp ─────────────────────────────────────────────────
+
+namespace sqlpipe {
+
+struct Replica::Impl {
+    sqlite3*       db;
+    ReplicaConfig  config;
+    Seq            seq = 0;
+    Replica::State state = Replica::State::Init;
+    QueryWatch     watch;
+
+    // Prediction state.
+    enum class PredictionState : uint8_t { None, Drafting, Committed };
+    PredictionState prediction = PredictionState::None;
+
+    Impl(sqlite3* db_, ReplicaConfig cfg)
+        : db(db_), config(std::move(cfg)), watch(db_) {}
+
+    const std::set<std::string>* filter() const {
+        return config.table_filter ? &*config.table_filter : nullptr;
+    }
+
+    void report(DiffPhase phase, const std::string& table,
+                std::int64_t done, std::int64_t total) {
+        if (config.on_progress) {
+            config.on_progress(DiffProgress{phase, table, done, total});
+        }
     }
 
     void init() {
@@ -1783,6 +4344,12 @@ struct Replica::Impl {
     }
 
     std::vector<ChangeEvent> apply_changeset(const Changeset& data, Seq new_seq) {
+        if (new_seq != seq + 1) {
+            throw Error(ErrorCode::ProtocolError,
+                        "changeset seq gap: expected " +
+                        std::to_string(seq + 1) + ", got " +
+                        std::to_string(new_seq));
+        }
         int rc = sqlite3changeset_apply(
             db,
             static_cast<int>(data.size()),
@@ -1832,13 +4399,21 @@ struct Replica::Impl {
     HandleResult handle_hello_from_master(const HelloMsg& m) {
         if (state != Replica::State::Handshake) {
             state = Replica::State::Error;
-            return {{ErrorMsg{ErrorCode::InvalidState,
-                "received HelloMsg in unexpected state"}}, {}, {}};
+            return {{Message{ErrorMsg{ErrorCode::InvalidState,
+                "received HelloMsg in unexpected state"}}}, {}, {}};
         }
         if (m.protocol_version != kProtocolVersion) {
             state = Replica::State::Error;
-            return {{ErrorMsg{ErrorCode::ProtocolError,
-                "unsupported protocol version"}}, {}, {}};
+            return {{Message{ErrorMsg{ErrorCode::ProtocolError,
+                "unsupported protocol version"}}}, {}, {}};
+        }
+
+        // Fast reconnect: master confirmed seq match — skip to Live.
+        if (m.last_seq > 0 && m.last_seq == seq) {
+            state = Replica::State::Live;
+            SQLPIPE_LOG(config.on_log, LogLevel::Info,
+                        "fast reconnect: seq match ({}), skipping diff sync", seq);
+            return {{Message{AckMsg{seq}}}, {}, {}};
         }
 
         // Compute bucket hashes and send to master.
@@ -1849,15 +4424,19 @@ struct Replica::Impl {
                static_cast<std::int64_t>(buckets.size()),
                static_cast<std::int64_t>(buckets.size()));
         state = Replica::State::DiffBuckets;
-        SQLPIPE_LOG(config.on_log, LogLevel::Info, "sending {} bucket hashes", buckets.size());
-        return {{BucketHashesMsg{std::move(buckets)}}, {}, {}};
+        SQLPIPE_LOG(config.on_log, LogLevel::Info, "sending {} bucket hashes (seq={})", buckets.size(), seq);
+        return {{Message{BucketHashesMsg{
+            std::move(buckets), seq, kProtocolVersion,
+            detail::compute_schema_fingerprint(db, filter())}}}, {}, {}};
     }
 
     HandleResult handle_need_buckets(const NeedBucketsMsg& m) {
-        if (state != Replica::State::DiffBuckets) {
+        // Accept in DiffBuckets (normal handshake) or Live (re-convergence).
+        if (state != Replica::State::DiffBuckets &&
+            state != Replica::State::Live) {
             state = Replica::State::Error;
-            return {{ErrorMsg{ErrorCode::InvalidState,
-                "received NeedBucketsMsg in unexpected state"}}, {}, {}};
+            return {{Message{ErrorMsg{ErrorCode::InvalidState,
+                "received NeedBucketsMsg in unexpected state"}}}, {}, {}};
         }
 
         state = Replica::State::DiffRows;
@@ -1913,15 +4492,17 @@ struct Replica::Impl {
         }
 
         SQLPIPE_LOG(config.on_log, LogLevel::Info, "sending row hashes for {} ranges", m.ranges.size());
-        return {{std::move(rh)}, {}, {}};
+        return {{Message{std::move(rh)}}, {}, {}};
     }
 
     HandleResult handle_diff_ready(const DiffReadyMsg& m) {
+        // Accept in DiffRows, DiffBuckets (normal handshake), or Live (re-convergence).
         if (state != Replica::State::DiffRows &&
-            state != Replica::State::DiffBuckets) {
+            state != Replica::State::DiffBuckets &&
+            state != Replica::State::Live) {
             state = Replica::State::Error;
-            return {{ErrorMsg{ErrorCode::InvalidState,
-                "received DiffReadyMsg in unexpected state"}}, {}, {}};
+            return {{Message{ErrorMsg{ErrorCode::InvalidState,
+                "received DiffReadyMsg in unexpected state"}}}, {}, {}};
         }
 
         std::vector<ChangeEvent> events;
@@ -2010,16 +4591,14 @@ struct Replica::Impl {
         state = Replica::State::Live;
         SQLPIPE_LOG(config.on_log, LogLevel::Info, "diff applied, entering live at seq={}", seq);
 
-        return {{AckMsg{m.seq}}, std::move(events), {}};
+        return {{Message{AckMsg{m.seq}}}, std::move(events), {}};
     }
 };
 
 // ── Public API ──────────────────────────────────────────────────────
 
 Replica::Replica(sqlite3* db, ReplicaConfig config)
-    : impl_(std::make_unique<Impl>()) {
-    impl_->db = db;
-    impl_->config = std::move(config);
+    : impl_(std::make_unique<Impl>(db, std::move(config))) {
     impl_->init();
 }
 
@@ -2031,11 +4610,46 @@ Message Replica::hello() const {
     impl_->state = State::Handshake;
     const auto* f = impl_->config.table_filter
         ? &*impl_->config.table_filter : nullptr;
-    return HelloMsg{kProtocolVersion,
-                    detail::compute_schema_fingerprint(impl_->db, f), {}};
+    return Message{HelloMsg{kProtocolVersion,
+                    detail::compute_schema_fingerprint(impl_->db, f), {},
+                    impl_->seq}};
+}
+
+std::vector<Message> Replica::converge() {
+    // Compute bucket hashes and transition to DiffBuckets, waiting for
+    // the master's NeedBuckets response. Can be called in any state.
+    const auto* f = impl_->config.table_filter
+        ? &*impl_->config.table_filter : nullptr;
+
+    impl_->report(DiffPhase::ComputingBuckets, {}, 0, 0);
+    auto buckets = detail::compute_all_buckets(
+        impl_->db, f, impl_->config.bucket_size);
+    impl_->report(DiffPhase::ComputingBuckets, {},
+               static_cast<std::int64_t>(buckets.size()),
+               static_cast<std::int64_t>(buckets.size()));
+
+    auto sv = detail::compute_schema_fingerprint(impl_->db, f);
+
+    impl_->state = State::DiffBuckets;
+    SQLPIPE_LOG(impl_->config.on_log, LogLevel::Info,
+                "converge: sending {} bucket hashes (seq={})",
+                buckets.size(), impl_->seq);
+    return {Message{BucketHashesMsg{
+        std::move(buckets), impl_->seq, kProtocolVersion, sv}}};
 }
 
 HandleResult Replica::handle_message(const Message& msg) {
+    // Auto-rollback a committed prediction before applying server data.
+    if (impl_->prediction == Impl::PredictionState::Committed) {
+        detail::exec(impl_->db, "ROLLBACK TO _sqlpipe_prediction");
+        detail::exec(impl_->db, "RELEASE _sqlpipe_prediction");
+        impl_->prediction = Impl::PredictionState::None;
+        SQLPIPE_LOG(impl_->config.on_log, LogLevel::Debug,
+                    "prediction auto-rolled back (server response)");
+    }
+
+    auto prev_state = impl_->state;
+    const Changeset* changeset_data = nullptr;  // for predicate-aware notify
     auto result = std::visit([&](const auto& m) -> HandleResult {
         using T = std::decay_t<decltype(m)>;
 
@@ -2051,24 +4665,32 @@ HandleResult Replica::handle_message(const Message& msg) {
         else if constexpr (std::is_same_v<T, ChangesetMsg>) {
             if (impl_->state != State::Live) {
                 impl_->state = State::Error;
-                return {{ErrorMsg{ErrorCode::InvalidState,
-                    "received ChangesetMsg in unexpected state"}}, {}, {}};
+                return {{Message{ErrorMsg{ErrorCode::InvalidState,
+                    "received ChangesetMsg in unexpected state"}}}, {}, {}};
             }
+            changeset_data = &m.data;
             auto events = impl_->apply_changeset(m.data, m.seq);
             SQLPIPE_LOG(impl_->config.on_log, LogLevel::Debug, "applied changeset seq={}", m.seq);
-            return {{AckMsg{m.seq}}, std::move(events), {}};
+            return {{Message{AckMsg{m.seq}}}, std::move(events), {}};
         }
         else if constexpr (std::is_same_v<T, ErrorMsg>) {
-            if (m.code == ErrorCode::SchemaMismatch &&
-                impl_->config.on_schema_mismatch) {
-                auto my_sv = schema_version();
-                if (impl_->config.on_schema_mismatch(
+            if (m.code == ErrorCode::SchemaMismatch) {
+                bool resolved = false;
+                if (impl_->config.on_schema_mismatch) {
+                    // User callback gets first shot.
+                    auto my_sv = schema_version();
+                    resolved = impl_->config.on_schema_mismatch(
                         m.remote_schema_version, my_sv,
-                        m.remote_schema_sql)) {
-                    // Callback modified the local schema. Reset to Init
-                    // so the caller can retry the handshake.
+                        m.remote_schema_sql);
+                } else if (!m.remote_schema_sql.empty()) {
+                    // Auto-migrate: use sqlift to adopt master's schema.
+                    resolved = detail::auto_migrate_schema(
+                        impl_->db, m.remote_schema_sql,
+                        impl_->config.on_log);
+                }
+                if (resolved) {
                     SQLPIPE_LOG(impl_->config.on_log, LogLevel::Info,
-                                "schema mismatch resolved by callback, "
+                                "schema mismatch resolved, "
                                 "resetting to Init");
                     impl_->state = State::Init;
                     impl_->seq = detail::read_seq(
@@ -2081,24 +4703,46 @@ HandleResult Replica::handle_message(const Message& msg) {
             return {};
         }
         else {
-            return {{ErrorMsg{ErrorCode::InvalidState,
-                "unexpected message type from master"}}, {}, {}};
+            return {{Message{ErrorMsg{ErrorCode::InvalidState,
+                "unexpected message type from master"}}}, {}, {}};
         }
     }, msg);
 
-    // Evaluate invalidated subscriptions.
-    if (!result.changes.empty() && !impl_->subscriptions.empty()) {
-        std::set<std::string> affected;
-        for (const auto& ev : result.changes) {
-            if (!ev.table.empty()) affected.insert(ev.table);
+    // Evaluate subscriptions only when Live — never during handshake or
+    // diff sync, where schema may be incomplete or data in flux.
+    if (impl_->state == State::Live && !impl_->watch.empty()) {
+        if (!result.changes.empty()) {
+            std::set<std::string> affected;
+            for (const auto& ev : result.changes) {
+                if (!ev.table.empty()) affected.insert(ev.table);
+            }
+            if (changeset_data) {
+                result.subscriptions = impl_->watch.notify(
+                    affected, *changeset_data);
+            } else {
+                result.subscriptions = impl_->watch.notify(affected);
+            }
+        } else if (prev_state != State::Live) {
+            // Just entered Live (e.g., diff sync found no differences).
+            // Force-evaluate all subscriptions so clients that subscribed
+            // before sync get current data.
+            auto all_tables = detail::get_tracked_tables(
+                impl_->db, impl_->filter());
+            std::set<std::string> all(all_tables.begin(), all_tables.end());
+            result.subscriptions = impl_->watch.notify(all);
         }
-        result.subscriptions = impl_->evaluate_invalidated(affected);
     }
 
     return result;
 }
 
 HandleResult Replica::handle_messages(std::span<const Message> msgs) {
+    if (impl_->prediction == Impl::PredictionState::Committed) {
+        detail::exec(impl_->db, "ROLLBACK TO _sqlpipe_prediction");
+        detail::exec(impl_->db, "RELEASE _sqlpipe_prediction");
+        impl_->prediction = Impl::PredictionState::None;
+    }
+    auto prev_state = impl_->state;
     HandleResult combined;
     std::set<std::string> affected;
 
@@ -2118,22 +4762,29 @@ HandleResult Replica::handle_messages(std::span<const Message> msgs) {
             else if constexpr (std::is_same_v<T, ChangesetMsg>) {
                 if (impl_->state != State::Live) {
                     impl_->state = State::Error;
-                    return {{ErrorMsg{ErrorCode::InvalidState,
-                        "received ChangesetMsg in unexpected state"}}, {}, {}};
+                    return {{Message{ErrorMsg{ErrorCode::InvalidState,
+                        "received ChangesetMsg in unexpected state"}}}, {}, {}};
                 }
                 auto events = impl_->apply_changeset(m.data, m.seq);
                 SQLPIPE_LOG(impl_->config.on_log, LogLevel::Debug, "applied changeset seq={}", m.seq);
-                return {{AckMsg{m.seq}}, std::move(events), {}};
+                return {{Message{AckMsg{m.seq}}}, std::move(events), {}};
             }
             else if constexpr (std::is_same_v<T, ErrorMsg>) {
-                if (m.code == ErrorCode::SchemaMismatch &&
-                    impl_->config.on_schema_mismatch) {
-                    auto my_sv = schema_version();
-                    if (impl_->config.on_schema_mismatch(
+                if (m.code == ErrorCode::SchemaMismatch) {
+                    bool resolved = false;
+                    if (impl_->config.on_schema_mismatch) {
+                        auto my_sv = schema_version();
+                        resolved = impl_->config.on_schema_mismatch(
                             m.remote_schema_version, my_sv,
-                            m.remote_schema_sql)) {
+                            m.remote_schema_sql);
+                    } else if (!m.remote_schema_sql.empty()) {
+                        resolved = detail::auto_migrate_schema(
+                            impl_->db, m.remote_schema_sql,
+                            impl_->config.on_log);
+                    }
+                    if (resolved) {
                         SQLPIPE_LOG(impl_->config.on_log, LogLevel::Info,
-                                    "schema mismatch resolved by callback, "
+                                    "schema mismatch resolved, "
                                     "resetting to Init");
                         impl_->state = State::Init;
                         impl_->seq = detail::read_seq(
@@ -2146,8 +4797,8 @@ HandleResult Replica::handle_messages(std::span<const Message> msgs) {
                 return {};
             }
             else {
-                return {{ErrorMsg{ErrorCode::InvalidState,
-                    "unexpected message type from master"}}, {}, {}};
+                return {{Message{ErrorMsg{ErrorCode::InvalidState,
+                    "unexpected message type from master"}}}, {}, {}};
             }
         }, msg);
 
@@ -2162,58 +4813,69 @@ HandleResult Replica::handle_messages(std::span<const Message> msgs) {
                                 result.changes.end());
     }
 
-    // Evaluate subscriptions once for all accumulated changes.
-    if (!affected.empty() && !impl_->subscriptions.empty()) {
-        combined.subscriptions = impl_->evaluate_invalidated(affected);
+    // Evaluate subscriptions only when Live.
+    if (impl_->state == State::Live && !impl_->watch.empty()) {
+        if (!affected.empty()) {
+            combined.subscriptions = impl_->watch.notify(affected);
+        } else if (prev_state != State::Live) {
+            auto all_tables = detail::get_tracked_tables(
+                impl_->db, impl_->filter());
+            std::set<std::string> all(all_tables.begin(), all_tables.end());
+            combined.subscriptions = impl_->watch.notify(all);
+        }
     }
 
     return combined;
 }
 
-QueryResult Replica::subscribe(const std::string& sql) {
-    auto tables = impl_->discover_tables(sql);
-    auto id = impl_->next_sub_id++;
-
-    // Prepare statement once and cache column names.
-    auto stmt = detail::prepare(impl_->db, sql.c_str());
-    int ncols = sqlite3_column_count(stmt.get());
-    std::vector<std::string> columns;
-    columns.reserve(static_cast<std::size_t>(ncols));
-    for (int i = 0; i < ncols; ++i) {
-        const char* name = sqlite3_column_name(stmt.get(), i);
-        columns.push_back(name ? name : "");
-    }
-
-    // Build reverse index entries.
-    for (const auto& t : tables) {
-        impl_->table_subs[t].insert(id);
-    }
-
-    impl_->subscriptions[id] = {id, sql, std::move(tables),
-                                std::move(stmt), std::move(columns), 0};
-    auto [result, hash] = impl_->evaluate_query(impl_->subscriptions[id]);
-    impl_->subscriptions[id].result_hash = hash;
-    return result;
+SubscriptionId Replica::subscribe(const std::string& sql) {
+    return impl_->watch.subscribe(sql);
 }
 
 void Replica::unsubscribe(SubscriptionId id) {
-    auto it = impl_->subscriptions.find(id);
-    if (it != impl_->subscriptions.end()) {
-        // Remove reverse index entries.
-        for (const auto& t : it->second.tables) {
-            auto ts_it = impl_->table_subs.find(t);
-            if (ts_it != impl_->table_subs.end()) {
-                ts_it->second.erase(id);
-                if (ts_it->second.empty()) {
-                    impl_->table_subs.erase(ts_it);
-                }
-            }
-        }
-        impl_->subscriptions.erase(it);
+    impl_->watch.unsubscribe(id);
+}
+
+void Replica::begin_prediction() {
+    using PS = Impl::PredictionState;
+    if (impl_->prediction != PS::None) {
+        throw Error(ErrorCode::InvalidState,
+                    "prediction already active");
     }
+    detail::exec(impl_->db, "SAVEPOINT _sqlpipe_prediction");
+    impl_->prediction = PS::Drafting;
+    SQLPIPE_LOG(impl_->config.on_log, LogLevel::Debug, "prediction begun");
+}
+
+void Replica::commit_prediction() {
+    using PS = Impl::PredictionState;
+    if (impl_->prediction != PS::Drafting) {
+        throw Error(ErrorCode::InvalidState,
+                    "no drafting prediction to commit");
+    }
+    impl_->prediction = PS::Committed;
+    SQLPIPE_LOG(impl_->config.on_log, LogLevel::Debug, "prediction committed (awaiting server)");
+}
+
+void Replica::rollback_prediction() {
+    using PS = Impl::PredictionState;
+    if (impl_->prediction == PS::None) {
+        throw Error(ErrorCode::InvalidState,
+                    "no active prediction to rollback");
+    }
+    detail::exec(impl_->db, "ROLLBACK TO _sqlpipe_prediction");
+    detail::exec(impl_->db, "RELEASE _sqlpipe_prediction");
+    impl_->prediction = PS::None;
+    SQLPIPE_LOG(impl_->config.on_log, LogLevel::Debug, "prediction rolled back");
 }
 
 void Replica::reset() {
+    // Rollback any active prediction before resetting.
+    if (impl_->prediction != Impl::PredictionState::None) {
+        detail::exec(impl_->db, "ROLLBACK TO _sqlpipe_prediction");
+        detail::exec(impl_->db, "RELEASE _sqlpipe_prediction");
+        impl_->prediction = Impl::PredictionState::None;
+    }
     impl_->state = State::Init;
     impl_->seq = detail::read_seq(impl_->db, impl_->config.seq_key);
     SQLPIPE_LOG(impl_->config.on_log, LogLevel::Info, "replica reset to Init at seq={}", impl_->seq);
@@ -2319,7 +4981,7 @@ struct Peer::Impl {
     bool replica_handshake_done = false;
 
     bool is_server() const {
-        return config.approve_ownership != nullptr;
+        return config.role == PeerRole::Server;
     }
 
     void create_master() {
@@ -2427,22 +5089,24 @@ struct Peer::Impl {
                 HelloMsg patched = *hello;
                 patched.schema_version = master->schema_version();
                 patched.owned_tables = {};
+                patched.last_seq = -1;  // Peer directions use different seq keys
 
                 auto master_resp = master->handle_message(patched);
-                for (auto& m : master_resp) {
-                    if (std::holds_alternative<DiffReadyMsg>(m)) {
+                for (auto& om : master_resp) {
+                    if (std::holds_alternative<DiffReadyMsg>(om)) {
                         master_handshake_done = true;
                     }
-                    result.messages.push_back(
-                        PeerMessage{SenderRole::AsMaster, std::move(m)});
+                    result.messages.push_back(PeerMessage{
+                        SenderRole::AsMaster, std::move(om)});
                 }
 
                 // Also initiate our Replica's hello (to sync their tables).
                 auto our_hello = replica->hello();
                 auto& h = std::get<HelloMsg>(our_hello);
                 h.owned_tables = my_tables;
-                result.messages.push_back(
-                    PeerMessage{SenderRole::AsReplica, std::move(our_hello)});
+                h.last_seq = -1;  // Peer directions use different seq keys
+                result.messages.push_back(PeerMessage{
+                    SenderRole::AsReplica, std::move(our_hello)});
 
                 check_live();
                 return result;
@@ -2459,12 +5123,12 @@ struct Peer::Impl {
         }
 
         auto master_resp = master->handle_message(msg.payload);
-        for (auto& m : master_resp) {
-            if (std::holds_alternative<DiffReadyMsg>(m)) {
+        for (auto& om : master_resp) {
+            if (std::holds_alternative<DiffReadyMsg>(om)) {
                 master_handshake_done = true;
             }
-            result.messages.push_back(
-                PeerMessage{SenderRole::AsMaster, std::move(m)});
+            result.messages.push_back(PeerMessage{
+                SenderRole::AsMaster, std::move(om)});
         }
 
         check_live();
@@ -2490,15 +5154,17 @@ struct Peer::Impl {
             }
             hello->schema_version = replica->schema_version();
             hello->owned_tables = {};
+            hello->last_seq = -1;  // Peer directions use different seq keys
         }
 
         auto hr = replica->handle_message(forwarded);
 
-        for (auto& m : hr.messages) {
-            result.messages.push_back(
-                PeerMessage{SenderRole::AsReplica, std::move(m)});
+        for (auto& om : hr.messages) {
+            result.messages.push_back(PeerMessage{
+                SenderRole::AsReplica, std::move(om)});
         }
         result.changes = std::move(hr.changes);
+        result.subscriptions = std::move(hr.subscriptions);
 
         // Check if replica just went live.
         if (replica->state() == Replica::State::Live) {
@@ -2553,11 +5219,12 @@ std::vector<PeerMessage> Peer::start() {
     impl_->create_master();
     impl_->create_replica();
 
-    auto hello = impl_->replica->hello();
-    auto& h = std::get<HelloMsg>(hello);
+    auto hello_out = impl_->replica->hello();
+    auto& h = std::get<HelloMsg>(hello_out);
     h.owned_tables = impl_->my_tables;
+    h.last_seq = -1;  // Peer directions use different seq keys
 
-    return {PeerMessage{SenderRole::AsReplica, std::move(hello)}};
+    return {PeerMessage{SenderRole::AsReplica, std::move(hello_out)}};
 }
 
 std::vector<PeerMessage> Peer::flush() {
@@ -2567,8 +5234,9 @@ std::vector<PeerMessage> Peer::flush() {
     auto msgs = impl_->master->flush();
     std::vector<PeerMessage> result;
     result.reserve(msgs.size());
-    for (auto& m : msgs) {
-        result.push_back(PeerMessage{SenderRole::AsMaster, std::move(m)});
+    for (auto& om : msgs) {
+        result.push_back(PeerMessage{
+            SenderRole::AsMaster, std::move(om)});
     }
     return result;
 }
@@ -2579,6 +5247,22 @@ PeerHandleResult Peer::handle_message(const PeerMessage& msg) {
     } else {
         return impl_->handle_as_master(msg);
     }
+}
+
+SubscriptionId Peer::subscribe(const std::string& sql) {
+    if (!impl_->replica) {
+        throw Error(ErrorCode::InvalidState,
+                    "subscribe() requires replica to be initialized");
+    }
+    return impl_->replica->subscribe(sql);
+}
+
+void Peer::unsubscribe(SubscriptionId id) {
+    if (!impl_->replica) {
+        throw Error(ErrorCode::InvalidState,
+                    "unsubscribe() requires replica to be initialized");
+    }
+    impl_->replica->unsubscribe(id);
 }
 
 void Peer::reset() {
@@ -2606,18 +5290,105 @@ void sync_handshake(Master& master, Replica& replica) {
     auto pending = master.handle_message(replica.hello());
     while (!pending.empty()) {
         std::vector<Message> for_master;
-        for (const auto& msg : pending) {
-            auto hr = replica.handle_message(msg);
+        for (const auto& out : pending) {
+            auto hr = replica.handle_message(out);
             for_master.insert(for_master.end(),
                               hr.messages.begin(), hr.messages.end());
         }
         pending.clear();
-        for (const auto& msg : for_master) {
-            auto resp = master.handle_message(msg);
+        for (const auto& out : for_master) {
+            auto resp = master.handle_message(out);
             pending.insert(pending.end(), resp.begin(), resp.end());
         }
     }
 }
+
+// ── Relay ───────────────────────────────────────────────────────────
+
+struct Relay::Impl {
+    sqlite3*     db;
+    RelayConfig  config;
+    Master       master;
+    Replica      replica;
+    std::map<std::size_t, SinkCallback> sinks;
+    std::size_t  next_sink_id = 1;
+
+    Impl(sqlite3* db_, RelayConfig cfg)
+        : db(db_),
+          config(std::move(cfg)),
+          master(db_, make_master_config()),
+          replica(db_, make_replica_config()) {}
+
+    MasterConfig make_master_config() {
+        MasterConfig mc;
+        mc.table_filter = config.table_filter;
+        mc.on_log = config.on_log;
+        return mc;
+    }
+
+    ReplicaConfig make_replica_config() {
+        ReplicaConfig rc;
+        rc.table_filter = config.table_filter;
+        rc.on_conflict = config.on_conflict;
+        rc.on_schema_mismatch = config.on_schema_mismatch;
+        rc.on_log = config.on_log;
+        return rc;
+    }
+
+    void broadcast() {
+        auto msgs = master.flush();
+        for (auto& out : msgs) {
+            for (auto& [_, cb] : sinks) {
+                cb(out);
+            }
+        }
+    }
+};
+
+Relay::Relay(sqlite3* db, RelayConfig config)
+    : impl_(std::make_unique<Impl>(db, std::move(config))) {}
+
+Relay::~Relay() = default;
+Relay::Relay(Relay&&) noexcept = default;
+Relay& Relay::operator=(Relay&&) noexcept = default;
+
+std::size_t Relay::add_sink(SinkCallback cb) {
+    auto id = impl_->next_sink_id++;
+    impl_->sinks[id] = std::move(cb);
+    return id;
+}
+
+void Relay::remove_sink(std::size_t id) {
+    impl_->sinks.erase(id);
+}
+
+Message Relay::hello() {
+    return impl_->replica.hello();
+}
+
+std::vector<Message> Relay::handle_upstream(const Message& msg) {
+    auto hr = impl_->replica.handle_message(msg);
+    impl_->broadcast();
+    return std::move(hr.messages);
+}
+
+std::vector<Message> Relay::handle_downstream(const Message& msg) {
+    return impl_->master.handle_message(msg);
+}
+
+SubscriptionId Relay::subscribe(const std::string& sql) {
+    return impl_->replica.subscribe(sql);
+}
+
+void Relay::unsubscribe(SubscriptionId id) {
+    impl_->replica.unsubscribe(id);
+}
+
+void Relay::reset() {
+    impl_->replica.reset();
+}
+
+// ── Convenience utilities ────────────────────────────────────────
 
 void sync_handshake(Peer& client, Peer& server) {
     auto pending_for_server = client.start();
@@ -2625,14 +5396,14 @@ void sync_handshake(Peer& client, Peer& server) {
            client.state() != Peer::State::Live ||
            server.state() != Peer::State::Live) {
         std::vector<PeerMessage> pending_for_client;
-        for (const auto& msg : pending_for_server) {
-            auto hr = server.handle_message(msg);
+        for (const auto& pout : pending_for_server) {
+            auto hr = server.handle_message(pout);
             pending_for_client.insert(pending_for_client.end(),
                                       hr.messages.begin(), hr.messages.end());
         }
         pending_for_server.clear();
-        for (const auto& msg : pending_for_client) {
-            auto hr = client.handle_message(msg);
+        for (const auto& pout : pending_for_client) {
+            auto hr = client.handle_message(pout);
             pending_for_server.insert(pending_for_server.end(),
                                       hr.messages.begin(), hr.messages.end());
         }
@@ -2640,6 +5411,22 @@ void sync_handshake(Peer& client, Peer& server) {
             (client.state() != Peer::State::Live ||
              server.state() != Peer::State::Live)) {
             break;
+        }
+    }
+}
+
+void sync_handshake(Master& master, Relay& relay) {
+    auto pending = master.handle_message(relay.hello());
+    while (!pending.empty()) {
+        std::vector<Message> for_master;
+        for (const auto& out : pending) {
+            auto resp = relay.handle_upstream(out);
+            for_master.insert(for_master.end(), resp.begin(), resp.end());
+        }
+        pending.clear();
+        for (const auto& out : for_master) {
+            auto resp = master.handle_message(out);
+            pending.insert(pending.end(), resp.begin(), resp.end());
         }
     }
 }

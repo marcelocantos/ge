@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
-#define SQLPIPE_VERSION       "0.7.0"
+#define SQLPIPE_VERSION       "0.17.0"
 #define SQLPIPE_VERSION_MAJOR 0
-#define SQLPIPE_VERSION_MINOR 7
+#define SQLPIPE_VERSION_MINOR 17
 #define SQLPIPE_VERSION_PATCH 0
 
 #include <cstdint>
@@ -125,6 +125,7 @@ enum class LogLevel : uint8_t { Debug = 0, Info, Warn, Error };
 /// Callback for library log output. If not set, logs are silently discarded.
 using LogCallback = std::function<void(LogLevel level, std::string_view message)>;
 
+
 /// Called when a schema mismatch is detected during handshake.
 /// Receives (remote_fingerprint, local_fingerprint, remote_schema_sql).
 /// remote_schema_sql contains the remote side's sorted CREATE TABLE statements
@@ -136,6 +137,65 @@ using LogCallback = std::function<void(LogLevel level, std::string_view message)
 using SchemaMismatchCallback = std::function<bool(
     SchemaVersion remote_sv, SchemaVersion local_sv,
     const std::string& remote_schema_sql)>;
+
+/// Execute a one-shot SQL query and return the result set.
+/// The returned QueryResult has id = 0 (not a subscription).
+/// Throws Error on SQL errors.
+QueryResult query(sqlite3* db, const std::string& sql);
+
+} // namespace sqlpipe
+
+// ── query_watch.h ───────────────────────────────────────────────
+namespace sqlpipe {
+
+/// Standalone query subscription engine for a single sqlite3* handle.
+///
+/// Monitors registered SQL queries and detects when their results change.
+/// Result-change detection uses FNV-1a hashing — queries are only reported
+/// as changed when the actual result set differs, not on every call to
+/// notify().
+///
+/// Usage:
+///   QueryWatch w(db);
+///   auto result = w.subscribe("SELECT * FROM items WHERE active = 1");
+///   // ... perform writes ...
+///   auto changed = w.notify({"items"});  // re-evaluates affected queries
+///
+/// Does NOT own the sqlite3* handle.
+class QueryWatch {
+public:
+    explicit QueryWatch(sqlite3* db);
+    ~QueryWatch();
+
+    QueryWatch(const QueryWatch&) = delete;
+    QueryWatch& operator=(const QueryWatch&) = delete;
+    QueryWatch(QueryWatch&&) noexcept;
+    QueryWatch& operator=(QueryWatch&&) noexcept;
+
+    /// Register a query subscription. Returns the subscription ID.
+    /// Results arrive via notify() — subscribe does not evaluate the query.
+    SubscriptionId subscribe(const std::string& sql);
+
+    /// Remove a subscription.
+    void unsubscribe(SubscriptionId id);
+
+    /// Re-evaluate subscriptions that depend on any of the given tables.
+    /// Returns results only for subscriptions whose output actually changed.
+    std::vector<QueryResult> notify(const std::set<std::string>& affected_tables);
+
+    /// Re-evaluate subscriptions with predicate-aware filtering.
+    /// Subscriptions with extractable predicates skip re-evaluation when
+    /// the changeset doesn't contain matching rows.
+    std::vector<QueryResult> notify(const std::set<std::string>& affected_tables,
+                                    const Changeset& changeset_data);
+
+    /// Returns true if there are no active subscriptions.
+    bool empty() const;
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+};
 
 } // namespace sqlpipe
 
@@ -170,7 +230,7 @@ private:
 // ── protocol.h ──────────────────────────────────────────────────
 namespace sqlpipe {
 
-inline constexpr std::uint32_t kProtocolVersion = 5;
+inline constexpr std::uint32_t kProtocolVersion = 6;
 
 // ── Message types ───────────────────────────────────────────────────
 
@@ -179,6 +239,9 @@ struct HelloMsg {
     std::uint32_t protocol_version;  ///< Must match kProtocolVersion.
     SchemaVersion schema_version;    ///< Sender's schema fingerprint.
     std::set<std::string> owned_tables;  ///< Tables the sender wants to own (Peer mode).
+    Seq last_seq = -1;  ///< Sender's current seq (-1 = not provided).
+                        ///< When replica's seq matches master's and both > 0,
+                        ///< diff sync is skipped (fast reconnect).
 };
 
 /// A single changeset (one flush() worth of changes). Used in live streaming.
@@ -221,6 +284,9 @@ struct BucketHashEntry {
 /// Contains per-table bucket hashes for the diff protocol.
 struct BucketHashesMsg {
     std::vector<BucketHashEntry> buckets;
+    Seq                last_seq = -1;           ///< Sender's last applied seq (-1 = unknown).
+    std::uint32_t      protocol_version = 0;    ///< Sender's protocol version (0 = legacy).
+    SchemaVersion      schema_version = 0;      ///< Sender's schema fingerprint (0 = legacy).
 };
 
 /// One bucket range the master needs row-level detail for.
@@ -303,6 +369,12 @@ std::vector<std::uint8_t> serialize(const Message& msg);
 /// Deserialize a byte buffer (including the 4-byte length prefix) into a Message.
 Message deserialize(std::span<const std::uint8_t> buf);
 
+/// Callback invoked automatically when a write transaction commits on a
+/// Master's database. Receives the tagged changeset messages ready to send.
+/// When set, the Master hooks into SQLite's commit notification so that
+/// callers never need to call flush() explicitly.
+using FlushCallback = std::function<void(const std::vector<Message>&)>;
+
 } // namespace sqlpipe
 
 // ── master.h ────────────────────────────────────────────────────
@@ -330,6 +402,19 @@ struct MasterConfig {
 
     /// Log callback. nullptr = discard all log output.
     LogCallback on_log = nullptr;
+
+    /// Automatic flush callback. When set, the Master hooks into SQLite's
+    /// commit notification and delivers tagged changeset messages automatically
+    /// after each write transaction. No explicit flush() needed.
+    /// nullptr = manual flush only (caller must call flush()).
+    FlushCallback on_flush = nullptr;
+
+    /// Maximum number of recent changesets to retain for queue-based
+    /// replay on reconnect. When a replica reconnects with a seq that
+    /// is behind but still within the queue, the master replays from
+    /// the queue instead of running a full diff sync.
+    /// 0 = no queue (always diff sync on reconnect). Default: 64.
+    std::size_t changeset_queue_size = 64;
 };
 
 /// The sending side of the replication protocol.
@@ -346,9 +431,13 @@ public:
     Master(Master&&) noexcept;
     Master& operator=(Master&&) noexcept;
 
+    /// Execute SQL on the master's database. If on_flush is set, any
+    /// committed changes are automatically delivered via the callback.
+    void exec(const std::string& sql);
+
     /// Call after committing a write transaction. Extracts the changeset,
-    /// assigns a sequence number, and returns the messages to send to
-    /// connected replicas. Returns empty if nothing changed.
+    /// assigns a sequence number, and returns the tagged messages to send
+    /// to connected replicas. Returns empty if nothing changed.
     std::vector<Message> flush();
 
     /// Process an incoming message from a replica.
@@ -420,6 +509,20 @@ public:
     /// Generate the initial HelloMsg to send to the master.
     Message hello() const;
 
+    /// Initiate a convergence round. Computes and returns bucket hashes
+    /// for the current local state. The master compares these against its
+    /// own state and responds with NeedBuckets/DiffReady.
+    ///
+    /// Can be called in any state — Init, Live, or after reset().
+    /// Unlike hello(), does not require a handshake sequence. The master
+    /// processes the BucketHashes directly without a prior HelloMsg.
+    ///
+    /// Use this for:
+    /// - Periodic convergence checks (are we still in sync?)
+    /// - Reconnection without full handshake
+    /// - Loss-tolerant sync over unreliable channels
+    std::vector<Message> converge();
+
     /// Process an incoming message from the master.
     HandleResult handle_message(const Message& msg);
 
@@ -428,16 +531,34 @@ public:
     /// loop when processing a burst of messages.
     HandleResult handle_messages(std::span<const Message> msgs);
 
-    /// Subscribe to a SQL query. Returns the current result immediately.
-    /// After each handle_message that changes a table the query reads from,
-    /// the updated result appears in HandleResult::subscriptions.
-    QueryResult subscribe(const std::string& sql);
+    /// Subscribe to a SQL query. Returns the subscription ID.
+    /// The initial result and subsequent updates arrive via
+    /// HandleResult::subscriptions — subscribe does not evaluate the query.
+    /// Before Live state, evaluation is deferred until sync completes.
+    /// After Live, the subscription is evaluated on the next handle_message.
+    SubscriptionId subscribe(const std::string& sql);
 
     /// Remove a subscription.
     void unsubscribe(SubscriptionId id);
 
+    /// Begin an optimistic prediction. Creates a SQLite SAVEPOINT.
+    /// Only one prediction can be active at a time.
+    /// While active, the client can write optimistically to the local
+    /// database and subscriptions will fire with the predicted state.
+    void begin_prediction();
+
+    /// Finalise the prediction — the client is done editing and will
+    /// send the action to the server. The savepoint stays open until
+    /// the server responds (via handle_message, which auto-rollbacks).
+    void commit_prediction();
+
+    /// Cancel the prediction before sending. Rolls back the savepoint,
+    /// restoring the pre-prediction state.
+    void rollback_prediction();
+
     /// Reset to Init state for reconnection. Subscriptions are preserved;
     /// they will re-evaluate after the next handshake applies changes.
+    /// Also rolls back any active prediction.
     void reset();
 
     Seq current_seq() const;
@@ -471,7 +592,16 @@ namespace sqlpipe {
 using ApproveOwnershipCallback = std::function<bool(
     const std::set<std::string>& requested_tables)>;
 
+/// Explicit role for a Peer in the handshake protocol.
+enum class PeerRole : std::uint8_t {
+    Client,  ///< Initiates the handshake via start(). Sends owned_tables.
+    Server,  ///< Waits for the client's hello. Validates ownership.
+};
+
 struct PeerConfig {
+    /// Peer role — determines handshake behaviour.
+    PeerRole role = PeerRole::Client;
+
     /// Tables this peer wants to own (client-side: sent in hello).
     /// Ignored on the server side (computed as complement of client's).
     std::set<std::string> owned_tables;
@@ -481,8 +611,7 @@ struct PeerConfig {
     /// Complement (remote tables) is computed within this filtered set.
     std::optional<std::set<std::string>> table_filter;
 
-    /// Server-side ownership validation callback.
-    /// Non-null indicates this peer is the server.
+    /// Server-side ownership validation callback (server role only).
     /// nullptr = auto-approve any request.
     ApproveOwnershipCallback approve_ownership = nullptr;
 
@@ -516,8 +645,9 @@ struct PeerMessage {
 
 /// Return type for Peer::handle_message.
 struct PeerHandleResult {
-    std::vector<PeerMessage>  messages;  ///< Protocol responses to send back.
-    std::vector<ChangeEvent>  changes;   ///< Row-level changes applied.
+    std::vector<PeerMessage>    messages;       ///< Protocol responses.
+    std::vector<ChangeEvent>    changes;        ///< Row-level changes applied.
+    std::vector<QueryResult>    subscriptions;  ///< Invalidated subscription results.
 };
 
 /// Bidirectional replication peer.
@@ -537,7 +667,7 @@ public:
     Peer& operator=(Peer&&) noexcept;
 
     /// Initiate the handshake (client only).
-    /// Returns PeerMessages to send to the remote peer.
+    /// Returns tagged PeerMessages to send to the remote peer.
     std::vector<PeerMessage> start();
 
     /// Flush local changes on owned tables.
@@ -546,6 +676,13 @@ public:
 
     /// Process an incoming PeerMessage from the remote peer.
     PeerHandleResult handle_message(const PeerMessage& msg);
+
+    /// Subscribe to a SQL query on the replica side. Returns the
+    /// subscription ID. Results arrive via PeerHandleResult::subscriptions.
+    SubscriptionId subscribe(const std::string& sql);
+
+    /// Remove a subscription.
+    void unsubscribe(SubscriptionId id);
 
     /// Reset to Init state for reconnection. Call start() again to
     /// re-handshake. Table ownership is preserved from the previous session.
@@ -580,6 +717,78 @@ std::vector<std::uint8_t> serialize(const PeerMessage& msg);
 /// Deserialize a byte buffer into a PeerMessage.
 PeerMessage deserialize_peer(std::span<const std::uint8_t> buf);
 
+// ── relay.h ─────────────────────────────────────────────────────
+
+/// Callback to deliver a tagged message to a downstream sink.
+using SinkCallback = std::function<void(const Message&)>;
+
+/// Configuration for a Relay node.
+struct RelayConfig {
+    /// Optional table filter (same semantics as MasterConfig/ReplicaConfig).
+    std::optional<std::set<std::string>> table_filter;
+
+    /// Conflict callback for the internal Replica.
+    ConflictCallback on_conflict = nullptr;
+
+    /// Schema mismatch callback for the internal Replica.
+    SchemaMismatchCallback on_schema_mismatch = nullptr;
+
+    /// Log callback forwarded to both internal Master and Replica.
+    LogCallback on_log = nullptr;
+};
+
+/// A relay node that receives changesets from an upstream Master and
+/// broadcasts them to downstream Replica sinks.
+///
+/// Internally owns a Replica (upstream) and a Master (downstream) on
+/// the same sqlite3* handle. The SQLite session extension captures
+/// changeset_apply writes, so the Master's session sees the Replica's
+/// applied changes and can flush them downstream.
+///
+/// Does NOT own the sqlite3* handle.
+class Relay {
+public:
+    explicit Relay(sqlite3* db, RelayConfig config = {});
+    ~Relay();
+
+    Relay(const Relay&) = delete;
+    Relay& operator=(const Relay&) = delete;
+    Relay(Relay&&) noexcept;
+    Relay& operator=(Relay&&) noexcept;
+
+    /// Register a downstream sink. Returns an ID for removal.
+    std::size_t add_sink(SinkCallback cb);
+
+    /// Remove a downstream sink by ID.
+    void remove_sink(std::size_t id);
+
+    /// Generate the HelloMsg to send to the upstream master.
+    Message hello();
+
+    /// Handle an incoming message from the upstream master.
+    /// Applies the changeset locally, flushes to the internal Master,
+    /// and broadcasts to all registered sinks.
+    /// Returns response messages to send back to the upstream master.
+    std::vector<Message> handle_upstream(const Message& msg);
+
+    /// Handle an incoming message from a downstream sink (handshake).
+    /// Returns response messages to send back to that sink.
+    std::vector<Message> handle_downstream(const Message& msg);
+
+    /// Subscribe to a query (on the replica side).
+    SubscriptionId subscribe(const std::string& sql);
+
+    /// Remove a subscription.
+    void unsubscribe(SubscriptionId id);
+
+    /// Reset for reconnection to upstream.
+    void reset();
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+};
+
 // ── Convenience utilities ───────────────────────────────────────
 
 /// Drive the Master/Replica handshake protocol to completion when both
@@ -590,5 +799,8 @@ void sync_handshake(Master& master, Replica& replica);
 /// in the same process. The client initiates; messages are exchanged
 /// until both peers reach Live state or no more messages remain.
 void sync_handshake(Peer& client, Peer& server);
+
+/// Drive the Master/Relay handshake (upstream side).
+void sync_handshake(Master& master, Relay& relay);
 
 } // namespace sqlpipe

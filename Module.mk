@@ -20,6 +20,7 @@ ge/INCLUDES = \
 	-Ige/vendor/sdl3/include \
 	-Ige/vendor/github.com/erincatto/box2d/include \
 	-Ige/vendor/github.com/chriskohlhoff/asio/include \
+	-Ige/vendor/github.com/sqliteai/liteparser/src \
 	-DSQLITE_ENABLE_SESSION -DSQLITE_ENABLE_PREUPDATE_HOOK -DSQLITE_ENABLE_DESERIALIZE
 
 # bgfx + bx + bimg (vendored, compiled from source)
@@ -97,6 +98,11 @@ ge/TRIANGLE_CFLAGS = -O2 -Ige/vendor/include -DTRILIBRARY -DREAL=double -DANSI_D
 ge/LZ4_SRC = ge/vendor/src/lz4.c
 ge/LZ4_OBJ = $(BUILD_DIR)/ge/vendor/lz4.o
 
+# liteparser (C code, used by sqlpipe for query analysis)
+ge/LITEPARSER_DIR = ge/vendor/github.com/sqliteai/liteparser/src
+ge/LITEPARSER_SRC = $(addprefix $(ge/LITEPARSER_DIR)/,arena.c liteparser.c lp_tokenize.c lp_unparse.c parse.c)
+ge/LITEPARSER_OBJ = $(patsubst $(ge/LITEPARSER_DIR)/%.c,$(BUILD_DIR)/ge/vendor/liteparser/%.o,$(ge/LITEPARSER_SRC))
+
 # Vendor C++ libraries (compiled into libge.a)
 ge/VENDOR_CPP_SRC = ge/vendor/src/sqlift.cpp ge/vendor/src/sqlpipe.cpp
 ge/VENDOR_CPP_OBJ = $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(ge/VENDOR_CPP_SRC))
@@ -127,7 +133,7 @@ $(BUILD_DIR)/ge/src/%.o: ge/src/%.mm
 	$(CXX) $(CXXFLAGS) $(SDL_CFLAGS) -MMD -MP -c $< -o $@
 
 # Static library
-$(ge/LIB): $(ge/OBJ) $(ge/SQLITE_OBJ) $(ge/LZ4_OBJ) $(ge/VENDOR_CPP_OBJ)
+$(ge/LIB): $(ge/OBJ) $(ge/SQLITE_OBJ) $(ge/LZ4_OBJ) $(ge/LITEPARSER_OBJ) $(ge/VENDOR_CPP_OBJ)
 	@mkdir -p $(dir $@)
 	libtool -static -o $@ $^
 
@@ -150,6 +156,11 @@ $(ge/SQLITE_OBJ): $(ge/SQLITE_SRC)
 $(ge/LZ4_OBJ): $(ge/LZ4_SRC)
 	@mkdir -p $(dir $@)
 	$(CC) -O2 -Ige/vendor/include -c $< -o $@
+
+# liteparser
+$(BUILD_DIR)/ge/vendor/liteparser/%.o: $(ge/LITEPARSER_DIR)/%.c
+	@mkdir -p $(dir $@)
+	$(CC) -w -O2 -I$(ge/LITEPARSER_DIR) -c $< -o $@
 
 # Triangle library
 $(ge/TRIANGLE_OBJ): $(ge/TRIANGLE_SRC)
