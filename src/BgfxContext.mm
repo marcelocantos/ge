@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include <ge/BgfxContext.h>
+#include <ge/Signal.h>
 
 #include <bgfx/bgfx.h>
 #include <bgfx/platform.h>
@@ -33,6 +34,8 @@ BgfxContext::BgfxContext(const BgfxConfig& config)
     m->width = config.width;
     m->height = config.height;
     m->headless = config.headless;
+
+    ge::installSignalHandlers();
 
     if (!SDL_Init(SDL_INIT_VIDEO)) {
         SPDLOG_ERROR("SDL_Init failed: {}", SDL_GetError());
