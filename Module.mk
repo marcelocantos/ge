@@ -62,7 +62,8 @@ ge/SDL_LIBS = $(ge/SDL3_LIB) $(ge/SDL3_IMAGE_LIB) $(ge/SDL3_TTF_LIB) $(ge/FREETY
 ge/SRC = \
 	ge/src/Resource.cpp \
 	ge/src/FileIO.cpp \
-	ge/src/WebSocketClient.cpp
+	ge/src/WebSocketClient.cpp \
+	ge/src/BgfxContext.mm
 
 ge/OBJ = $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(filter %.cpp,$(ge/SRC))) \
          $(patsubst %.mm,$(BUILD_DIR)/%.o,$(filter %.mm,$(ge/SRC)))
