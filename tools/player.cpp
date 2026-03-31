@@ -312,9 +312,6 @@ int main(int, char*[]) {
             SDL_RenderTexture(renderer, videoTex, nullptr, &dst);
         }
         SDL_RenderPresent(renderer);
-
-        // Cap at 30 fps — matches server encode rate
-        SDL_Delay(33);
     }
 
     decoder.flush();
