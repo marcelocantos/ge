@@ -141,45 +141,105 @@ int main(int, char*[]) {
     conn->sendBinary(devInfoMsg.data(), devInfoMsg.size());
     SPDLOG_INFO("DeviceInfo sent ({}x{})", winW, winH);
 
+    // No send/recv timeouts — the ping-safe recvFrame fix prevents
+    // blocking, and event coalescing limits send volume.
+
+    // Helper to send an SDL event to the server via ged
+    auto sendEvent = [&](const SDL_Event& e) {
+        if (!conn || !conn->isOpen()) return;
+        wire::MessageHeader hdr{};
+        hdr.magic = wire::kSdlEventMagic;
+        hdr.length = sizeof(SDL_Event);
+        std::vector<uint8_t> msg(sizeof(hdr) + sizeof(SDL_Event));
+        std::memcpy(msg.data(), &hdr, sizeof(hdr));
+        std::memcpy(msg.data() + sizeof(hdr), &e, sizeof(SDL_Event));
+        conn->sendBinary(msg.data(), msg.size());
+    };
+
+    // Coordinate mapping: player window → server render space
+    auto mapEvent = [&](SDL_Event& e) {
+        if (!videoTex) return;
+        int ww, wh;
+        SDL_GetWindowSize(window, &ww, &wh);
+        float scaleX = float(ww) / float(texW);
+        float scaleY = float(wh) / float(texH);
+        float scale = std::min(scaleX, scaleY);
+        float offsetX = (ww - texW * scale) / 2.0f;
+        float offsetY = (wh - texH * scale) / 2.0f;
+
+        if (e.type == SDL_EVENT_MOUSE_MOTION) {
+            e.motion.x = (e.motion.x - offsetX) / scale;
+            e.motion.y = (e.motion.y - offsetY) / scale;
+        } else if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN ||
+                   e.type == SDL_EVENT_MOUSE_BUTTON_UP) {
+            e.button.x = (e.button.x - offsetX) / scale;
+            e.button.y = (e.button.y - offsetY) / scale;
+        } else if (e.type == SDL_EVENT_FINGER_DOWN ||
+                   e.type == SDL_EVENT_FINGER_UP ||
+                   e.type == SDL_EVENT_FINGER_MOTION) {
+            // Finger events use normalized 0-1 coords; convert to pixels,
+            // map, then re-normalize to server dimensions.
+            float px = e.tfinger.x * ww;
+            float py = e.tfinger.y * wh;
+            e.tfinger.x = (px - offsetX) / scale / float(texW);
+            e.tfinger.y = (py - offsetY) / scale / float(texH);
+        }
+    };
+
     uint64_t frameCount = 0;
     bool running = true;
 
     while (running) {
-        // Process SDL events
+        // Process SDL events — forward input to server.
+        // Coalesce mouse/finger motion to avoid flooding the connection.
         SDL_Event e;
+        SDL_Event lastMotion{};
+        bool hasMotion = false;
         while (SDL_PollEvent(&e)) {
             if (e.type == SDL_EVENT_QUIT) {
                 running = false;
+                continue;
+            }
+            switch (e.type) {
+            case SDL_EVENT_MOUSE_MOTION:
+            case SDL_EVENT_FINGER_MOTION:
+                mapEvent(e);
+                lastMotion = e;
+                hasMotion = true;
+                break;
+            case SDL_EVENT_MOUSE_BUTTON_DOWN:
+            case SDL_EVENT_MOUSE_BUTTON_UP:
+            case SDL_EVENT_MOUSE_WHEEL:
+            case SDL_EVENT_FINGER_DOWN:
+            case SDL_EVENT_FINGER_UP:
+                mapEvent(e);
+                sendEvent(e);
+                break;
             }
         }
+        if (hasMotion) sendEvent(lastMotion);
 
-        // Receive messages from ged (non-blocking)
+        // Drain ALL available messages. Decode every H.264 frame (P-frames
+        // are delta-coded so skipping any corrupts the reference chain).
+        // The decoder callback overwrites the decoded pixel buffer each time,
+        // so the render loop always gets the latest result.
         while (conn->isOpen() && conn->available() > 0) {
             std::vector<char> data;
             if (!conn->recvBinary(data) || data.size() < 8) break;
 
-            // Parse message header
             uint32_t magic = 0;
             std::memcpy(&magic, data.data(), 4);
 
             if (magic == wire::kVideoStreamMagic) {
                 uint32_t length = 0;
                 std::memcpy(&length, data.data() + 4, 4);
+                if (data.size() < 8 + length) continue;
 
-                if (data.size() < 8 + length) {
-                    SPDLOG_WARN("Truncated video frame: {} < {}", data.size(), 8 + length);
-                    continue;
-                }
-
-                // flags: bit 0 = keyframe (informational, decoder detects from NAL type)
-                (void)data[8];
                 const uint8_t* avccData = reinterpret_cast<const uint8_t*>(data.data()) + 9;
                 size_t avccSize = length - 1;
 
-                // Parse AVCC NAL units
                 auto frameNals = avccParser.parse(avccData, avccSize);
 
-                // Initialize decoder with SPS/PPS if new params arrived
                 if (avccParser.paramsDirty && avccParser.hasParams()) {
                     decoder.setParameterSets(
                         avccParser.sps.data(), avccParser.sps.size(),
@@ -188,13 +248,10 @@ int main(int, char*[]) {
                     SPDLOG_INFO("Decoder initialized with SPS/PPS");
                 }
 
-                // Decode each frame NAL (as Annex B: prepend start code)
                 static const uint8_t startCode[] = {0x00, 0x00, 0x00, 0x01};
                 for (auto& [nalBody, nalSize] : frameNals) {
                     uint8_t nalType = nalBody[0] & 0x1F;
-                    // Skip non-VCL NALs (SEI, AUD, etc.) — only decode slices
                     if (nalType != 1 && nalType != 5) continue;
-                    // Build Annex B NAL: start code + body
                     std::vector<uint8_t> annexB(4 + nalSize);
                     std::memcpy(annexB.data(), startCode, 4);
                     std::memcpy(annexB.data() + 4, nalBody, nalSize);
@@ -255,6 +312,9 @@ int main(int, char*[]) {
             SDL_RenderTexture(renderer, videoTex, nullptr, &dst);
         }
         SDL_RenderPresent(renderer);
+
+        // Cap at 30 fps — matches server encode rate
+        SDL_Delay(33);
     }
 
     decoder.flush();

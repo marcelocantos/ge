@@ -135,7 +135,14 @@ private:
         if (len > 0) {
             asio::error_code ec;
             asio::read(socket_, asio::buffer(p, len), ec);
-            if (ec) { open_ = false; return false; }
+            if (ec) {
+                // SO_RCVTIMEO fires EAGAIN — treat as a soft timeout, not a fatal error
+                if (ec == asio::error::would_block || ec == asio::error::try_again) {
+                    return false;
+                }
+                open_ = false;
+                return false;
+            }
         }
         return true;
     }
@@ -190,10 +197,21 @@ private:
             if (opcode == 0x09) {  // Ping -> Pong
                 sendFrame(0x0A, out.data() + prevSize, payloadLen);
                 out.resize(prevSize);  // Remove ping payload
+                // If no more data is available, return false (non-blocking)
+                // instead of blocking on the next readExact. This prevents
+                // the main thread from hanging after handling a ping.
+                {
+                    asio::error_code ec;
+                    if (socket_.available(ec) == 0 || ec) return false;
+                }
                 continue;
             }
             if (opcode == 0x0A) {  // Pong -- ignore
                 out.resize(prevSize);
+                {
+                    asio::error_code ec;
+                    if (socket_.available(ec) == 0 || ec) return false;
+                }
                 continue;
             }
 
@@ -208,6 +226,13 @@ private:
         tv.tv_sec = ms / 1000;
         tv.tv_usec = (ms % 1000) * 1000;
         setsockopt(socket_.native_handle(), SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+    }
+
+    void setRecvTimeout(int ms) override {
+        struct timeval tv;
+        tv.tv_sec = ms / 1000;
+        tv.tv_usec = (ms % 1000) * 1000;
+        setsockopt(socket_.native_handle(), SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     }
 
     void setNoDelay() {

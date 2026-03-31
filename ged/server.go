@@ -83,7 +83,8 @@ func (d *Daemon) handleServer(w http.ResponseWriter, r *http.Request) {
 			if len(data) >= 8 {
 				magic := binary.LittleEndian.Uint32(data[:4])
 				if magic == 0x47453256 { // kVideoStreamMagic
-					d.ForwardVideoToPlayers(sc.ID, data)
+					dataCopy := append([]byte(nil), data...)
+					go d.ForwardVideoToPlayers(sc.ID, dataCopy)
 					continue
 				}
 			}

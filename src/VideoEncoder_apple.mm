@@ -49,23 +49,30 @@ void VideoEncoder::M::createSession() {
 
     VTSessionSetProperty(session, kVTCompressionPropertyKey_RealTime, kCFBooleanTrue);
     VTSessionSetProperty(session, kVTCompressionPropertyKey_ProfileLevel,
-                         kVTProfileLevel_H264_Baseline_AutoLevel);
+                         kVTProfileLevel_H264_High_AutoLevel);
     VTSessionSetProperty(session, kVTCompressionPropertyKey_AllowFrameReordering,
                          kCFBooleanFalse);
 
-    int32_t bitrate = 4000000; // 4 Mbps
+    // Zero-frame encoder delay for lowest latency
+    int32_t maxDelay = 0;
+    CFNumberRef delayRef = CFNumberCreate(nullptr, kCFNumberSInt32Type, &maxDelay);
+    VTSessionSetProperty(session, kVTCompressionPropertyKey_MaxFrameDelayCount, delayRef);
+    CFRelease(delayRef);
+
+    // High bitrate for crisp quality on localhost — 16 Mbps
+    int32_t bitrate = 16000000;
     CFNumberRef bitrateRef = CFNumberCreate(nullptr, kCFNumberSInt32Type, &bitrate);
     VTSessionSetProperty(session, kVTCompressionPropertyKey_AverageBitRate, bitrateRef);
     CFRelease(bitrateRef);
 
-    // Short keyframe interval for fast recovery over unreliable transport
-    int32_t maxKeyFrameInterval = fps / 2; // Keyframe every 0.5s
+    // Keyframe every 1s (less frequent = better P-frame quality)
+    int32_t maxKeyFrameInterval = fps;
     CFNumberRef keyFrameRef = CFNumberCreate(nullptr, kCFNumberSInt32Type, &maxKeyFrameInterval);
     VTSessionSetProperty(session, kVTCompressionPropertyKey_MaxKeyFrameInterval, keyFrameRef);
     CFRelease(keyFrameRef);
 
     VTCompressionSessionPrepareToEncodeFrames(session);
-    SPDLOG_INFO("VideoEncoder: created {}x{} @ {} fps, 4 Mbps H.264 Baseline, keyframe every {}",
+    SPDLOG_INFO("VideoEncoder: created {}x{} @ {} fps, 16 Mbps H.264 High, keyframe every {}",
                 width, height, fps, maxKeyFrameInterval);
 }
 

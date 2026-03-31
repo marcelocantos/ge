@@ -19,6 +19,7 @@ public:
     virtual bool isOpen() const = 0;
     virtual size_t available() = 0;  // TCP bytes available (nonzero = frame ready)
     virtual void setSendTimeout(int ms) { (void)ms; }
+    virtual void setRecvTimeout(int ms) { (void)ms; }
 };
 
 // Connect to a WebSocket endpoint as a client. Returns null on failure.

@@ -455,6 +455,8 @@ func (d *Daemon) ForwardToPlayer(sessionID string, data []byte) {
 }
 
 // ForwardVideoToPlayers sends a video frame to all player sessions belonging to a server.
+// Uses a short timeout to avoid blocking the sideband read loop — it's better to drop
+// a video frame than to deadlock the pipeline.
 func (d *Daemon) ForwardVideoToPlayers(serverID string, data []byte) {
 	d.mu.Lock()
 	var players []*PlayerConn
@@ -466,19 +468,20 @@ func (d *Daemon) ForwardVideoToPlayers(serverID string, data []byte) {
 	d.mu.Unlock()
 
 	for _, pc := range players {
-		ctx, cancel := contextWithTimeout(5 * time.Second)
+		ctx, cancel := contextWithTimeout(50 * time.Millisecond)
 		_ = pc.Conn.Write(ctx, websocket.MessageBinary, data)
 		cancel()
 	}
 }
 
 // ForwardToServerWire sends a frame to the server's wire for a specific session.
-func (d *Daemon) ForwardToServerWire(sessionID string, mt websocket.MessageType, data []byte) {
+// Returns false if no wire is available (session not bridged or no wire connection).
+func (d *Daemon) ForwardToServerWire(sessionID string, mt websocket.MessageType, data []byte) bool {
 	d.mu.Lock()
 	sess, ok := d.sessions[sessionID]
 	if !ok || !sess.bridged || sess.ServerWire == nil {
 		d.mu.Unlock()
-		return
+		return false
 	}
 	wire := sess.ServerWire // snapshot under lock
 	d.mu.Unlock()
@@ -489,6 +492,33 @@ func (d *Daemon) ForwardToServerWire(sessionID string, mt websocket.MessageType,
 	ctx, cancel := contextWithTimeout(5 * time.Second)
 	defer cancel()
 	_ = wire.Write(ctx, mt, data)
+	return true
+}
+
+// ForwardToServerSideband sends a binary frame to the server's sideband connection
+// for a given session. Used when there is no per-session wire (e.g. H.264 server).
+// Short timeout to avoid blocking the player read loop.
+func (d *Daemon) ForwardToServerSideband(sessionID string, mt websocket.MessageType, data []byte) {
+	if mt != websocket.MessageBinary {
+		return
+	}
+	d.mu.Lock()
+	sess, ok := d.sessions[sessionID]
+	if !ok || sess.ServerID == "" {
+		d.mu.Unlock()
+		return
+	}
+	sc, ok := d.servers[sess.ServerID]
+	d.mu.Unlock()
+	if !ok {
+		return
+	}
+
+	sc.sendMu.Lock()
+	defer sc.sendMu.Unlock()
+	ctx, cancel := contextWithTimeout(50 * time.Millisecond)
+	defer cancel()
+	_ = sc.Conn.Write(ctx, websocket.MessageBinary, data)
 }
 
 // sendToServerIDLocked sends a text message to a specific server's sideband.

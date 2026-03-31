@@ -77,6 +77,10 @@ func (d *Daemon) handlePlayer(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		d.ForwardToServerWire(sessionID, mt, data)
+		// Try session wire first (Dawn wire protocol), fall back to server
+		// sideband (H.264 architecture where server has no per-session wire).
+		if !d.ForwardToServerWire(sessionID, mt, data) {
+			d.ForwardToServerSideband(sessionID, mt, data)
+		}
 	}
 }
