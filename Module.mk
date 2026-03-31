@@ -63,7 +63,8 @@ ge/SRC = \
 	ge/src/Resource.cpp \
 	ge/src/FileIO.cpp \
 	ge/src/WebSocketClient.cpp \
-	ge/src/BgfxContext.mm
+	ge/src/BgfxContext.mm \
+	ge/src/Signal.cpp
 
 ge/OBJ = $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(filter %.cpp,$(ge/SRC))) \
          $(patsubst %.mm,$(BUILD_DIR)/%.o,$(filter %.mm,$(ge/SRC)))

@@ -9,18 +9,13 @@
 #include <spdlog/spdlog.h>
 
 #include <ge/Protocol.h>
+#include <ge/Signal.h>
 #include <ge/VideoDecoder.h>
 #include <ge/WebSocketClient.h>
 
-#include <atomic>
-#include <csignal>
 #include <cstring>
 #include <mutex>
 #include <vector>
-
-static std::atomic<bool> g_quit{false};
-
-static void signalHandler(int) { g_quit = true; }
 
 // Parse AVCC-format NAL units from encoded frame data.
 // AVCC format: [4-byte big-endian length][NAL body] repeated.
@@ -71,8 +66,7 @@ struct AVCCParser {
 };
 
 int main(int, char*[]) {
-    std::signal(SIGINT, signalHandler);
-    std::signal(SIGTERM, signalHandler);
+    ge::installSignalHandlers();
 
     SPDLOG_INFO("H.264 player starting");
 
@@ -197,14 +191,14 @@ int main(int, char*[]) {
     uint64_t frameCount = 0;
     bool running = true;
 
-    while (running && !g_quit) {
+    while (running && !ge::shouldQuit()) {
         // Process SDL events — forward input to server.
         // Coalesce mouse/finger motion to avoid flooding the connection.
         SDL_Event e;
         SDL_Event lastMotion{};
         bool hasMotion = false;
         while (SDL_PollEvent(&e)) {
-            if (e.type == SDL_EVENT_QUIT || g_quit) {
+            if (e.type == SDL_EVENT_QUIT || ge::shouldQuit()) {
                 running = false;
                 continue;
             }
