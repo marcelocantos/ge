@@ -7,9 +7,33 @@
 #pragma once
 
 #include <SDL3/SDL_events.h>
+#include <cstdint>
 #include <functional>
+#include <memory>
 
 namespace ge {
+
+enum class DeviceClass : uint8_t {
+    Unknown = 0,
+    Phone   = 1,
+    Tablet  = 2,
+    Desktop = 3,
+};
+
+// Platform context provided to the game factory by ge::run().
+// Cheaply copyable (shared_ptr internals). Capture by value in lambdas.
+class Context {
+public:
+    Context(int width, int height, DeviceClass deviceClass);
+
+    int width() const;
+    int height() const;
+    DeviceClass deviceClass() const;
+
+private:
+    struct M;
+    std::shared_ptr<M> m;
+};
 
 // Render loop callbacks — the game's only interface with the engine.
 struct RunConfig {
@@ -26,9 +50,8 @@ struct SessionHostConfig {
     bool headless = true;  // true = H.264 server, false = native window
 };
 
-// Factory called per player session. Returns RunConfig for the render loop.
-// The factory should create all per-session state (game DB, application, etc.).
-using Factory = std::function<RunConfig()>;
+// Factory receives platform context and returns render loop callbacks.
+using Factory = std::function<RunConfig(Context)>;
 
 // Blocks until SIGINT or all sessions end.
 void run(Factory factory, const SessionHostConfig& config = {});

@@ -26,6 +26,19 @@ namespace capture {
 
 namespace ge {
 
+struct Context::M {
+    int width;
+    int height;
+    DeviceClass deviceClass;
+};
+
+Context::Context(int width, int height, DeviceClass deviceClass)
+    : m(std::make_shared<M>(M{width, height, deviceClass})) {}
+
+int Context::width() const { return m->width; }
+int Context::height() const { return m->height; }
+DeviceClass Context::deviceClass() const { return m->deviceClass; }
+
 void run(Factory factory, const SessionHostConfig& config) {
     int w = config.width, h = config.height;
 
@@ -73,7 +86,8 @@ void run(Factory factory, const SessionHostConfig& config) {
     bool quit = false;
 
     // Create per-session state via factory
-    auto runConfig = factory();
+    Context ctx_info{w, h, DeviceClass::Desktop};
+    auto runConfig = factory(ctx_info);
 
     while (!quit && !ctx.shouldQuit()) {
         // Drain input from player via ged
