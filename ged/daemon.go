@@ -454,6 +454,24 @@ func (d *Daemon) ForwardToPlayer(sessionID string, data []byte) {
 	_ = sess.Player.Conn.Write(ctx, websocket.MessageBinary, data)
 }
 
+// ForwardVideoToPlayers sends a video frame to all player sessions belonging to a server.
+func (d *Daemon) ForwardVideoToPlayers(serverID string, data []byte) {
+	d.mu.Lock()
+	var players []*PlayerConn
+	for _, sess := range d.sessions {
+		if sess.ServerID == serverID && sess.Player != nil {
+			players = append(players, sess.Player)
+		}
+	}
+	d.mu.Unlock()
+
+	for _, pc := range players {
+		ctx, cancel := contextWithTimeout(5 * time.Second)
+		_ = pc.Conn.Write(ctx, websocket.MessageBinary, data)
+		cancel()
+	}
+}
+
 // ForwardToServerWire sends a frame to the server's wire for a specific session.
 func (d *Daemon) ForwardToServerWire(sessionID string, mt websocket.MessageType, data []byte) {
 	d.mu.Lock()

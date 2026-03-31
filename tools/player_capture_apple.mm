@@ -23,6 +23,20 @@ static CAMetalLayer* g_captureLayer = nil;
 
 namespace capture {
 
+void enableCaptureLayer(void* rawLayer) {
+    CAMetalLayer* layer = (__bridge CAMetalLayer*)rawLayer;
+    if (!layer) {
+        SPDLOG_ERROR("enableCaptureLayer: null layer");
+        return;
+    }
+    layer.framebufferOnly = NO;
+    object_setClass(layer, [CaptureMetalLayer class]);
+    g_captureLayer = layer;
+    SPDLOG_INFO("Capture enabled via layer ({}x{})",
+                (int)layer.drawableSize.width,
+                (int)layer.drawableSize.height);
+}
+
 void enableCapture(SDL_MetalView view) {
     CAMetalLayer* layer = (__bridge CAMetalLayer*)SDL_Metal_GetLayer(view);
     if (!layer) {

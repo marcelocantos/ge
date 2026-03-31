@@ -19,6 +19,7 @@ ge/INCLUDES = \
 	-Ige/vendor/github.com/libsdl-org/SDL/include \
 	-Ige/vendor/sdl3/include \
 	-Ige/vendor/github.com/erincatto/box2d/include \
+	-Ige/vendor/github.com/chriskohlhoff/asio/include \
 	-DSQLITE_ENABLE_SESSION -DSQLITE_ENABLE_PREUPDATE_HOOK -DSQLITE_ENABLE_DESERIALIZE
 
 # bgfx + bx + bimg (vendored, compiled from source)
@@ -60,7 +61,8 @@ ge/SDL_LIBS = $(ge/SDL3_LIB) $(ge/SDL3_IMAGE_LIB) $(ge/SDL3_TTF_LIB) $(ge/FREETY
 
 ge/SRC = \
 	ge/src/Resource.cpp \
-	ge/src/FileIO.cpp
+	ge/src/FileIO.cpp \
+	ge/src/WebSocketClient.cpp
 
 ge/OBJ = $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(filter %.cpp,$(ge/SRC))) \
          $(patsubst %.mm,$(BUILD_DIR)/%.o,$(filter %.mm,$(ge/SRC)))
@@ -121,7 +123,7 @@ $(BUILD_DIR)/ge/src/%.o: ge/src/%.mm
 # Static library
 $(ge/LIB): $(ge/OBJ) $(ge/SQLITE_OBJ) $(ge/LZ4_OBJ) $(ge/VENDOR_CPP_OBJ)
 	@mkdir -p $(dir $@)
-	$(AR) rcs $@ $^
+	libtool -static -o $@ $^
 
 # Vendor C++ sources
 $(BUILD_DIR)/ge/vendor/%.o: ge/vendor/%.cpp
@@ -155,7 +157,7 @@ $(ge/BX_OBJ): $(ge/BX_DIR)/src/amalgamated.cpp
 
 $(ge/BX_LIB): $(ge/BX_OBJ)
 	@mkdir -p $(dir $@)
-	$(AR) rcs $@ $^
+	libtool -static -o $@ $^
 
 # bimg (amalgamated build — needs bx + bimg internal headers)
 $(BUILD_DIR)/ge/vendor/bimg_%.o: $(ge/BIMG_DIR)/src/%.cpp
@@ -164,7 +166,7 @@ $(BUILD_DIR)/ge/vendor/bimg_%.o: $(ge/BIMG_DIR)/src/%.cpp
 
 $(ge/BIMG_LIB): $(ge/BIMG_OBJ)
 	@mkdir -p $(dir $@)
-	$(AR) rcs $@ $^
+	libtool -static -o $@ $^
 
 # bgfx (amalgamated build — Metal renderer needs ObjC++ for MTLCopyAllDevicesWithObserver)
 $(ge/BGFX_OBJ): $(ge/BGFX_DIR)/src/amalgamated.cpp
@@ -173,7 +175,7 @@ $(ge/BGFX_OBJ): $(ge/BGFX_DIR)/src/amalgamated.cpp
 
 $(ge/BGFX_LIB): $(ge/BGFX_OBJ)
 	@mkdir -p $(dir $@)
-	$(AR) rcs $@ $^
+	libtool -static -o $@ $^
 
 # iOS Xcode project generation
 .PHONY: ge/ios

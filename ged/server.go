@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/binary"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -78,6 +79,14 @@ func (d *Daemon) handleServer(w http.ResponseWriter, r *http.Request) {
 		if mt == websocket.MessageText {
 			d.handleServerSideband(data)
 		} else if mt == websocket.MessageBinary {
+			// Check for H.264 video stream frames (kVideoStreamMagic).
+			if len(data) >= 8 {
+				magic := binary.LittleEndian.Uint32(data[:4])
+				if magic == 0x47453256 { // kVideoStreamMagic
+					d.ForwardVideoToPlayers(sc.ID, data)
+					continue
+				}
+			}
 			// Extract null-terminated session ID prefix.
 			sessionID := ""
 			payload := data
