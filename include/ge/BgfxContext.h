@@ -26,6 +26,10 @@ public:
     int width() const;
     int height() const;
 
+    // True when the context should shut down (signal received, or
+    // window closed in windowed mode).
+    bool shouldQuit() const;
+
     // SDL window (null if headless).
     SDL_Window* window() const;
 

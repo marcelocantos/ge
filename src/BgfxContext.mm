@@ -91,6 +91,7 @@ BgfxContext::~BgfxContext() = default;
 
 int BgfxContext::width() const { return m->width; }
 int BgfxContext::height() const { return m->height; }
+bool BgfxContext::shouldQuit() const { return ge::shouldQuit(); }
 SDL_Window* BgfxContext::window() const { return m->window; }
 void* BgfxContext::nativeHandle() const { return m->nativeHandle; }
 
