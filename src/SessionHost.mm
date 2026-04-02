@@ -10,6 +10,7 @@
 
 #include <bgfx/bgfx.h>
 #include <SDL3/SDL.h>
+#include <sqlite3.h>
 #include <spdlog/spdlog.h>
 
 #include <cstring>
@@ -30,14 +31,21 @@ struct Context::M {
     int width;
     int height;
     DeviceClass deviceClass;
+    sqlite3* db;
 };
 
-Context::Context(int width, int height, DeviceClass deviceClass)
-    : m(std::make_shared<M>(M{width, height, deviceClass})) {}
+Context::Context(int width, int height, DeviceClass deviceClass, sqlite3* db)
+    : m(std::make_shared<M>(M{width, height, deviceClass, db})) {}
 
 int Context::width() const { return m->width; }
 int Context::height() const { return m->height; }
 DeviceClass Context::deviceClass() const { return m->deviceClass; }
+
+sqlite3* Context::takeDb() {
+    auto* h = m->db;
+    m->db = nullptr;
+    return h;
+}
 
 void run(Factory factory, const SessionHostConfig& config) {
     int w = config.width, h = config.height;
@@ -85,8 +93,32 @@ void run(Factory factory, const SessionHostConfig& config) {
     uint64_t freq = SDL_GetPerformanceFrequency();
     bool quit = false;
 
+    // Open game database — persistent file for bundled mode, in-memory for server.
+    sqlite3* gameDb = nullptr;
+    std::string dbPath;
+    if (!config.headless && config.orgName && config.appName) {
+        char* prefPath = SDL_GetPrefPath(config.orgName, config.appName);
+        if (prefPath) {
+            dbPath = std::string(prefPath) + "game.db";
+            SDL_free(prefPath);
+        } else {
+            SPDLOG_WARN("SDL_GetPrefPath failed, falling back to :memory:");
+            dbPath = ":memory:";
+        }
+    } else {
+        dbPath = ":memory:";
+    }
+    int dbFlags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE;
+    int rc = sqlite3_open_v2(dbPath.c_str(), &gameDb, dbFlags, nullptr);
+    if (rc != SQLITE_OK) {
+        std::string msg = gameDb ? sqlite3_errmsg(gameDb) : "out of memory";
+        sqlite3_close(gameDb);
+        throw std::runtime_error("Failed to open game DB (" + dbPath + "): " + msg);
+    }
+    SPDLOG_INFO("Game DB: {}", dbPath);
+
     // Create per-session state via factory
-    Context ctx_info{w, h, DeviceClass::Desktop};
+    Context ctx_info{w, h, DeviceClass::Desktop, gameDb};
     auto runConfig = factory(ctx_info);
 
     while (!quit && !ctx.shouldQuit()) {

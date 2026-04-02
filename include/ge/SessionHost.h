@@ -11,6 +11,8 @@
 #include <functional>
 #include <memory>
 
+struct sqlite3;  // Forward declaration — engine provides DB handle
+
 namespace ge {
 
 enum class DeviceClass : uint8_t {
@@ -24,11 +26,16 @@ enum class DeviceClass : uint8_t {
 // Cheaply copyable (shared_ptr internals). Capture by value in lambdas.
 class Context {
 public:
-    Context(int width, int height, DeviceClass deviceClass);
+    Context(int width, int height, DeviceClass deviceClass, sqlite3* db);
 
     int width() const;
     int height() const;
     DeviceClass deviceClass() const;
+
+    // Returns the engine-provided database handle and releases ownership.
+    // The caller takes ownership (must close via sqlite3_close or wrap in
+    // an RAII type like GameDb). Returns nullptr on second call.
+    sqlite3* takeDb();
 
 private:
     struct M;
@@ -48,6 +55,12 @@ struct SessionHostConfig {
     int width  = 820;
     int height = 1180;
     bool headless = true;  // true = H.264 server, false = native window
+
+    // App identity for persistent DB path (via SDL_GetPrefPath).
+    // When both are set and headless=false, engine opens a persistent file.
+    // Otherwise engine uses an in-memory database.
+    const char* orgName = nullptr;
+    const char* appName = nullptr;
 };
 
 // Factory receives platform context and returns render loop callbacks.
