@@ -6,12 +6,12 @@
 // factory that creates session state and returns render loop callbacks.
 #pragma once
 
+#include <ge/Db.h>
+
 #include <SDL3/SDL_events.h>
 #include <cstdint>
 #include <functional>
 #include <memory>
-
-struct sqlite3;  // Forward declaration — engine provides DB handle
 
 namespace ge {
 
@@ -26,16 +26,14 @@ enum class DeviceClass : uint8_t {
 // Cheaply copyable (shared_ptr internals). Capture by value in lambdas.
 class Context {
 public:
-    Context(int width, int height, DeviceClass deviceClass, sqlite3* db);
+    Context(int width, int height, DeviceClass deviceClass, sqlite3* dbHandle);
 
     int width() const;
     int height() const;
     DeviceClass deviceClass() const;
 
-    // Returns the engine-provided database handle and releases ownership.
-    // The caller takes ownership (must close via sqlite3_close or wrap in
-    // an RAII type like GameDb). Returns nullptr on second call.
-    sqlite3* takeDb();
+    // The engine-provided database.
+    Db db() const;
 
 private:
     struct M;
@@ -57,8 +55,9 @@ struct SessionHostConfig {
     bool headless = true;  // true = H.264 server, false = native window
 
     // App identity for persistent DB path (via SDL_GetPrefPath).
-    // When both are set and headless=false, engine opens a persistent file.
-    // Otherwise engine uses an in-memory database.
+    // Bundled (non-headless) mode opens a persistent file; headless
+    // (server) mode always uses :memory: — persistence is owned by
+    // the player and synced via sqlpipe.
     const char* orgName = nullptr;
     const char* appName = nullptr;
 };

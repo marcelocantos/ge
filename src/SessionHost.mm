@@ -31,21 +31,16 @@ struct Context::M {
     int width;
     int height;
     DeviceClass deviceClass;
-    sqlite3* db;
+    Db db;
 };
 
-Context::Context(int width, int height, DeviceClass deviceClass, sqlite3* db)
-    : m(std::make_shared<M>(M{width, height, deviceClass, db})) {}
+Context::Context(int width, int height, DeviceClass deviceClass, sqlite3* dbHandle)
+    : m(std::make_shared<M>(M{width, height, deviceClass, Db(dbHandle)})) {}
 
 int Context::width() const { return m->width; }
 int Context::height() const { return m->height; }
 DeviceClass Context::deviceClass() const { return m->deviceClass; }
-
-sqlite3* Context::takeDb() {
-    auto* h = m->db;
-    m->db = nullptr;
-    return h;
-}
+Db Context::db() const { return m->db; }
 
 void run(Factory factory, const SessionHostConfig& config) {
     int w = config.width, h = config.height;
@@ -93,7 +88,8 @@ void run(Factory factory, const SessionHostConfig& config) {
     uint64_t freq = SDL_GetPerformanceFrequency();
     bool quit = false;
 
-    // Open game database — persistent file for bundled mode, in-memory for server.
+    // Open game database — persistent file for bundled mode, :memory: for server.
+    // In server mode, the player owns persistence; sqlpipe syncs state in.
     sqlite3* gameDb = nullptr;
     std::string dbPath;
     if (!config.headless && config.orgName && config.appName) {
