@@ -6,7 +6,7 @@
 // factory that creates session state and returns render loop callbacks.
 #pragma once
 
-#include <ge/Db.h>
+#include <sqlpipe.h>
 
 #include <SDL3/SDL_events.h>
 #include <cstdint>
@@ -35,7 +35,7 @@ public:
     DeviceClass deviceClass() const;
 
     // The engine-provided database.
-    Db db() const;
+    std::shared_ptr<sqlpipe::Database> db() const;
 
 private:
     struct M;

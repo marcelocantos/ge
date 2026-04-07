@@ -61,7 +61,6 @@ ge/PLUTOVG_LIB = ge/vendor/sdl3/lib/macos-arm64/libplutovg.a
 ge/SDL_LIBS = $(ge/SDL3_LIB) $(ge/SDL3_IMAGE_LIB) $(ge/SDL3_TTF_LIB) $(ge/FREETYPE_LIB) $(ge/HARFBUZZ_LIB) $(ge/PLUTOSVG_LIB) $(ge/PLUTOVG_LIB)
 
 ge/SRC = \
-	ge/src/Db.cpp \
 	ge/src/Resource.cpp \
 	ge/src/FileIO.cpp \
 	ge/src/WebSocketClient.cpp \

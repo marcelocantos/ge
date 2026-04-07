@@ -30,17 +30,18 @@ struct Context::M {
     int width;
     int height;
     DeviceClass deviceClass;
-    Db db;
+    std::shared_ptr<sqlpipe::Database> db;
 };
 
 Context::Context(int width, int height, DeviceClass deviceClass,
                  const std::string& dbPath)
-    : m(std::make_shared<M>(M{width, height, deviceClass, Db(dbPath)})) {}
+    : m(std::make_shared<M>(M{width, height, deviceClass,
+        std::make_shared<sqlpipe::Database>(dbPath)})) {}
 
 int Context::width() const { return m->width; }
 int Context::height() const { return m->height; }
 DeviceClass Context::deviceClass() const { return m->deviceClass; }
-Db Context::db() const { return m->db; }
+std::shared_ptr<sqlpipe::Database> Context::db() const { return m->db; }
 
 void run(Factory factory, const SessionHostConfig& config) {
     int w = config.width, h = config.height;
