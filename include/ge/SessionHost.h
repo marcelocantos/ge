@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <string>
 
 namespace ge {
 
@@ -26,7 +27,8 @@ enum class DeviceClass : uint8_t {
 // Cheaply copyable (shared_ptr internals). Capture by value in lambdas.
 class Context {
 public:
-    Context(int width, int height, DeviceClass deviceClass, sqlite3* dbHandle);
+    Context(int width, int height, DeviceClass deviceClass,
+            const std::string& dbPath);
 
     int width() const;
     int height() const;

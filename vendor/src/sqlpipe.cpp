@@ -1,7 +1,6 @@
 // Copyright 2026 The sqlpipe Authors
 // SPDX-License-Identifier: Apache-2.0
 #include "sqlpipe.h"
-#include <sqlift.h>
 
 #include <algorithm>
 #include <cassert>
@@ -4308,6 +4307,264 @@ QueryResult query(sqlite3* db, const std::string& sql) {
 
 } // namespace sqlpipe
 
+// ── database.cpp ────────────────────────────────────────────────
+
+namespace sqlpipe {
+
+struct Database::Impl {
+    sqlite3*                    db = nullptr;
+    bool                        owns_db = true;
+    QueryWatch                  watch;
+    std::map<SubscriptionId, SubscriptionCallback> callbacks;
+    std::set<std::string>       dirty_tables;
+
+    Impl(sqlite3* db_) : db(db_), watch(db_) {}
+
+    ~Impl() {
+        if (owns_db && db) sqlite3_close(db);
+    }
+
+    void unsubscribe(SubscriptionId id) {
+        watch.unsubscribe(id);
+        callbacks.erase(id);
+    }
+
+    void dispatch(const std::vector<QueryResult>& results) {
+        for (auto& r : results) {
+            auto it = callbacks.find(r.id);
+            if (it != callbacks.end()) {
+                it->second(r);
+            }
+        }
+    }
+
+    /// Transpile SQL through sqldeep. Returns the input unchanged if it
+    /// contains no sqldeep syntax (sqldeep returns NULL on plain SQL).
+    static std::string transpile(const std::string& sql) {
+        char* err_msg = nullptr;
+        int err_line = 0, err_col = 0;
+        char* result = sqldeep_transpile(sql.c_str(),
+                                         &err_msg, &err_line, &err_col);
+        if (result) {
+            std::string out(result);
+            sqldeep_free(result);
+            return out;
+        }
+        if (err_msg) {
+            std::string msg(err_msg);
+            sqldeep_free(err_msg);
+            throw Error(ErrorCode::SqliteError,
+                        msg + " (line " + std::to_string(err_line) +
+                        ", col " + std::to_string(err_col) + ")");
+        }
+        // No result and no error means plain SQL — return as-is.
+        return sql;
+    }
+
+    static void update_hook(void* ctx, int op, const char* db_name,
+                            const char* table, sqlite3_int64 rowid) {
+        (void)op; (void)db_name; (void)rowid;
+        auto* self = static_cast<Impl*>(ctx);
+        self->dirty_tables.insert(table);
+    }
+};
+
+struct Subscription::Impl {
+    std::weak_ptr<Database::Impl> db_impl;
+    SubscriptionId id = 0;
+};
+
+Subscription::Subscription(std::unique_ptr<Impl> impl)
+    : impl_(std::move(impl)) {}
+
+Subscription::~Subscription() {
+    if (!impl_) return;
+    if (auto db = impl_->db_impl.lock()) {
+        db->unsubscribe(impl_->id);
+    }
+}
+
+Subscription::Subscription(Subscription&&) noexcept = default;
+Subscription& Subscription::operator=(Subscription&&) noexcept = default;
+
+Database::Database(const std::string& path, const std::string& schema_ddl)
+    : impl_(nullptr) {
+    sqlite3* db = nullptr;
+    int rc = sqlite3_open_v2(path.c_str(), &db,
+        SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, nullptr);
+    if (rc != SQLITE_OK) {
+        std::string msg = db ? sqlite3_errmsg(db) : "out of memory";
+        if (db) sqlite3_close(db);
+        throw Error(ErrorCode::SqliteError, "failed to open database: " + msg);
+    }
+
+    impl_ = std::make_shared<Impl>(db);
+
+    // Register update hook to track dirty tables.
+    sqlite3_update_hook(db, &Impl::update_hook, impl_.get());
+
+    // Register sqldeep XML runtime functions (xml_element, xml_attrs, xml_agg).
+    sqldeep_register_sqlite_xml(db);
+
+    // Apply schema migration if DDL provided.
+    if (!schema_ddl.empty()) {
+        // Extract current schema from the database.
+        auto* sdb = sqlift_db_wrap(db);
+        int err_type;
+        char* err_msg = nullptr;
+
+        char* current_json = sqlift_extract(sdb, &err_type, &err_msg);
+        if (!current_json) {
+            std::string error = err_msg ? err_msg : "unknown error";
+            sqlift_free(err_msg);
+            sqlift_db_close(sdb);
+            throw Error(ErrorCode::SqliteError,
+                        "failed to extract schema: " + error);
+        }
+
+        // Parse the desired schema.
+        char* desired_json = sqlift_parse(schema_ddl.c_str(),
+                                          &err_type, &err_msg);
+        if (!desired_json) {
+            std::string error = err_msg ? err_msg : "unknown error";
+            sqlift_free(err_msg);
+            sqlift_free(current_json);
+            sqlift_db_close(sdb);
+            throw Error(ErrorCode::SqliteError,
+                        "failed to parse schema DDL: " + error);
+        }
+
+        // Diff and apply.
+        char* plan_json = sqlift_diff(current_json, desired_json,
+                                      &err_type, &err_msg);
+        sqlift_free(current_json);
+        sqlift_free(desired_json);
+
+        if (!plan_json) {
+            std::string error = err_msg ? err_msg : "unknown error";
+            sqlift_free(err_msg);
+            sqlift_db_close(sdb);
+            throw Error(ErrorCode::SqliteError,
+                        "failed to diff schemas: " + error);
+        }
+
+        rc = sqlift_apply(sdb, plan_json, /*allow_destructive=*/0,
+                          &err_type, &err_msg);
+        sqlift_free(plan_json);
+        sqlift_db_close(sdb);
+
+        if (rc != 0) {
+            std::string error = err_msg ? err_msg : "unknown error";
+            sqlift_free(err_msg);
+            throw Error(ErrorCode::SqliteError,
+                        "failed to apply migration: " + error);
+        }
+    }
+
+    detail::ensure_meta_table(db);
+}
+
+Database::~Database() = default;
+Database::Database(Database&&) noexcept = default;
+Database& Database::operator=(Database&&) noexcept = default;
+
+void Database::exec(const std::string& sql) {
+    auto tsql = Impl::transpile(sql);
+    impl_->dirty_tables.clear();
+    auto stmt = detail::prepare(impl_->db, tsql.c_str());
+    detail::step_done(impl_->db, stmt.get());
+
+    if (!impl_->dirty_tables.empty() && !impl_->callbacks.empty()) {
+        auto results = impl_->watch.notify(impl_->dirty_tables);
+        impl_->dispatch(results);
+        impl_->dirty_tables.clear();
+    }
+}
+
+QueryResult Database::query(const std::string& sql) const {
+    return sqlpipe::query(impl_->db, Impl::transpile(sql));
+}
+
+Subscription Database::subscribe(const std::string& sql,
+                                  SubscriptionCallback cb) {
+    auto tsql = Impl::transpile(sql);
+    auto id = impl_->watch.subscribe(tsql);
+    impl_->callbacks[id] = std::move(cb);
+
+    // Fire immediately with the initial result.
+    auto tables = detail::get_tracked_tables(impl_->db);
+    std::set<std::string> table_set(tables.begin(), tables.end());
+    auto results = impl_->watch.notify(table_set);
+    for (auto& r : results) {
+        if (r.id == id) {
+            impl_->callbacks[id](r);
+            break;
+        }
+    }
+
+    auto sub_impl = std::make_unique<Subscription::Impl>();
+    sub_impl->db_impl = impl_;
+    sub_impl->id = id;
+    return Subscription(std::move(sub_impl));
+}
+
+void Database::notify(const std::set<std::string>& affected_tables) {
+    if (impl_->callbacks.empty()) return;
+    auto results = impl_->watch.notify(affected_tables);
+    impl_->dispatch(results);
+}
+
+void Database::notify() {
+    if (impl_->callbacks.empty()) return;
+    auto tables = detail::get_tracked_tables(impl_->db);
+    std::set<std::string> table_set(tables.begin(), tables.end());
+    notify(table_set);
+}
+
+sqlite3* Database::handle() const {
+    return impl_->db;
+}
+
+std::string Database::migration(const std::string& from_ddl,
+                                const std::string& to_ddl) {
+    int err_type;
+    char* err_msg = nullptr;
+
+    char* from_json = sqlift_parse(from_ddl.c_str(), &err_type, &err_msg);
+    if (!from_json) {
+        std::string error = err_msg ? err_msg : "unknown error";
+        sqlift_free(err_msg);
+        throw Error(ErrorCode::SqliteError,
+                    "failed to parse from_ddl: " + error);
+    }
+
+    char* to_json = sqlift_parse(to_ddl.c_str(), &err_type, &err_msg);
+    if (!to_json) {
+        std::string error = err_msg ? err_msg : "unknown error";
+        sqlift_free(err_msg);
+        sqlift_free(from_json);
+        throw Error(ErrorCode::SqliteError,
+                    "failed to parse to_ddl: " + error);
+    }
+
+    char* plan = sqlift_diff(from_json, to_json, &err_type, &err_msg);
+    sqlift_free(from_json);
+    sqlift_free(to_json);
+
+    if (!plan) {
+        std::string error = err_msg ? err_msg : "unknown error";
+        sqlift_free(err_msg);
+        throw Error(ErrorCode::SqliteError,
+                    "failed to diff schemas: " + error);
+    }
+
+    std::string result(plan);
+    sqlift_free(plan);
+    return result;
+}
+
+} // namespace sqlpipe
+
 // ── replica.cpp ─────────────────────────────────────────────────
 
 namespace sqlpipe {
@@ -4984,6 +5241,21 @@ struct Peer::Impl {
         return config.role == PeerRole::Server;
     }
 
+    /// Resolve owned_tables glob patterns against tracked tables in the db.
+    std::set<std::string> resolve_owned_patterns() {
+        auto all = detail::get_tracked_tables(db,
+            config.table_filter ? &*config.table_filter : nullptr);
+        std::set<std::string> resolved;
+        for (const auto& pattern : config.owned_tables) {
+            for (const auto& table : all) {
+                if (sqlite3_strglob(pattern.c_str(), table.c_str()) == 0) {
+                    resolved.insert(table);
+                }
+            }
+        }
+        return resolved;
+    }
+
     void create_master() {
         MasterConfig mc;
         mc.table_filter = my_tables;
@@ -5200,20 +5472,12 @@ std::vector<PeerMessage> Peer::start() {
                     "server peer must not call start()");
     }
 
-    // Validate owned_tables ⊆ table_filter when filter is set.
-    if (impl_->config.table_filter) {
-        for (const auto& t : impl_->config.owned_tables) {
-            if (impl_->config.table_filter->find(t) ==
-                    impl_->config.table_filter->end()) {
-                throw Error(ErrorCode::InvalidState,
-                    "owned_tables entry '" + t +
-                    "' is not in table_filter");
-            }
-        }
-    }
-
     impl_->state = State::Negotiating;
-    impl_->my_tables = impl_->config.owned_tables;
+    impl_->my_tables = impl_->resolve_owned_patterns();
+    if (impl_->my_tables.empty()) {
+        throw Error(ErrorCode::InvalidState,
+            "owned_tables patterns matched no tables");
+    }
     impl_->their_tables = impl_->complement_tables(impl_->my_tables);
 
     impl_->create_master();
@@ -5432,3 +5696,5971 @@ void sync_handshake(Master& master, Relay& relay) {
 }
 
 } // namespace sqlpipe
+
+// ── BUNDLED DEPENDENCIES (auto-generated by scripts/bundle-deps.sh) ──
+// Do not edit below this line. Regenerate with: scripts/bundle-deps.sh
+
+// ── sqlift (schema migration) ────────────────────────────────────
+// Source: vendor/src/sqlift.cpp
+
+// Copyright 2026 Marcelo Cantos
+// SPDX-License-Identifier: Apache-2.0
+
+// sqlift - Declarative SQLite schema migration library
+
+
+#include <cstdint>
+#include <map>
+#include <stdexcept>
+#include <string>
+#include <vector>
+#include <sqlite3.h>
+
+namespace sqlift {
+
+// --- error.h ---
+
+class Error : public std::runtime_error {
+    using std::runtime_error::runtime_error;
+};
+
+class ParseError : public Error {
+    using Error::Error;
+};
+
+class ExtractError : public Error {
+    using Error::Error;
+};
+
+class DiffError : public Error {
+    using Error::Error;
+};
+
+class ApplyError : public Error {
+    using Error::Error;
+};
+
+class DriftError : public Error {
+    using Error::Error;
+};
+
+class DestructiveError : public Error {
+    using Error::Error;
+};
+
+class BreakingChangeError : public Error {
+    using Error::Error;
+};
+
+class JsonError : public Error {
+    using Error::Error;
+};
+
+// --- sqlite_util.h ---
+
+// RAII wrapper for sqlite3*.
+class Database {
+public:
+    explicit Database(const std::string& path,
+                      int flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE);
+    ~Database();
+
+    Database(Database&& other) noexcept;
+    Database& operator=(Database&& other) noexcept;
+    Database(const Database&) = delete;
+    Database& operator=(const Database&) = delete;
+
+    sqlite3* get() const { return db_; }
+    operator sqlite3*() const { return db_; }
+
+    void exec(const std::string& sql);
+
+private:
+    sqlite3* db_ = nullptr;
+};
+
+// RAII wrapper for sqlite3_stmt*.
+class Statement {
+public:
+    Statement(sqlite3* db, const std::string& sql);
+    ~Statement();
+
+    Statement(Statement&& other) noexcept;
+    Statement& operator=(Statement&& other) noexcept;
+    Statement(const Statement&) = delete;
+    Statement& operator=(const Statement&) = delete;
+
+    bool step();
+
+    int64_t column_int(int col) const;
+    std::string column_text(int col) const;
+
+    void bind_text(int param, const std::string& value);
+    void bind_int(int param, int64_t value);
+
+    sqlite3_stmt* get() const { return stmt_; }
+
+private:
+    sqlite3_stmt* stmt_ = nullptr;
+};
+
+// --- schema.h ---
+
+enum class GeneratedType {
+    Normal  = 0,
+    Virtual = 2,
+    Stored  = 3,
+};
+
+struct Column {
+    std::string name;
+    std::string type;
+    bool notnull = false;
+    std::string default_value;
+    int pk = 0;
+    std::string collation;
+    GeneratedType generated = GeneratedType::Normal;
+    std::string generated_expr;
+
+    bool operator==(const Column&) const = default;
+};
+
+struct CheckConstraint {
+    std::string name;
+    std::string expression;
+    bool operator==(const CheckConstraint&) const = default;
+};
+
+struct ForeignKey {
+    std::string constraint_name;
+    std::vector<std::string> from_columns;
+    std::string to_table;
+    std::vector<std::string> to_columns;
+    std::string on_update = "NO ACTION";
+    std::string on_delete = "NO ACTION";
+
+    bool operator==(const ForeignKey& o) const {
+        return from_columns == o.from_columns && to_table == o.to_table &&
+               to_columns == o.to_columns && on_update == o.on_update &&
+               on_delete == o.on_delete;
+    }
+};
+
+struct Table {
+    std::string name;
+    std::vector<Column> columns;
+    std::vector<ForeignKey> foreign_keys;
+    std::vector<CheckConstraint> check_constraints;
+    std::string pk_constraint_name;
+    bool without_rowid = false;
+    bool strict = false;
+    std::string raw_sql;
+
+    bool operator==(const Table& o) const {
+        return name == o.name && columns == o.columns &&
+               foreign_keys == o.foreign_keys &&
+               check_constraints == o.check_constraints &&
+               without_rowid == o.without_rowid &&
+               strict == o.strict;
+    }
+};
+
+struct Index {
+    std::string name;
+    std::string table_name;
+    std::vector<std::string> columns;
+    bool unique = false;
+    std::string where_clause;
+    std::string raw_sql;
+
+    bool operator==(const Index& o) const {
+        return name == o.name && table_name == o.table_name &&
+               columns == o.columns && unique == o.unique &&
+               where_clause == o.where_clause;
+    }
+};
+
+struct View {
+    std::string name;
+    std::string sql;
+
+    bool operator==(const View&) const = default;
+};
+
+struct Trigger {
+    std::string name;
+    std::string table_name;
+    std::string sql;
+
+    bool operator==(const Trigger&) const = default;
+};
+
+struct Schema {
+    std::map<std::string, Table>   tables;
+    std::map<std::string, Index>   indexes;
+    std::map<std::string, View>    views;
+    std::map<std::string, Trigger> triggers;
+
+    bool operator==(const Schema&) const = default;
+
+    std::string hash() const;
+};
+
+// --- parse.h ---
+
+Schema parse(const std::string& sql);
+
+// --- extract.h ---
+
+Schema extract(sqlite3* db);
+
+// --- diff.h ---
+
+enum class WarningType {
+    RedundantIndex,
+};
+
+struct Warning {
+    WarningType type;
+    std::string message;
+    std::string index_name;
+    std::string covered_by;
+    std::string table_name;
+};
+
+enum class OpType {
+    CreateTable,
+    DropTable,
+    RebuildTable,
+    AddColumn,
+    CreateIndex,
+    DropIndex,
+    CreateView,
+    DropView,
+    CreateTrigger,
+    DropTrigger,
+};
+
+struct Operation {
+    OpType type;
+    std::string object_name;
+    std::string description;
+    std::vector<std::string> sql;
+    bool destructive = false;
+};
+
+class MigrationPlan {
+public:
+    const std::vector<Operation>& operations() const { return ops_; }
+    const std::vector<Warning>& warnings() const { return warnings_; }
+    bool has_destructive_operations() const;
+    bool empty() const { return ops_.empty(); }
+
+private:
+    friend MigrationPlan diff(const Schema& current, const Schema& desired);
+    friend MigrationPlan from_json(const std::string& json_str);
+    std::vector<Operation> ops_;
+    std::vector<Warning> warnings_;
+};
+
+MigrationPlan diff(const Schema& current, const Schema& desired);
+
+std::vector<Warning> detect_redundant_indexes(const Schema& schema);
+
+// --- apply.h ---
+
+struct ApplyOptions {
+    bool allow_destructive = false;
+};
+
+void apply(sqlite3* db, const MigrationPlan& plan, const ApplyOptions& opts = {});
+
+int64_t migration_version(sqlite3* db);
+
+// --- json.h ---
+
+std::string to_string(OpType type);
+OpType op_type_from_string(const std::string& s);
+std::string to_json(const MigrationPlan& plan);
+MigrationPlan from_json(const std::string& json_str);
+std::string schema_to_json(const Schema& schema);
+Schema schema_from_json(const std::string& json_str);
+
+} // namespace sqlift
+
+#include <algorithm>
+#include <array>
+#include <cstdlib>
+#include <cstring>
+#include <iomanip>
+#include <set>
+#include <sstream>
+#include <utility>
+
+#include <nlohmann/json.hpp>
+
+namespace sqlift {
+
+// --- sqlite_util.cpp ---
+
+
+
+
+// --- Database ---
+
+Database::Database(const std::string& path, int flags) {
+    int rc = sqlite3_open_v2(path.c_str(), &db_, flags, nullptr);
+    if (rc != SQLITE_OK) {
+        std::string msg = db_ ? sqlite3_errmsg(db_) : "failed to allocate memory";
+        sqlite3_close(db_);
+        db_ = nullptr;
+        throw Error("sqlite3_open_v2: " + msg);
+    }
+}
+
+Database::~Database() {
+    if (db_) sqlite3_close(db_);
+}
+
+Database::Database(Database&& other) noexcept : db_(other.db_) {
+    other.db_ = nullptr;
+}
+
+Database& Database::operator=(Database&& other) noexcept {
+    if (this != &other) {
+        if (db_) sqlite3_close(db_);
+        db_ = other.db_;
+        other.db_ = nullptr;
+    }
+    return *this;
+}
+
+void Database::exec(const std::string& sql) {
+    char* errmsg = nullptr;
+    int rc = sqlite3_exec(db_, sql.c_str(), nullptr, nullptr, &errmsg);
+    if (rc != SQLITE_OK) {
+        std::string msg = errmsg ? errmsg : "unknown error";
+        sqlite3_free(errmsg);
+        throw Error("sqlite3_exec: " + msg);
+    }
+}
+
+// --- Statement ---
+
+Statement::Statement(sqlite3* db, const std::string& sql) {
+    int rc = sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt_, nullptr);
+    if (rc != SQLITE_OK) {
+        throw Error(std::string("sqlite3_prepare_v2: ") + sqlite3_errmsg(db));
+    }
+}
+
+Statement::~Statement() {
+    if (stmt_) sqlite3_finalize(stmt_);
+}
+
+Statement::Statement(Statement&& other) noexcept : stmt_(other.stmt_) {
+    other.stmt_ = nullptr;
+}
+
+Statement& Statement::operator=(Statement&& other) noexcept {
+    if (this != &other) {
+        if (stmt_) sqlite3_finalize(stmt_);
+        stmt_ = other.stmt_;
+        other.stmt_ = nullptr;
+    }
+    return *this;
+}
+
+bool Statement::step() {
+    int rc = sqlite3_step(stmt_);
+    if (rc == SQLITE_ROW) return true;
+    if (rc == SQLITE_DONE) return false;
+    throw Error(std::string("sqlite3_step: ") +
+                sqlite3_errmsg(sqlite3_db_handle(stmt_)));
+}
+
+int64_t Statement::column_int(int col) const {
+    return sqlite3_column_int64(stmt_, col);
+}
+
+std::string Statement::column_text(int col) const {
+    const unsigned char* text = sqlite3_column_text(stmt_, col);
+    if (!text) return {};
+    return reinterpret_cast<const char*>(text);
+}
+
+void Statement::bind_text(int param, const std::string& value) {
+    int rc = sqlite3_bind_text(stmt_, param, value.c_str(), -1, SQLITE_TRANSIENT);
+    if (rc != SQLITE_OK) {
+        throw Error(std::string("sqlite3_bind_text: ") +
+                    sqlite3_errmsg(sqlite3_db_handle(stmt_)));
+    }
+}
+
+void Statement::bind_int(int param, int64_t value) {
+    int rc = sqlite3_bind_int64(stmt_, param, value);
+    if (rc != SQLITE_OK) {
+        throw Error(std::string("sqlite3_bind_int: ") +
+                    sqlite3_errmsg(sqlite3_db_handle(stmt_)));
+    }
+}
+
+
+// --- hash.cpp ---
+
+
+
+namespace {
+
+constexpr std::array<uint32_t, 64> K = {
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5,
+    0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3,
+    0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc,
+    0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
+    0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13,
+    0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3,
+    0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5,
+    0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208,
+    0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+};
+
+inline uint32_t rotr(uint32_t x, int n) { return (x >> n) | (x << (32 - n)); }
+inline uint32_t ch(uint32_t x, uint32_t y, uint32_t z) { return (x & y) ^ (~x & z); }
+inline uint32_t maj(uint32_t x, uint32_t y, uint32_t z) { return (x & y) ^ (x & z) ^ (y & z); }
+inline uint32_t sigma0(uint32_t x) { return rotr(x, 2) ^ rotr(x, 13) ^ rotr(x, 22); }
+inline uint32_t sigma1(uint32_t x) { return rotr(x, 6) ^ rotr(x, 11) ^ rotr(x, 25); }
+inline uint32_t gamma0(uint32_t x) { return rotr(x, 7) ^ rotr(x, 18) ^ (x >> 3); }
+inline uint32_t gamma1(uint32_t x) { return rotr(x, 17) ^ rotr(x, 19) ^ (x >> 10); }
+
+std::string sha256(const std::string& input) {
+    // Pre-processing: pad message
+    uint64_t bit_len = input.size() * 8;
+    std::vector<uint8_t> msg(input.begin(), input.end());
+    msg.push_back(0x80);
+    while ((msg.size() % 64) != 56)
+        msg.push_back(0x00);
+    for (int i = 7; i >= 0; --i)
+        msg.push_back(static_cast<uint8_t>(bit_len >> (i * 8)));
+
+    // Initial hash values
+    uint32_t h0 = 0x6a09e667, h1 = 0xbb67ae85, h2 = 0x3c6ef372, h3 = 0xa54ff53a;
+    uint32_t h4 = 0x510e527f, h5 = 0x9b05688c, h6 = 0x1f83d9ab, h7 = 0x5be0cd19;
+
+    // Process each 512-bit block
+    for (size_t offset = 0; offset < msg.size(); offset += 64) {
+        std::array<uint32_t, 64> w{};
+        for (int i = 0; i < 16; ++i) {
+            w[i] = (uint32_t(msg[offset + i * 4]) << 24) |
+                   (uint32_t(msg[offset + i * 4 + 1]) << 16) |
+                   (uint32_t(msg[offset + i * 4 + 2]) << 8) |
+                   uint32_t(msg[offset + i * 4 + 3]);
+        }
+        for (int i = 16; i < 64; ++i)
+            w[i] = gamma1(w[i - 2]) + w[i - 7] + gamma0(w[i - 15]) + w[i - 16];
+
+        uint32_t a = h0, b = h1, c = h2, d = h3;
+        uint32_t e = h4, f = h5, g = h6, h = h7;
+
+        for (int i = 0; i < 64; ++i) {
+            uint32_t t1 = h + sigma1(e) + ch(e, f, g) + K[i] + w[i];
+            uint32_t t2 = sigma0(a) + maj(a, b, c);
+            h = g; g = f; f = e; e = d + t1;
+            d = c; c = b; b = a; a = t1 + t2;
+        }
+
+        h0 += a; h1 += b; h2 += c; h3 += d;
+        h4 += e; h5 += f; h6 += g; h7 += h;
+    }
+
+    std::ostringstream oss;
+    oss << std::hex << std::setfill('0');
+    for (uint32_t v : {h0, h1, h2, h3, h4, h5, h6, h7})
+        oss << std::setw(8) << v;
+    return oss.str();
+}
+
+} // namespace
+
+
+// --- schema.cpp ---
+
+
+
+
+std::string Schema::hash() const {
+    std::ostringstream oss;
+
+    for (const auto& [name, table] : tables) {
+        oss << "TABLE " << name << '\n';
+        for (const auto& col : table.columns) {
+            oss << "  COL " << col.name
+                << ' ' << col.type
+                << (col.notnull ? " NOTNULL" : "")
+                << " DEFAULT=" << col.default_value
+                << " PK=" << col.pk;
+            if (!col.collation.empty())
+                oss << " COLLATE=" << col.collation;
+            if (col.generated != GeneratedType::Normal)
+                oss << " GENERATED=" << static_cast<int>(col.generated);
+            if (!col.generated_expr.empty())
+                oss << " EXPR=" << col.generated_expr;
+            oss << '\n';
+        }
+        for (const auto& fk : table.foreign_keys) {
+            oss << "  FK";
+            for (const auto& c : fk.from_columns) oss << ' ' << c;
+            oss << " -> " << fk.to_table << '(';
+            for (size_t i = 0; i < fk.to_columns.size(); ++i) {
+                if (i > 0) oss << ',';
+                oss << fk.to_columns[i];
+            }
+            oss << ") UPDATE=" << fk.on_update
+                << " DELETE=" << fk.on_delete << '\n';
+        }
+        for (const auto& chk : table.check_constraints) {
+            oss << "  CHECK";
+            if (!chk.name.empty()) oss << " NAME=" << chk.name;
+            oss << " EXPR=" << chk.expression << '\n';
+        }
+        oss << "  ROWID=" << (table.without_rowid ? "no" : "yes") << '\n';
+        if (table.strict)
+            oss << "  STRICT=yes\n";
+    }
+
+    for (const auto& [name, idx] : indexes) {
+        oss << "INDEX " << name << " ON " << idx.table_name;
+        oss << (idx.unique ? " UNIQUE" : "");
+        for (const auto& c : idx.columns) oss << ' ' << c;
+        if (!idx.where_clause.empty()) oss << " WHERE " << idx.where_clause;
+        oss << '\n';
+    }
+
+    for (const auto& [name, view] : views)
+        oss << "VIEW " << name << ' ' << view.sql << '\n';
+
+    for (const auto& [name, trigger] : triggers)
+        oss << "TRIGGER " << name << ' ' << trigger.sql << '\n';
+
+    return sha256(oss.str());
+}
+
+
+// --- extract.cpp ---
+
+
+
+
+namespace {
+
+bool starts_with(const std::string& s, const std::string& prefix) {
+    return s.size() >= prefix.size() && s.compare(0, prefix.size(), prefix) == 0;
+}
+
+std::string to_upper(const std::string& s) {
+    std::string result = s;
+    std::transform(result.begin(), result.end(), result.begin(),
+                   [](unsigned char c) { return std::toupper(c); });
+    return result;
+}
+
+// Quote an identifier for use in SQL.
+std::string quote_id(const std::string& name) {
+    // Use double quotes, escaping embedded double quotes.
+    std::string result = "\"";
+    for (char c : name) {
+        if (c == '"') result += "\"\"";
+        else result += c;
+    }
+    result += '"';
+    return result;
+}
+
+std::string trim(const std::string& s) {
+    auto start = s.find_first_not_of(" \t\n\r");
+    if (start == std::string::npos) return {};
+    auto end = s.find_last_not_of(" \t\n\r");
+    return s.substr(start, end - start + 1);
+}
+
+std::string strip_quotes(const std::string& s) {
+    if (s.size() >= 2 &&
+        ((s.front() == '"' && s.back() == '"') ||
+         (s.front() == '[' && s.back() == ']') ||
+         (s.front() == '`' && s.back() == '`'))) {
+        return s.substr(1, s.size() - 2);
+    }
+    return s;
+}
+
+// Parse the body of a CREATE TABLE statement to extract CHECK constraints
+// and GENERATED ALWAYS AS expressions.
+// Returns a pair: (check_constraints, column_name -> generated_expr map).
+struct ParsedTableBody {
+    std::vector<CheckConstraint> checks;
+    std::map<std::string, std::string> generated_exprs;
+    std::string pk_constraint_name;
+    std::map<std::string, std::string> fk_constraint_names;  // key: comma-joined from_columns
+};
+
+ParsedTableBody parse_create_table_body(const std::string& raw_sql) {
+    ParsedTableBody result;
+
+    // Find the outer '(' of CREATE TABLE ... (...)
+    int depth = 0;
+    size_t body_start = std::string::npos;
+    size_t body_end = std::string::npos;
+    for (size_t i = 0; i < raw_sql.size(); ++i) {
+        if (raw_sql[i] == '\'') {
+            ++i; // skip opening quote
+            while (i < raw_sql.size()) {
+                if (raw_sql[i] == '\'' && i + 1 < raw_sql.size() && raw_sql[i + 1] == '\'')
+                    i += 2; // skip escaped quote
+                else if (raw_sql[i] == '\'')
+                    break;
+                else
+                    ++i;
+            }
+            continue; // i now points at closing quote; loop ++i advances past it
+        } else if (raw_sql[i] == '(') {
+            if (depth == 0) body_start = i + 1;
+            ++depth;
+        } else if (raw_sql[i] == ')') {
+            --depth;
+            if (depth == 0) {
+                body_end = i;
+                break;
+            }
+        }
+    }
+    if (body_start == std::string::npos || body_end == std::string::npos)
+        return result;
+
+    // Split inner content by ',' at depth 0
+    std::vector<std::string> defs;
+    depth = 0;
+    size_t seg_start = body_start;
+    for (size_t i = body_start; i < body_end; ++i) {
+        if (raw_sql[i] == '\'') {
+            ++i; // skip opening quote
+            while (i < body_end) {
+                if (raw_sql[i] == '\'' && i + 1 < body_end && raw_sql[i + 1] == '\'')
+                    i += 2; // skip escaped quote
+                else if (raw_sql[i] == '\'')
+                    break;
+                else
+                    ++i;
+            }
+            continue; // i now points at closing quote; loop ++i advances past it
+        } else if (raw_sql[i] == '(') ++depth;
+        else if (raw_sql[i] == ')') --depth;
+        else if (raw_sql[i] == ',' && depth == 0) {
+            defs.push_back(trim(raw_sql.substr(seg_start, i - seg_start)));
+            seg_start = i + 1;
+        }
+    }
+    defs.push_back(trim(raw_sql.substr(seg_start, body_end - seg_start)));
+
+    for (const auto& def : defs) {
+        std::string upper_def = to_upper(def);
+
+        // Check for table-level CHECK constraint
+        // Could be: CHECK(...) or CONSTRAINT name CHECK(...)
+        bool is_check = false;
+        CheckConstraint chk;
+
+        if (starts_with(upper_def, "CHECK")) {
+            is_check = true;
+            // Extract expression from CHECK(...)
+            auto paren = def.find('(');
+            if (paren != std::string::npos) {
+                // Find matching close paren
+                int d = 0;
+                size_t expr_end = std::string::npos;
+                for (size_t i = paren; i < def.size(); ++i) {
+                    if (def[i] == '(') ++d;
+                    else if (def[i] == ')') {
+                        --d;
+                        if (d == 0) { expr_end = i; break; }
+                    }
+                }
+                if (expr_end != std::string::npos)
+                    chk.expression = trim(def.substr(paren + 1, expr_end - paren - 1));
+            }
+        } else if (starts_with(upper_def, "CONSTRAINT")) {
+            // CONSTRAINT name CHECK/PRIMARY KEY/FOREIGN KEY(...)
+            auto check_pos = upper_def.find("CHECK");
+            if (check_pos != std::string::npos) {
+                is_check = true;
+                // Extract constraint name: between CONSTRAINT and CHECK
+                chk.name = strip_quotes(trim(def.substr(10, check_pos - 10)));
+                // Extract expression
+                auto paren = def.find('(', check_pos);
+                if (paren != std::string::npos) {
+                    int d = 0;
+                    size_t expr_end = std::string::npos;
+                    for (size_t i = paren; i < def.size(); ++i) {
+                        if (def[i] == '(') ++d;
+                        else if (def[i] == ')') {
+                            --d;
+                            if (d == 0) { expr_end = i; break; }
+                        }
+                    }
+                    if (expr_end != std::string::npos)
+                        chk.expression = trim(def.substr(paren + 1, expr_end - paren - 1));
+                }
+            } else {
+                auto pk_pos = upper_def.find("PRIMARY KEY");
+                auto fk_pos = upper_def.find("FOREIGN KEY");
+                if (pk_pos != std::string::npos) {
+                    result.pk_constraint_name =
+                        strip_quotes(trim(def.substr(10, pk_pos - 10)));
+                } else if (fk_pos != std::string::npos) {
+                    std::string name_part =
+                        strip_quotes(trim(def.substr(10, fk_pos - 10)));
+                    // Extract from_columns from FOREIGN KEY(col1, col2)
+                    auto paren = def.find('(', fk_pos);
+                    if (paren != std::string::npos) {
+                        int d = 0;
+                        size_t cols_end = std::string::npos;
+                        for (size_t i = paren; i < def.size(); ++i) {
+                            if (def[i] == '(') ++d;
+                            else if (def[i] == ')') {
+                                --d;
+                                if (d == 0) { cols_end = i; break; }
+                            }
+                        }
+                        if (cols_end != std::string::npos) {
+                            std::string cols_str = def.substr(paren + 1, cols_end - paren - 1);
+                            std::string key;
+                            std::istringstream css(cols_str);
+                            std::string col;
+                            bool first = true;
+                            while (std::getline(css, col, ',')) {
+                                if (!first) key += ',';
+                                key += strip_quotes(trim(col));
+                                first = false;
+                            }
+                            result.fk_constraint_names[key] = name_part;
+                        }
+                    }
+                }
+                continue;
+            }
+        }
+
+        if (is_check) {
+            result.checks.push_back(std::move(chk));
+            continue;
+        }
+
+        // Check for column-level GENERATED ALWAYS AS (expr)
+        auto gen_pos = upper_def.find("GENERATED ALWAYS AS");
+        if (gen_pos != std::string::npos) {
+            // Extract column name (first token of the definition)
+            auto first_space = def.find_first_of(" \t");
+            std::string col_name;
+            if (first_space != std::string::npos)
+                col_name = def.substr(0, first_space);
+            else
+                col_name = def;
+            col_name = strip_quotes(col_name);
+
+            // Find the expression in parens after GENERATED ALWAYS AS
+            auto paren = def.find('(', gen_pos);
+            if (paren != std::string::npos) {
+                int d = 0;
+                size_t expr_end = std::string::npos;
+                for (size_t i = paren; i < def.size(); ++i) {
+                    if (def[i] == '(') ++d;
+                    else if (def[i] == ')') {
+                        --d;
+                        if (d == 0) { expr_end = i; break; }
+                    }
+                }
+                if (expr_end != std::string::npos)
+                    result.generated_exprs[col_name] =
+                        trim(def.substr(paren + 1, expr_end - paren - 1));
+            }
+        }
+    }
+
+    return result;
+}
+
+// Parse table options after the closing ')' of CREATE TABLE.
+// Returns (without_rowid, strict).
+std::pair<bool, bool> parse_table_options(const std::string& raw_sql) {
+    bool without_rowid = false;
+    bool strict = false;
+
+    // Find the last ')' at depth 0
+    int depth = 0;
+    size_t close_paren = std::string::npos;
+    for (size_t i = 0; i < raw_sql.size(); ++i) {
+        if (raw_sql[i] == '(') ++depth;
+        else if (raw_sql[i] == ')') {
+            --depth;
+            if (depth == 0) { close_paren = i; break; }
+        }
+    }
+    if (close_paren == std::string::npos || close_paren + 1 >= raw_sql.size())
+        return {without_rowid, strict};
+
+    std::string tail = raw_sql.substr(close_paren + 1);
+    // Split by comma
+    std::istringstream iss(tail);
+    std::string token;
+    while (std::getline(iss, token, ',')) {
+        std::string t = to_upper(trim(token));
+        if (t == "WITHOUT ROWID") without_rowid = true;
+        else if (t == "STRICT") strict = true;
+    }
+
+    return {without_rowid, strict};
+}
+
+} // namespace
+
+Schema extract(sqlite3* db) {
+    Schema schema;
+
+    // Query sqlite_master for all user-defined objects.
+    Statement master_stmt(db,
+        "SELECT type, name, tbl_name, sql FROM sqlite_master "
+        "WHERE type IN ('table', 'index', 'view', 'trigger') "
+        "AND name NOT LIKE 'sqlite_%' "
+        "AND name != '_sqlift_state' "
+        "ORDER BY type, name");
+
+    struct MasterRow {
+        std::string type, name, tbl_name, sql;
+    };
+    std::vector<MasterRow> rows;
+    while (master_stmt.step()) {
+        rows.push_back({
+            master_stmt.column_text(0),
+            master_stmt.column_text(1),
+            master_stmt.column_text(2),
+            master_stmt.column_text(3),
+        });
+    }
+
+    for (const auto& row : rows) {
+        if (row.type == "table") {
+            Table table;
+            table.name = row.name;
+            table.raw_sql = row.sql;
+
+            // Detect WITHOUT ROWID and STRICT from table options
+            auto [wor, strict_flag] = parse_table_options(row.sql);
+            table.without_rowid = wor;
+            table.strict = strict_flag;
+
+            // Columns via PRAGMA table_xinfo (includes generated column info)
+            Statement col_stmt(db,
+                "PRAGMA table_xinfo(" + quote_id(row.name) + ")");
+            while (col_stmt.step()) {
+                Column col;
+                col.name = col_stmt.column_text(1);
+                col.type = to_upper(col_stmt.column_text(2));
+                col.notnull = col_stmt.column_int(3) != 0;
+                col.default_value = col_stmt.column_text(4);
+                col.pk = static_cast<int>(col_stmt.column_int(5));
+                auto hidden = col_stmt.column_int(6);
+                if (hidden != 0 && hidden != 2 && hidden != 3)
+                    throw ExtractError("Unsupported generated column type: " + std::to_string(hidden));
+                col.generated = static_cast<GeneratedType>(hidden);
+                table.columns.push_back(std::move(col));
+            }
+
+            // Collation via sqlite3_table_column_metadata
+            for (auto& col : table.columns) {
+                const char* collation = nullptr;
+                int rc = sqlite3_table_column_metadata(
+                    db, nullptr, row.name.c_str(), col.name.c_str(),
+                    nullptr, &collation, nullptr, nullptr, nullptr);
+                if (rc == SQLITE_OK && collation) {
+                    std::string coll = collation;
+                    if (to_upper(coll) != "BINARY")
+                        col.collation = to_upper(coll);
+                }
+            }
+
+            // Parse CHECK constraints and GENERATED expressions from raw_sql
+            auto parsed = parse_create_table_body(row.sql);
+            table.check_constraints = std::move(parsed.checks);
+            for (auto& col : table.columns) {
+                auto it = parsed.generated_exprs.find(col.name);
+                if (it != parsed.generated_exprs.end())
+                    col.generated_expr = it->second;
+            }
+
+            // Foreign keys via PRAGMA foreign_key_list
+            Statement fk_stmt(db,
+                "PRAGMA foreign_key_list(" + quote_id(row.name) + ")");
+            // FK rows are grouped by id (seq=0 starts a new FK).
+            std::map<int, ForeignKey> fk_map;
+            while (fk_stmt.step()) {
+                int id = static_cast<int>(fk_stmt.column_int(0));
+                int seq = static_cast<int>(fk_stmt.column_int(1));
+                if (seq == 0) {
+                    ForeignKey fk;
+                    fk.to_table = fk_stmt.column_text(2);
+                    fk.on_update = to_upper(fk_stmt.column_text(5));
+                    fk.on_delete = to_upper(fk_stmt.column_text(6));
+                    fk_map[id] = std::move(fk);
+                }
+                fk_map[id].from_columns.push_back(fk_stmt.column_text(3));
+                fk_map[id].to_columns.push_back(fk_stmt.column_text(4));
+            }
+            for (auto& [_, fk] : fk_map)
+                table.foreign_keys.push_back(std::move(fk));
+
+            // Populate constraint names from parsed raw_sql
+            table.pk_constraint_name = std::move(parsed.pk_constraint_name);
+            for (auto& fk : table.foreign_keys) {
+                std::string key;
+                for (size_t i = 0; i < fk.from_columns.size(); ++i) {
+                    if (i > 0) key += ',';
+                    key += fk.from_columns[i];
+                }
+                auto it = parsed.fk_constraint_names.find(key);
+                if (it != parsed.fk_constraint_names.end())
+                    fk.constraint_name = it->second;
+            }
+
+            schema.tables[table.name] = std::move(table);
+        }
+        else if (row.type == "index") {
+            // Skip auto-indexes
+            if (starts_with(row.name, "sqlite_autoindex_")) continue;
+            // Auto-indexes have NULL sql
+            if (row.sql.empty()) continue;
+
+            Index idx;
+            idx.name = row.name;
+            idx.table_name = row.tbl_name;
+            idx.raw_sql = row.sql;
+
+            // Uniqueness via PRAGMA index_list (authoritative)
+            {
+                Statement il_stmt(db,
+                    "PRAGMA index_list(" + quote_id(row.tbl_name) + ")");
+                while (il_stmt.step()) {
+                    if (il_stmt.column_text(1) == row.name) {
+                        idx.unique = il_stmt.column_int(2) != 0;
+                        break;
+                    }
+                }
+            }
+
+            // Columns via PRAGMA index_info
+            Statement idx_info(db,
+                "PRAGMA index_info(" + quote_id(row.name) + ")");
+            while (idx_info.step()) {
+                std::string col_name = idx_info.column_text(2);
+                if (col_name.empty()) {
+                    // Expression index — extract from raw SQL
+                    col_name = "<expr>";
+                }
+                idx.columns.push_back(std::move(col_name));
+            }
+
+            // Partial index WHERE clause: extract from raw SQL.
+            // Uses rfind to find the last WHERE, then checks it's at
+            // top-level (not inside parentheses or string literals).
+            auto upper_sql = to_upper(row.sql);
+            auto where_pos = upper_sql.rfind("WHERE");
+            if (where_pos != std::string::npos) {
+                int paren_depth = 0;
+                bool in_string = false;
+                char string_char = 0;
+                for (size_t i = 0; i < where_pos; ++i) {
+                    char c = row.sql[i];
+                    if (in_string) {
+                        if (c == string_char) {
+                            if (i + 1 < where_pos && row.sql[i + 1] == string_char)
+                                ++i; // escaped quote
+                            else
+                                in_string = false;
+                        }
+                    } else {
+                        if (c == '\'' || c == '"') {
+                            in_string = true;
+                            string_char = c;
+                        } else if (c == '(') {
+                            ++paren_depth;
+                        } else if (c == ')') {
+                            --paren_depth;
+                        }
+                    }
+                }
+                if (paren_depth == 0) {
+                    idx.where_clause = row.sql.substr(where_pos + 6);
+                    // Trim leading/trailing whitespace
+                    auto start = idx.where_clause.find_first_not_of(" \t\n\r");
+                    auto end = idx.where_clause.find_last_not_of(" \t\n\r");
+                    if (start != std::string::npos)
+                        idx.where_clause = idx.where_clause.substr(start, end - start + 1);
+                }
+            }
+
+            schema.indexes[idx.name] = std::move(idx);
+        }
+        else if (row.type == "view") {
+            View view;
+            view.name = row.name;
+            view.sql = row.sql;
+            schema.views[view.name] = std::move(view);
+        }
+        else if (row.type == "trigger") {
+            Trigger trigger;
+            trigger.name = row.name;
+            trigger.table_name = row.tbl_name;
+            trigger.sql = row.sql;
+            schema.triggers[trigger.name] = std::move(trigger);
+        }
+    }
+
+    return schema;
+}
+
+
+// --- parse.cpp ---
+
+
+
+Schema parse(const std::string& sql) {
+    Database db(":memory:");
+
+    try {
+        db.exec(sql);
+    } catch (const Error& e) {
+        throw ParseError(std::string("Failed to parse schema SQL: ") + e.what());
+    }
+
+    return extract(db);
+}
+
+
+// --- diff.cpp ---
+
+
+
+
+namespace {
+
+// Check if a column can be added via simple ALTER TABLE ADD COLUMN.
+bool can_add_column(const Column& col) {
+    // SQLite restrictions on ADD COLUMN:
+    // - Cannot be PRIMARY KEY
+    // - Must have DEFAULT or allow NULL if NOT NULL
+    // - Cannot be a generated column
+    if (col.pk != 0) return false;
+    if (col.notnull && col.default_value.empty()) return false;
+    if (col.generated != GeneratedType::Normal) return false;
+    return true;
+}
+
+// Extract SQL references: tokenize SQL into identifiers and check against known names.
+// Excludes the object's own name.
+std::set<std::string> extract_sql_references(
+    const std::string& sql, const std::string& own_name,
+    const std::set<std::string>& known_names)
+{
+    std::set<std::string> refs;
+    std::string word;
+    for (size_t i = 0; i <= sql.size(); ++i) {
+        char c = (i < sql.size()) ? sql[i] : '\0';
+        if (std::isalnum(static_cast<unsigned char>(c)) || c == '_') {
+            word += c;
+        } else {
+            if (!word.empty()) {
+                if (word != own_name && known_names.count(word))
+                    refs.insert(word);
+                word.clear();
+            }
+        }
+    }
+    return refs;
+}
+
+// Topological sort using Kahn's algorithm.
+// If reverse==true, returns reverse topological order (dependents first).
+std::vector<std::string> topo_sort(
+    const std::vector<std::string>& nodes,
+    const std::map<std::string, std::set<std::string>>& deps,
+    bool reverse = false)
+{
+    // Build in-degree map
+    std::map<std::string, int> in_degree;
+    std::map<std::string, std::set<std::string>> dependents;
+    for (const auto& n : nodes) in_degree[n] = 0;
+
+    for (const auto& n : nodes) {
+        auto it = deps.find(n);
+        if (it != deps.end()) {
+            for (const auto& dep : it->second) {
+                if (in_degree.count(dep)) {
+                    in_degree[n]++;
+                    dependents[dep].insert(n);
+                }
+            }
+        }
+    }
+
+    std::vector<std::string> queue;
+    for (const auto& n : nodes) {
+        if (in_degree[n] == 0)
+            queue.push_back(n);
+    }
+    // Sort queue for deterministic ordering
+    std::sort(queue.begin(), queue.end());
+
+    std::vector<std::string> result;
+    size_t front = 0;
+    while (front < queue.size()) {
+        std::string n = queue[front++];
+        result.push_back(n);
+        if (dependents.count(n)) {
+            std::vector<std::string> newly_free;
+            for (const auto& dep : dependents[n]) {
+                if (--in_degree[dep] == 0)
+                    newly_free.push_back(dep);
+            }
+            std::sort(newly_free.begin(), newly_free.end());
+            for (auto& nf : newly_free)
+                queue.push_back(std::move(nf));
+        }
+    }
+
+    if (result.size() != nodes.size())
+        throw DiffError("Circular dependency detected among views/triggers");
+
+    if (reverse)
+        std::reverse(result.begin(), result.end());
+
+    return result;
+}
+
+// Check if the only difference is columns appended at the end (AddColumn fast path).
+bool is_append_only(const Table& current, const Table& desired) {
+    // All existing columns must be unchanged
+    if (desired.columns.size() <= current.columns.size()) return false;
+    for (size_t i = 0; i < current.columns.size(); ++i) {
+        if (!(current.columns[i] == desired.columns[i])) return false;
+    }
+    // Foreign keys must be unchanged
+    if (current.foreign_keys != desired.foreign_keys) return false;
+    // CHECK constraints must be unchanged
+    if (current.check_constraints != desired.check_constraints) return false;
+    // WITHOUT ROWID must be unchanged
+    if (current.without_rowid != desired.without_rowid) return false;
+    // STRICT must be unchanged
+    if (current.strict != desired.strict) return false;
+    // All new columns must be addable
+    for (size_t i = current.columns.size(); i < desired.columns.size(); ++i) {
+        if (!can_add_column(desired.columns[i])) return false;
+    }
+    return true;
+}
+
+// Build an ADD COLUMN SQL statement.
+std::string add_column_sql(const std::string& table_name, const Column& col) {
+    std::ostringstream oss;
+    oss << "ALTER TABLE " << quote_id(table_name)
+        << " ADD COLUMN " << quote_id(col.name);
+    if (!col.type.empty()) oss << ' ' << col.type;
+    if (!col.collation.empty()) oss << " COLLATE " << col.collation;
+    if (col.notnull) oss << " NOT NULL";
+    if (!col.default_value.empty()) oss << " DEFAULT " << col.default_value;
+    return oss.str();
+}
+
+// Build the SQL for a 12-step table rebuild.
+std::vector<std::string> rebuild_table_sql(
+    const Table& current, const Table& desired,
+    const Schema& desired_schema)
+{
+    std::vector<std::string> stmts;
+    std::string tmp_name = quote_id(desired.name + "_sqlift_new");
+    std::string tbl_name = quote_id(desired.name);
+
+    // Step 1: Disable foreign keys
+    stmts.push_back("PRAGMA foreign_keys=OFF");
+
+    // Step 2: Begin transaction
+    stmts.push_back("SAVEPOINT sqlift_rebuild");
+
+    // Step 3: Create new table with desired schema
+    stmts.push_back(desired.raw_sql);
+    // Replace the table name in the CREATE TABLE statement with the temp name.
+    // The raw_sql has the real name; we need to create with the temp name.
+    auto& create_stmt = stmts.back();
+    // Replace first occurrence of table name after CREATE TABLE
+    {
+        std::string create_sql = desired.raw_sql;
+        // Find the table name in the CREATE TABLE statement and replace with tmp name.
+        // Reconstruct: CREATE TABLE <tmp_name> (rest...)
+        auto paren_pos = create_sql.find('(');
+        if (paren_pos != std::string::npos) {
+            create_stmt = "CREATE TABLE " + tmp_name +
+                          " " + create_sql.substr(paren_pos);
+        }
+    }
+
+    // Step 4: Copy data from old table to new (common columns only).
+    // Skip generated columns — they are computed and can't be inserted into.
+    std::vector<std::string> common_cols;
+    std::set<std::string> desired_col_names;
+    std::set<std::string> generated_col_names;
+    for (const auto& col : desired.columns) {
+        desired_col_names.insert(col.name);
+        if (col.generated != GeneratedType::Normal)
+            generated_col_names.insert(col.name);
+    }
+    for (const auto& col : current.columns) {
+        if (desired_col_names.count(col.name) && !generated_col_names.count(col.name))
+            common_cols.push_back(quote_id(col.name));
+    }
+    if (!common_cols.empty()) {
+        std::ostringstream oss;
+        oss << "INSERT INTO " << tmp_name << " (";
+        for (size_t i = 0; i < common_cols.size(); ++i) {
+            if (i > 0) oss << ", ";
+            oss << common_cols[i];
+        }
+        oss << ") SELECT ";
+        for (size_t i = 0; i < common_cols.size(); ++i) {
+            if (i > 0) oss << ", ";
+            oss << common_cols[i];
+        }
+        oss << " FROM " << tbl_name;
+        stmts.push_back(oss.str());
+    }
+
+    // Step 5: Drop old table
+    stmts.push_back("DROP TABLE " + tbl_name);
+
+    // Step 6: Rename new table
+    stmts.push_back("ALTER TABLE " + tmp_name + " RENAME TO " + tbl_name);
+
+    // Step 7: Recreate indexes for this table
+    for (const auto& [idx_name, idx] : desired_schema.indexes) {
+        if (idx.table_name == desired.name && !idx.raw_sql.empty()) {
+            stmts.push_back(idx.raw_sql);
+        }
+    }
+
+    // Step 8: Recreate triggers for this table
+    for (const auto& [trig_name, trig] : desired_schema.triggers) {
+        if (trig.table_name == desired.name && !trig.sql.empty()) {
+            stmts.push_back(trig.sql);
+        }
+    }
+
+    // Step 9: (content verification — skipped, sqlift uses FK check instead)
+
+    // Step 10: FK check
+    stmts.push_back("PRAGMA foreign_key_check(" + quote_id(desired.name) + ")");
+
+    // Step 11: Release savepoint
+    stmts.push_back("RELEASE SAVEPOINT sqlift_rebuild");
+
+    // Step 12: Re-enable foreign keys
+    stmts.push_back("PRAGMA foreign_keys=ON");
+
+    return stmts;
+}
+
+// Describe what changed between two tables.
+std::string describe_table_changes(const Table& current, const Table& desired) {
+    std::ostringstream oss;
+    oss << "Rebuild table " << desired.name << ":";
+
+    // Find added/removed/changed columns
+    std::set<std::string> current_cols, desired_cols;
+    std::map<std::string, const Column*> current_col_map, desired_col_map;
+    for (const auto& c : current.columns) {
+        current_cols.insert(c.name);
+        current_col_map[c.name] = &c;
+    }
+    for (const auto& c : desired.columns) {
+        desired_cols.insert(c.name);
+        desired_col_map[c.name] = &c;
+    }
+
+    for (const auto& name : desired_cols) {
+        if (!current_cols.count(name))
+            oss << " add column " << name << ";";
+    }
+    for (const auto& name : current_cols) {
+        if (!desired_cols.count(name))
+            oss << " drop column " << name << ";";
+    }
+    for (const auto& name : current_cols) {
+        if (desired_cols.count(name)) {
+            const auto* c = current_col_map[name];
+            const auto* d = desired_col_map[name];
+            if (!(*c == *d))
+                oss << " modify column " << name << ";";
+        }
+    }
+
+    if (current.foreign_keys != desired.foreign_keys)
+        oss << " foreign keys changed;";
+    if (current.check_constraints != desired.check_constraints)
+        oss << " CHECK constraints changed;";
+    if (current.without_rowid != desired.without_rowid)
+        oss << " WITHOUT ROWID changed;";
+    if (current.strict != desired.strict)
+        oss << " STRICT changed;";
+
+    return oss.str();
+}
+
+bool rebuild_is_destructive(const Table& current, const Table& desired) {
+    std::set<std::string> desired_cols;
+    for (const auto& c : desired.columns)
+        desired_cols.insert(c.name);
+    for (const auto& c : current.columns) {
+        if (!desired_cols.count(c.name))
+            return true; // Column removed
+    }
+    return false;
+}
+
+} // namespace
+
+bool MigrationPlan::has_destructive_operations() const {
+    return std::any_of(ops_.begin(), ops_.end(),
+                       [](const Operation& op) { return op.destructive; });
+}
+
+MigrationPlan diff(const Schema& current, const Schema& desired) {
+    MigrationPlan plan;
+
+    // Build known names for dependency analysis
+    std::set<std::string> known_names;
+    for (const auto& [n, _] : current.tables) known_names.insert(n);
+    for (const auto& [n, _] : current.views) known_names.insert(n);
+    for (const auto& [n, _] : desired.tables) known_names.insert(n);
+    for (const auto& [n, _] : desired.views) known_names.insert(n);
+
+    // --- Phase 1: Drop triggers that are removed or changed ---
+    // Collect triggers to drop, then sort by reverse dependency order
+    {
+        std::vector<std::string> to_drop;
+        std::map<std::string, bool> drop_destructive;
+        for (const auto& [name, trig] : current.triggers) {
+            auto it = desired.triggers.find(name);
+            if (it == desired.triggers.end() || it->second.sql != trig.sql) {
+                to_drop.push_back(name);
+                drop_destructive[name] = (it == desired.triggers.end());
+            }
+        }
+        // Build dependency graph for triggers being dropped
+        std::set<std::string> drop_set(to_drop.begin(), to_drop.end());
+        std::map<std::string, std::set<std::string>> deps;
+        for (const auto& name : to_drop) {
+            deps[name] = extract_sql_references(
+                current.triggers.at(name).sql, name, known_names);
+            // Only keep deps that are also being dropped
+            std::set<std::string> filtered;
+            for (const auto& d : deps[name])
+                if (drop_set.count(d)) filtered.insert(d);
+            deps[name] = std::move(filtered);
+        }
+        auto sorted = topo_sort(to_drop, deps, true);
+        for (const auto& name : sorted) {
+            plan.ops_.push_back({
+                .type = OpType::DropTrigger,
+                .object_name = name,
+                .description = "Drop trigger " + name,
+                .sql = {"DROP TRIGGER IF EXISTS " + quote_id(name)},
+                .destructive = drop_destructive[name],
+            });
+        }
+    }
+
+    // --- Phase 2: Drop views that are removed or changed ---
+    // Sort by reverse dependency order (dependents dropped first)
+    {
+        std::vector<std::string> to_drop;
+        std::map<std::string, bool> drop_destructive;
+        for (const auto& [name, view] : current.views) {
+            auto it = desired.views.find(name);
+            if (it == desired.views.end() || it->second.sql != view.sql) {
+                to_drop.push_back(name);
+                drop_destructive[name] = (it == desired.views.end());
+            }
+        }
+        std::map<std::string, std::set<std::string>> deps;
+        for (const auto& name : to_drop) {
+            deps[name] = extract_sql_references(
+                current.views.at(name).sql, name, known_names);
+        }
+        auto sorted = topo_sort(to_drop, deps, true);
+        for (const auto& name : sorted) {
+            plan.ops_.push_back({
+                .type = OpType::DropView,
+                .object_name = name,
+                .description = "Drop view " + name,
+                .sql = {"DROP VIEW IF EXISTS " + quote_id(name)},
+                .destructive = drop_destructive[name],
+            });
+        }
+    }
+
+    // --- Phase 3: Drop indexes that are removed or changed ---
+    // Also drop indexes on tables that will be rebuilt (they get recreated in the rebuild).
+    std::set<std::string> tables_to_rebuild;
+
+    // Pre-scan to find which tables need rebuilding
+    for (const auto& [name, table] : desired.tables) {
+        auto it = current.tables.find(name);
+        if (it != current.tables.end() && !(it->second == table)) {
+            if (!is_append_only(it->second, table)) {
+                tables_to_rebuild.insert(name);
+            }
+        }
+    }
+
+    for (const auto& [name, idx] : current.indexes) {
+        auto it = desired.indexes.find(name);
+        bool needs_drop = false;
+
+        if (it == desired.indexes.end()) {
+            needs_drop = true;
+        } else if (!(it->second == idx)) {
+            needs_drop = true;
+        } else if (tables_to_rebuild.count(idx.table_name)) {
+            // Index will be recreated as part of rebuild
+            needs_drop = true;
+        }
+
+        if (needs_drop) {
+            plan.ops_.push_back({
+                .type = OpType::DropIndex,
+                .object_name = name,
+                .description = "Drop index " + name,
+                .sql = {"DROP INDEX IF EXISTS " + quote_id(name)},
+                .destructive = (it == desired.indexes.end()),
+            });
+        }
+    }
+
+    // --- Phase 4: Table operations ---
+
+    // Create new tables
+    for (const auto& [name, table] : desired.tables) {
+        if (!current.tables.count(name)) {
+            plan.ops_.push_back({
+                .type = OpType::CreateTable,
+                .object_name = name,
+                .description = "Create table " + name,
+                .sql = {table.raw_sql},
+                .destructive = false,
+            });
+        }
+    }
+
+    // Check for breaking changes across all modified tables before building the plan.
+    {
+        std::vector<std::string> violations;
+        for (const auto& [name, desired_table] : desired.tables) {
+            auto it = current.tables.find(name);
+            if (it == current.tables.end()) continue;
+            const auto& current_table = it->second;
+            if (current_table == desired_table) continue;
+
+            // Build column lookup for the current table.
+            std::map<std::string, const Column*> cur_col_map;
+            for (const auto& col : current_table.columns)
+                cur_col_map[col.name] = &col;
+
+            // (a) Existing nullable column becomes NOT NULL.
+            for (const auto& col : desired_table.columns) {
+                auto cit = cur_col_map.find(col.name);
+                if (cit != cur_col_map.end() && !cit->second->notnull && col.notnull) {
+                    violations.push_back(
+                        "Table '" + name + "': column '" + col.name +
+                        "' changes from nullable to NOT NULL");
+                }
+            }
+
+            // (b) New FK constraint on existing table.
+            for (const auto& fk : desired_table.foreign_keys) {
+                bool found = false;
+                for (const auto& cur_fk : current_table.foreign_keys) {
+                    if (cur_fk == fk) { found = true; break; }
+                }
+                if (!found) {
+                    std::ostringstream oss;
+                    oss << "Table '" << name << "': adds foreign key (";
+                    for (size_t i = 0; i < fk.from_columns.size(); ++i) {
+                        if (i > 0) oss << ", ";
+                        oss << fk.from_columns[i];
+                    }
+                    oss << ") references " << fk.to_table << "(";
+                    for (size_t i = 0; i < fk.to_columns.size(); ++i) {
+                        if (i > 0) oss << ", ";
+                        oss << fk.to_columns[i];
+                    }
+                    oss << ")";
+                    violations.push_back(oss.str());
+                }
+            }
+
+            // (c) New CHECK constraint on existing table (existing data may violate it).
+            for (const auto& chk : desired_table.check_constraints) {
+                bool found = false;
+                for (const auto& cur_chk : current_table.check_constraints) {
+                    if (cur_chk == chk) { found = true; break; }
+                }
+                if (!found) {
+                    violations.push_back(
+                        "Table '" + name + "': adds CHECK constraint" +
+                        (chk.name.empty() ? "" : " '" + chk.name + "'") +
+                        " (" + chk.expression + ")");
+                }
+            }
+
+            // (d) New NOT NULL column without DEFAULT (guaranteed failure on non-empty table).
+            for (const auto& col : desired_table.columns) {
+                if (cur_col_map.find(col.name) == cur_col_map.end() &&
+                    col.notnull && col.default_value.empty() && col.pk == 0) {
+                    violations.push_back(
+                        "Table '" + name + "': new column '" + col.name +
+                        "' is NOT NULL without DEFAULT");
+                }
+            }
+        }
+        if (!violations.empty()) {
+            std::ostringstream oss;
+            oss << "Breaking schema changes detected:";
+            for (const auto& v : violations)
+                oss << "\n- " << v;
+            throw BreakingChangeError(oss.str());
+        }
+    }
+
+    // Modify existing tables
+    for (const auto& [name, desired_table] : desired.tables) {
+        auto it = current.tables.find(name);
+        if (it == current.tables.end()) continue;
+        const auto& current_table = it->second;
+
+        if (current_table == desired_table) continue;
+
+        if (is_append_only(current_table, desired_table)) {
+            // AddColumn fast path
+            for (size_t i = current_table.columns.size();
+                 i < desired_table.columns.size(); ++i)
+            {
+                plan.ops_.push_back({
+                    .type = OpType::AddColumn,
+                    .object_name = name,
+                    .description = "Add column " + desired_table.columns[i].name +
+                                   " to " + name,
+                    .sql = {add_column_sql(name, desired_table.columns[i])},
+                    .destructive = false,
+                });
+            }
+        } else {
+            // Full rebuild
+            plan.ops_.push_back({
+                .type = OpType::RebuildTable,
+                .object_name = name,
+                .description = describe_table_changes(current_table, desired_table),
+                .sql = rebuild_table_sql(current_table, desired_table, desired),
+                .destructive = rebuild_is_destructive(current_table, desired_table),
+            });
+        }
+    }
+
+    // Drop removed tables
+    for (const auto& [name, table] : current.tables) {
+        if (!desired.tables.count(name)) {
+            plan.ops_.push_back({
+                .type = OpType::DropTable,
+                .object_name = name,
+                .description = "Drop table " + name,
+                .sql = {"DROP TABLE IF EXISTS " + quote_id(name)},
+                .destructive = true,
+            });
+        }
+    }
+
+    // --- Phase 5: Create indexes (not part of rebuilds) ---
+    for (const auto& [name, idx] : desired.indexes) {
+        auto it = current.indexes.find(name);
+        bool needs_create = false;
+
+        if (it == current.indexes.end()) {
+            needs_create = true;
+        } else if (!(it->second == idx)) {
+            needs_create = true;
+        }
+
+        // Skip indexes on rebuilt tables (they were recreated in the rebuild)
+        if (tables_to_rebuild.count(idx.table_name)) continue;
+
+        if (needs_create) {
+            plan.ops_.push_back({
+                .type = OpType::CreateIndex,
+                .object_name = name,
+                .description = "Create index " + name + " on " + idx.table_name,
+                .sql = {idx.raw_sql},
+                .destructive = false,
+            });
+        }
+    }
+
+    // --- Phase 6: Create views ---
+    // Sort by topological order (dependencies created first)
+    {
+        std::vector<std::string> to_create;
+        for (const auto& [name, view] : desired.views) {
+            auto it = current.views.find(name);
+            if (it == current.views.end() || it->second.sql != view.sql) {
+                to_create.push_back(name);
+            }
+        }
+        // Build known names from desired schema for create ordering
+        std::set<std::string> desired_known;
+        for (const auto& [n, _] : desired.tables) desired_known.insert(n);
+        for (const auto& [n, _] : desired.views) desired_known.insert(n);
+
+        std::map<std::string, std::set<std::string>> deps;
+        for (const auto& name : to_create) {
+            deps[name] = extract_sql_references(
+                desired.views.at(name).sql, name, desired_known);
+        }
+        auto sorted = topo_sort(to_create, deps, false);
+        for (const auto& name : sorted) {
+            plan.ops_.push_back({
+                .type = OpType::CreateView,
+                .object_name = name,
+                .description = "Create view " + name,
+                .sql = {desired.views.at(name).sql},
+                .destructive = false,
+            });
+        }
+    }
+
+    // --- Phase 7: Create triggers ---
+    // Sort by topological order (dependencies created first)
+    {
+        std::vector<std::string> to_create;
+        for (const auto& [name, trig] : desired.triggers) {
+            auto it = current.triggers.find(name);
+            if (it == current.triggers.end() || it->second.sql != trig.sql) {
+                to_create.push_back(name);
+            }
+        }
+        std::set<std::string> desired_known;
+        for (const auto& [n, _] : desired.tables) desired_known.insert(n);
+        for (const auto& [n, _] : desired.views) desired_known.insert(n);
+        for (const auto& [n, _] : desired.triggers) desired_known.insert(n);
+
+        std::map<std::string, std::set<std::string>> deps;
+        for (const auto& name : to_create) {
+            deps[name] = extract_sql_references(
+                desired.triggers.at(name).sql, name, desired_known);
+        }
+        auto sorted = topo_sort(to_create, deps, false);
+        for (const auto& name : sorted) {
+            plan.ops_.push_back({
+                .type = OpType::CreateTrigger,
+                .object_name = name,
+                .description = "Create trigger " + name,
+                .sql = {desired.triggers.at(name).sql},
+                .destructive = false,
+            });
+        }
+    }
+
+    plan.warnings_ = detect_redundant_indexes(desired);
+
+    return plan;
+}
+
+std::vector<Warning> detect_redundant_indexes(const Schema& schema) {
+    std::vector<Warning> warnings;
+    std::set<std::string> pk_flagged; // Indexes already flagged as PK-duplicate.
+
+    // Group indexes by table.
+    std::map<std::string, std::vector<const Index*>> by_table;
+    for (const auto& [name, idx] : schema.indexes)
+        by_table[idx.table_name].push_back(&idx);
+
+    for (const auto& [table_name, table] : schema.tables) {
+        // Build PK column list ordered by pk position.
+        std::vector<std::pair<int, std::string>> pk_pairs;
+        for (const auto& col : table.columns) {
+            if (col.pk > 0)
+                pk_pairs.push_back({col.pk, col.name});
+        }
+        std::sort(pk_pairs.begin(), pk_pairs.end());
+        std::vector<std::string> pk_columns;
+        for (const auto& [pos, name] : pk_pairs)
+            pk_columns.push_back(name);
+
+        auto it = by_table.find(table_name);
+        if (it == by_table.end()) continue;
+        const auto& indexes = it->second;
+
+        // --- PK-duplicate detection ---
+        if (!pk_columns.empty()) {
+            for (const auto* idx : indexes) {
+                // Partial indexes can't be PK-duplicates (PK has no WHERE).
+                if (!idx->where_clause.empty()) continue;
+
+                if (idx->columns.size() > pk_columns.size()) continue;
+
+                // Check if idx->columns is a prefix of pk_columns.
+                if (!std::equal(idx->columns.begin(), idx->columns.end(),
+                                pk_columns.begin())) continue;
+
+                bool exact_match = (idx->columns.size() == pk_columns.size());
+                if (exact_match || !idx->unique) {
+                    // Exact PK match: always redundant (PK implies uniqueness).
+                    // Strict prefix + non-unique: redundant (PK index covers lookups).
+                    // Strict prefix + unique: NOT redundant (tighter constraint).
+                    pk_flagged.insert(idx->name);
+                    warnings.push_back({
+                        .type = WarningType::RedundantIndex,
+                        .message = "Index '" + idx->name + "' on table '" +
+                                   table_name + "' is redundant: columns are " +
+                                   (exact_match ? "identical to" : "a prefix of") +
+                                   " PRIMARY KEY",
+                        .index_name = idx->name,
+                        .covered_by = "PRIMARY KEY",
+                        .table_name = table_name,
+                    });
+                }
+            }
+        }
+
+        // --- Prefix-duplicate detection ---
+        for (const auto* shorter : indexes) {
+            if (pk_flagged.count(shorter->name)) continue;
+
+            for (const auto* longer : indexes) {
+                if (shorter == longer) continue;
+                if (pk_flagged.count(longer->name)) continue;
+                if (shorter->columns.size() >= longer->columns.size()) continue;
+                if (shorter->where_clause != longer->where_clause) continue;
+
+                // Check if shorter->columns is a strict prefix of longer->columns.
+                if (!std::equal(shorter->columns.begin(), shorter->columns.end(),
+                                longer->columns.begin())) continue;
+
+                // Non-unique shorter: always redundant (longer covers lookups).
+                // Unique shorter: enforces a tighter constraint, NOT redundant.
+                if (!shorter->unique) {
+                    warnings.push_back({
+                        .type = WarningType::RedundantIndex,
+                        .message = "Index '" + shorter->name + "' on table '" +
+                                   table_name + "' is redundant: columns are a prefix of index '" +
+                                   longer->name + "'",
+                        .index_name = shorter->name,
+                        .covered_by = longer->name,
+                        .table_name = table_name,
+                    });
+                    break; // One warning per redundant index.
+                }
+            }
+        }
+
+        // --- Exact-duplicate detection (same columns, same WHERE) ---
+        for (size_t i = 0; i < indexes.size(); ++i) {
+            if (pk_flagged.count(indexes[i]->name)) continue;
+
+            for (size_t j = i + 1; j < indexes.size(); ++j) {
+                if (pk_flagged.count(indexes[j]->name)) continue;
+                if (indexes[i]->columns != indexes[j]->columns) continue;
+                if (indexes[i]->where_clause != indexes[j]->where_clause) continue;
+
+                // Same columns, same WHERE. Determine which is redundant.
+                const Index* redundant = nullptr;
+                const Index* keeper = nullptr;
+
+                if (indexes[i]->unique == indexes[j]->unique) {
+                    // Same uniqueness: flag the later one alphabetically.
+                    if (indexes[i]->name < indexes[j]->name) {
+                        redundant = indexes[j];
+                        keeper = indexes[i];
+                    } else {
+                        redundant = indexes[i];
+                        keeper = indexes[j];
+                    }
+                } else if (!indexes[i]->unique) {
+                    // i is non-unique, j is unique: i is redundant.
+                    redundant = indexes[i];
+                    keeper = indexes[j];
+                } else {
+                    // i is unique, j is non-unique: j is redundant.
+                    redundant = indexes[j];
+                    keeper = indexes[i];
+                }
+
+                // Skip if this index was already flagged as prefix-duplicate.
+                bool already_warned = false;
+                for (const auto& w : warnings) {
+                    if (w.index_name == redundant->name) {
+                        already_warned = true;
+                        break;
+                    }
+                }
+                if (already_warned) continue;
+
+                warnings.push_back({
+                    .type = WarningType::RedundantIndex,
+                    .message = "Index '" + redundant->name + "' on table '" +
+                               table_name + "' is redundant: duplicate of index '" +
+                               keeper->name + "'",
+                    .index_name = redundant->name,
+                    .covered_by = keeper->name,
+                    .table_name = table_name,
+                });
+            }
+        }
+    }
+
+    // Sort warnings by (table_name, index_name) for deterministic output.
+    std::sort(warnings.begin(), warnings.end(),
+              [](const Warning& a, const Warning& b) {
+                  if (a.table_name != b.table_name) return a.table_name < b.table_name;
+                  return a.index_name < b.index_name;
+              });
+
+    return warnings;
+}
+
+
+// --- apply.cpp ---
+
+
+
+namespace {
+
+void ensure_state_table(sqlite3* db) {
+    Statement stmt(db,
+        "CREATE TABLE IF NOT EXISTS _sqlift_state ("
+        "  key   TEXT PRIMARY KEY,"
+        "  value TEXT NOT NULL"
+        ")");
+    stmt.step();
+}
+
+void store_schema_hash(sqlite3* db, const std::string& hash) {
+    ensure_state_table(db);
+    Statement stmt(db,
+        "INSERT OR REPLACE INTO _sqlift_state (key, value) VALUES ('schema_hash', ?)");
+    stmt.bind_text(1, hash);
+    stmt.step();
+
+    // Increment migration version counter
+    Statement ver_stmt(db,
+        "INSERT OR REPLACE INTO _sqlift_state (key, value) "
+        "VALUES ('migration_version', COALESCE("
+        "(SELECT CAST(value AS INTEGER) + 1 FROM _sqlift_state "
+        "WHERE key='migration_version'), 1))");
+    ver_stmt.step();
+}
+
+std::string load_schema_hash(sqlite3* db) {
+    // Check if table exists first.
+    Statement check(db,
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='_sqlift_state'");
+    if (!check.step()) return {};
+
+    Statement stmt(db,
+        "SELECT value FROM _sqlift_state WHERE key='schema_hash'");
+    if (stmt.step())
+        return stmt.column_text(0);
+    return {};
+}
+
+} // namespace
+
+void apply(sqlite3* db, const MigrationPlan& plan, const ApplyOptions& opts) {
+    if (plan.empty()) return;
+
+    if (plan.has_destructive_operations() && !opts.allow_destructive) {
+        throw DestructiveError(
+            "Migration plan contains destructive operations. "
+            "Set allow_destructive=true to proceed.");
+    }
+
+    // Check for drift
+    Schema current = extract(db);
+    std::string stored_hash = load_schema_hash(db);
+    if (!stored_hash.empty()) {
+        std::string actual_hash = current.hash();
+        if (stored_hash != actual_hash) {
+            throw DriftError(
+                "Schema drift detected: the database schema has been modified "
+                "outside of sqlift. Stored hash: " + stored_hash +
+                ", actual hash: " + actual_hash);
+        }
+    }
+
+    // Save current FK enforcement state so we can restore it on failure.
+    bool fk_was_on = false;
+    {
+        Statement fk_query(db, "PRAGMA foreign_keys");
+        fk_was_on = fk_query.step() && fk_query.column_int(0) != 0;
+    }
+
+    try {
+        for (const auto& op : plan.operations()) {
+            for (const auto& sql : op.sql) {
+                // PRAGMA foreign_key_check returns rows if there are violations.
+                // We need to handle this specially. The prefix match is safe
+                // because this SQL is generated by rebuild_table_sql() — plans
+                // from from_json() are trusted input (same as schema DDL).
+                if (sql.find("PRAGMA foreign_key_check") == 0) {
+                    Statement stmt(db, sql);
+                    if (stmt.step()) {
+                        std::string table = stmt.column_text(0);
+                        int64_t rowid = stmt.column_int(1);
+                        std::string parent = stmt.column_text(2);
+                        throw ApplyError(
+                            "Foreign key violation in table '" + table +
+                            "' (rowid " + std::to_string(rowid) +
+                            "): references missing row in parent table '" +
+                            parent + "'");
+                    }
+                    continue;
+                }
+
+                Statement stmt(db, sql);
+                stmt.step();
+            }
+        }
+    } catch (...) {
+        // Roll back any open savepoint from a failed rebuild, then restore FK state.
+        // PRAGMA foreign_keys cannot be changed inside an open transaction/savepoint.
+        try {
+            Statement rb(db, "ROLLBACK TO SAVEPOINT sqlift_rebuild");
+            rb.step();
+            Statement rel(db, "RELEASE SAVEPOINT sqlift_rebuild");
+            rel.step();
+        } catch (...) {}
+        // Restore FK enforcement to its state before apply() was called.
+        try {
+            Statement restore(db, fk_was_on ? "PRAGMA foreign_keys=ON"
+                                            : "PRAGMA foreign_keys=OFF");
+            restore.step();
+        } catch (...) {}
+        throw;
+    }
+
+    // Update stored hash
+    Schema after = extract(db);
+    store_schema_hash(db, after.hash());
+}
+
+int64_t migration_version(sqlite3* db) {
+    Statement check(db,
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='_sqlift_state'");
+    if (!check.step()) return 0;
+
+    Statement stmt(db,
+        "SELECT value FROM _sqlift_state WHERE key='migration_version'");
+    if (stmt.step()) {
+        try {
+            return std::stoll(stmt.column_text(0));
+        } catch (...) {
+            return 0;
+        }
+    }
+    return 0;
+}
+
+
+// --- json.cpp ---
+
+
+
+
+namespace {
+
+struct OpTypeEntry {
+    OpType type;
+    const char* name;
+};
+
+constexpr OpTypeEntry op_type_names[] = {
+    {OpType::CreateTable,   "CreateTable"},
+    {OpType::DropTable,     "DropTable"},
+    {OpType::RebuildTable,  "RebuildTable"},
+    {OpType::AddColumn,     "AddColumn"},
+    {OpType::CreateIndex,   "CreateIndex"},
+    {OpType::DropIndex,     "DropIndex"},
+    {OpType::CreateView,    "CreateView"},
+    {OpType::DropView,      "DropView"},
+    {OpType::CreateTrigger, "CreateTrigger"},
+    {OpType::DropTrigger,   "DropTrigger"},
+};
+
+} // namespace
+
+std::string to_string(OpType type) {
+    for (const auto& entry : op_type_names) {
+        if (entry.type == type) return entry.name;
+    }
+    throw JsonError("Unknown OpType value: " +
+                    std::to_string(static_cast<int>(type)));
+}
+
+OpType op_type_from_string(const std::string& s) {
+    for (const auto& entry : op_type_names) {
+        if (s == entry.name) return entry.type;
+    }
+    throw JsonError("Unknown OpType string: " + s);
+}
+
+std::string to_json(const MigrationPlan& plan) {
+    nlohmann::json j;
+    j["version"] = 1;
+
+    auto& ops = j["operations"];
+    ops = nlohmann::json::array();
+
+    for (const auto& op : plan.operations()) {
+        nlohmann::json jop;
+        jop["type"] = to_string(op.type);
+        jop["object_name"] = op.object_name;
+        jop["description"] = op.description;
+        jop["sql"] = op.sql;
+        jop["destructive"] = op.destructive;
+        ops.push_back(std::move(jop));
+    }
+
+    if (!plan.warnings().empty()) {
+        auto& warns = j["warnings"];
+        warns = nlohmann::json::array();
+        for (const auto& w : plan.warnings()) {
+            nlohmann::json jw;
+            jw["type"] = "RedundantIndex";
+            jw["message"] = w.message;
+            jw["index_name"] = w.index_name;
+            jw["covered_by"] = w.covered_by;
+            jw["table_name"] = w.table_name;
+            warns.push_back(std::move(jw));
+        }
+    }
+
+    return j.dump(2);
+}
+
+MigrationPlan from_json(const std::string& json_str) {
+    nlohmann::json j;
+    try {
+        j = nlohmann::json::parse(json_str);
+    } catch (const nlohmann::json::parse_error& e) {
+        throw JsonError(std::string("Invalid JSON: ") + e.what());
+    }
+
+    if (!j.is_object())
+        throw JsonError("Expected top-level JSON object");
+
+    if (!j.contains("version") || !j["version"].is_number_integer())
+        throw JsonError("Missing or invalid 'version' field");
+    int version = j["version"].get<int>();
+    if (version != 1)
+        throw JsonError("Unsupported version: " + std::to_string(version));
+
+    if (!j.contains("operations") || !j["operations"].is_array())
+        throw JsonError("Missing or invalid 'operations' array");
+
+    MigrationPlan plan;
+    for (const auto& jop : j["operations"]) {
+        if (!jop.is_object())
+            throw JsonError("Each operation must be a JSON object");
+
+        Operation op;
+
+        if (!jop.contains("type") || !jop["type"].is_string())
+            throw JsonError("Operation missing 'type' string field");
+        op.type = op_type_from_string(jop["type"].get<std::string>());
+
+        if (!jop.contains("object_name") || !jop["object_name"].is_string())
+            throw JsonError("Operation missing 'object_name' string field");
+        op.object_name = jop["object_name"].get<std::string>();
+
+        if (!jop.contains("description") || !jop["description"].is_string())
+            throw JsonError("Operation missing 'description' string field");
+        op.description = jop["description"].get<std::string>();
+
+        if (!jop.contains("sql") || !jop["sql"].is_array())
+            throw JsonError("Operation missing 'sql' array field");
+        for (const auto& s : jop["sql"]) {
+            if (!s.is_string())
+                throw JsonError("'sql' array must contain only strings");
+            op.sql.push_back(s.get<std::string>());
+        }
+
+        if (!jop.contains("destructive") || !jop["destructive"].is_boolean())
+            throw JsonError("Operation missing 'destructive' boolean field");
+        op.destructive = jop["destructive"].get<bool>();
+
+        // Validate SQL prefix matches OpType
+        if (!op.sql.empty()) {
+            const std::string& first_sql = op.sql[0];
+            std::string expected_prefix;
+            switch (op.type) {
+                case OpType::CreateTable:   expected_prefix = "CREATE TABLE"; break;
+                case OpType::DropTable:     expected_prefix = "DROP TABLE"; break;
+                case OpType::RebuildTable:  expected_prefix = "PRAGMA foreign_keys"; break;
+                case OpType::AddColumn:     expected_prefix = "ALTER TABLE"; break;
+                case OpType::CreateIndex:   expected_prefix = "CREATE"; break;
+                case OpType::DropIndex:     expected_prefix = "DROP INDEX"; break;
+                case OpType::CreateView:    expected_prefix = "CREATE VIEW"; break;
+                case OpType::DropView:      expected_prefix = "DROP VIEW"; break;
+                case OpType::CreateTrigger: expected_prefix = "CREATE TRIGGER"; break;
+                case OpType::DropTrigger:   expected_prefix = "DROP TRIGGER"; break;
+            }
+            if (!starts_with(first_sql, expected_prefix)) {
+                throw JsonError(
+                    "Operation '" + to_string(op.type) + "' on '" +
+                    op.object_name + "': first SQL statement does not start with '" +
+                    expected_prefix + "'");
+            }
+        }
+
+        plan.ops_.push_back(std::move(op));
+    }
+
+    // Warnings are optional (backward-compatible with older JSON).
+    if (j.contains("warnings") && j["warnings"].is_array()) {
+        for (const auto& jw : j["warnings"]) {
+            if (!jw.is_object()) continue;
+            Warning w;
+            w.type = WarningType::RedundantIndex;
+            w.message = jw.value("message", "");
+            w.index_name = jw.value("index_name", "");
+            w.covered_by = jw.value("covered_by", "");
+            w.table_name = jw.value("table_name", "");
+            plan.warnings_.push_back(std::move(w));
+        }
+    }
+
+    return plan;
+}
+
+
+// --- schema_json.cpp ---
+
+
+
+
+std::string schema_to_json(const Schema& schema) {
+    nlohmann::json j;
+
+    // Tables
+    auto& jt = j["tables"];
+    jt = nlohmann::json::object();
+    for (const auto& [name, table] : schema.tables) {
+        nlohmann::json jtbl;
+        jtbl["name"] = table.name;
+
+        auto& jcols = jtbl["columns"];
+        jcols = nlohmann::json::array();
+        for (const auto& col : table.columns) {
+            nlohmann::json jcol;
+            jcol["name"] = col.name;
+            jcol["type"] = col.type;
+            jcol["notnull"] = col.notnull;
+            jcol["default_value"] = col.default_value;
+            jcol["pk"] = col.pk;
+            jcol["collation"] = col.collation;
+            jcol["generated"] = static_cast<int>(col.generated);
+            jcol["generated_expr"] = col.generated_expr;
+            jcols.push_back(std::move(jcol));
+        }
+
+        auto& jfks = jtbl["foreign_keys"];
+        jfks = nlohmann::json::array();
+        for (const auto& fk : table.foreign_keys) {
+            nlohmann::json jfk;
+            jfk["constraint_name"] = fk.constraint_name;
+            jfk["from_columns"] = fk.from_columns;
+            jfk["to_table"] = fk.to_table;
+            jfk["to_columns"] = fk.to_columns;
+            jfk["on_update"] = fk.on_update;
+            jfk["on_delete"] = fk.on_delete;
+            jfks.push_back(std::move(jfk));
+        }
+
+        auto& jchks = jtbl["check_constraints"];
+        jchks = nlohmann::json::array();
+        for (const auto& chk : table.check_constraints) {
+            nlohmann::json jchk;
+            jchk["name"] = chk.name;
+            jchk["expression"] = chk.expression;
+            jchks.push_back(std::move(jchk));
+        }
+
+        jtbl["pk_constraint_name"] = table.pk_constraint_name;
+        jtbl["without_rowid"] = table.without_rowid;
+        jtbl["strict"] = table.strict;
+        jtbl["raw_sql"] = table.raw_sql;
+
+        jt[name] = std::move(jtbl);
+    }
+
+    // Indexes
+    auto& ji = j["indexes"];
+    ji = nlohmann::json::object();
+    for (const auto& [name, idx] : schema.indexes) {
+        nlohmann::json jidx;
+        jidx["name"] = idx.name;
+        jidx["table_name"] = idx.table_name;
+        jidx["columns"] = idx.columns;
+        jidx["unique"] = idx.unique;
+        jidx["where_clause"] = idx.where_clause;
+        jidx["raw_sql"] = idx.raw_sql;
+        ji[name] = std::move(jidx);
+    }
+
+    // Views
+    auto& jv = j["views"];
+    jv = nlohmann::json::object();
+    for (const auto& [name, view] : schema.views) {
+        nlohmann::json jview;
+        jview["name"] = view.name;
+        jview["sql"] = view.sql;
+        jv[name] = std::move(jview);
+    }
+
+    // Triggers
+    auto& jtr = j["triggers"];
+    jtr = nlohmann::json::object();
+    for (const auto& [name, trig] : schema.triggers) {
+        nlohmann::json jtrig;
+        jtrig["name"] = trig.name;
+        jtrig["table_name"] = trig.table_name;
+        jtrig["sql"] = trig.sql;
+        jtr[name] = std::move(jtrig);
+    }
+
+    return j.dump(2);
+}
+
+Schema schema_from_json(const std::string& json_str) {
+    nlohmann::json j;
+    try {
+        j = nlohmann::json::parse(json_str);
+    } catch (const nlohmann::json::parse_error& e) {
+        throw JsonError(std::string("Invalid JSON: ") + e.what());
+    }
+
+    if (!j.is_object())
+        throw JsonError("Expected top-level JSON object");
+
+    Schema schema;
+
+    // Tables
+    if (j.contains("tables") && j["tables"].is_object()) {
+        for (const auto& [name, jtbl] : j["tables"].items()) {
+            Table table;
+            table.name = jtbl.value("name", "");
+
+            if (jtbl.contains("columns") && jtbl["columns"].is_array()) {
+                for (const auto& jcol : jtbl["columns"]) {
+                    Column col;
+                    col.name = jcol.value("name", "");
+                    col.type = jcol.value("type", "");
+                    col.notnull = jcol.value("notnull", false);
+                    col.default_value = jcol.value("default_value", "");
+                    col.pk = jcol.value("pk", 0);
+                    col.collation = jcol.value("collation", "");
+                    col.generated = static_cast<GeneratedType>(jcol.value("generated", 0));
+                    col.generated_expr = jcol.value("generated_expr", "");
+                    table.columns.push_back(std::move(col));
+                }
+            }
+
+            if (jtbl.contains("foreign_keys") && jtbl["foreign_keys"].is_array()) {
+                for (const auto& jfk : jtbl["foreign_keys"]) {
+                    ForeignKey fk;
+                    fk.constraint_name = jfk.value("constraint_name", "");
+                    fk.from_columns = jfk.value("from_columns", std::vector<std::string>{});
+                    fk.to_table = jfk.value("to_table", "");
+                    fk.to_columns = jfk.value("to_columns", std::vector<std::string>{});
+                    fk.on_update = jfk.value("on_update", "NO ACTION");
+                    fk.on_delete = jfk.value("on_delete", "NO ACTION");
+                    table.foreign_keys.push_back(std::move(fk));
+                }
+            }
+
+            if (jtbl.contains("check_constraints") && jtbl["check_constraints"].is_array()) {
+                for (const auto& jchk : jtbl["check_constraints"]) {
+                    CheckConstraint chk;
+                    chk.name = jchk.value("name", "");
+                    chk.expression = jchk.value("expression", "");
+                    table.check_constraints.push_back(std::move(chk));
+                }
+            }
+
+            table.pk_constraint_name = jtbl.value("pk_constraint_name", "");
+            table.without_rowid = jtbl.value("without_rowid", false);
+            table.strict = jtbl.value("strict", false);
+            table.raw_sql = jtbl.value("raw_sql", "");
+
+            schema.tables[name] = std::move(table);
+        }
+    }
+
+    // Indexes
+    if (j.contains("indexes") && j["indexes"].is_object()) {
+        for (const auto& [name, jidx] : j["indexes"].items()) {
+            Index idx;
+            idx.name = jidx.value("name", "");
+            idx.table_name = jidx.value("table_name", "");
+            idx.columns = jidx.value("columns", std::vector<std::string>{});
+            idx.unique = jidx.value("unique", false);
+            idx.where_clause = jidx.value("where_clause", "");
+            idx.raw_sql = jidx.value("raw_sql", "");
+            schema.indexes[name] = std::move(idx);
+        }
+    }
+
+    // Views
+    if (j.contains("views") && j["views"].is_object()) {
+        for (const auto& [name, jview] : j["views"].items()) {
+            View view;
+            view.name = jview.value("name", "");
+            view.sql = jview.value("sql", "");
+            schema.views[name] = std::move(view);
+        }
+    }
+
+    // Triggers
+    if (j.contains("triggers") && j["triggers"].is_object()) {
+        for (const auto& [name, jtrig] : j["triggers"].items()) {
+            Trigger trig;
+            trig.name = jtrig.value("name", "");
+            trig.table_name = jtrig.value("table_name", "");
+            trig.sql = jtrig.value("sql", "");
+            schema.triggers[name] = std::move(trig);
+        }
+    }
+
+    return schema;
+}
+
+
+} // namespace sqlift
+
+
+// --- C wrapper ---------------------------------------------------------------
+
+
+namespace {
+
+// Duplicate a std::string to a malloc'd C string (caller frees with sqlift_free).
+char* sqlift_dup_str(const std::string& s) {
+    char* p = static_cast<char*>(std::malloc(s.size() + 1));
+    if (p) std::memcpy(p, s.c_str(), s.size() + 1);
+    return p;
+}
+
+// Set error output pointers. msg is malloc'd; caller frees with sqlift_free.
+void sqlift_set_error(int* err_type, char** err_msg, int type, const std::string& msg) {
+    if (err_type) *err_type = type;
+    if (err_msg)  *err_msg = sqlift_dup_str(msg);
+}
+
+void sqlift_clear_error(int* err_type, char** err_msg) {
+    if (err_type) *err_type = SQLIFT_OK;
+    if (err_msg)  *err_msg = nullptr;
+}
+
+// Map a C++ exception to the error type enum.
+int classify_exception(const std::exception& e) {
+    if (dynamic_cast<const sqlift::ParseError*>(&e))          return SQLIFT_PARSE_ERROR;
+    if (dynamic_cast<const sqlift::ExtractError*>(&e))        return SQLIFT_EXTRACT_ERROR;
+    if (dynamic_cast<const sqlift::DiffError*>(&e))           return SQLIFT_DIFF_ERROR;
+    if (dynamic_cast<const sqlift::DriftError*>(&e))          return SQLIFT_DRIFT_ERROR;
+    if (dynamic_cast<const sqlift::DestructiveError*>(&e))    return SQLIFT_DESTRUCTIVE_ERROR;
+    if (dynamic_cast<const sqlift::BreakingChangeError*>(&e)) return SQLIFT_BREAKING_CHANGE_ERROR;
+    if (dynamic_cast<const sqlift::JsonError*>(&e))           return SQLIFT_JSON_ERROR;
+    if (dynamic_cast<const sqlift::ApplyError*>(&e))          return SQLIFT_APPLY_ERROR;
+    if (dynamic_cast<const sqlift::Error*>(&e))               return SQLIFT_ERROR;
+    return SQLIFT_ERROR;
+}
+
+// Warning JSON serialization (reused by sqlift_diff and sqlift_detect_redundant_indexes).
+std::string warnings_to_json(const std::vector<sqlift::Warning>& warnings) {
+    std::string s = "[";
+    for (size_t i = 0; i < warnings.size(); ++i) {
+        if (i > 0) s += ',';
+        const auto& w = warnings[i];
+        // Manual JSON to avoid pulling nlohmann into this TU via includes.
+        // The values are simple strings, no escaping issues in practice.
+        s += "{\"type\":\"RedundantIndex\"";
+        s += ",\"message\":\"" + w.message + "\"";
+        s += ",\"index_name\":\"" + w.index_name + "\"";
+        s += ",\"covered_by\":\"" + w.covered_by + "\"";
+        s += ",\"table_name\":\"" + w.table_name + "\"}";
+    }
+    s += "]";
+    return s;
+}
+
+} // namespace
+
+// --- opaque handle -----------------------------------------------------------
+
+struct sqlift_db {
+    bool owns = true;
+    sqlift::Database db;
+    explicit sqlift_db(const std::string& path, int flags)
+        : db(path, flags ? flags : (SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE)) {}
+};
+
+// --- C API -------------------------------------------------------------------
+
+extern "C" {
+
+sqlift_db* sqlift_db_open(const char* path, int flags,
+                          int* err_type, char** err_msg) {
+    sqlift_clear_error(err_type, err_msg);
+    try {
+        return new sqlift_db(path, flags);
+    } catch (const std::exception& e) {
+        sqlift_set_error(err_type, err_msg, classify_exception(e), e.what());
+        return nullptr;
+    }
+}
+
+void sqlift_db_close(sqlift_db* db) {
+    if (!db->owns) { /* borrowed — null out handle so ~Database skips close */
+        sqlite3 *null = nullptr;
+        memcpy(static_cast<void*>(&db->db), &null, sizeof(sqlite3*));
+    }
+    delete db;
+}
+
+int sqlift_db_exec(sqlift_db* db, const char* sql, char** err_msg) {
+    if (err_msg) *err_msg = nullptr;
+    try {
+        db->db.exec(sql);
+        return 0;
+    } catch (const std::exception& e) {
+        if (err_msg) *err_msg = sqlift_dup_str(e.what());
+        return 1;
+    }
+}
+
+char* sqlift_parse(const char* ddl, int* err_type, char** err_msg) {
+    sqlift_clear_error(err_type, err_msg);
+    try {
+        auto schema = sqlift::parse(ddl);
+        return sqlift_dup_str(sqlift::schema_to_json(schema));
+    } catch (const std::exception& e) {
+        sqlift_set_error(err_type, err_msg, classify_exception(e), e.what());
+        return nullptr;
+    }
+}
+
+char* sqlift_extract(sqlift_db* db, int* err_type, char** err_msg) {
+    sqlift_clear_error(err_type, err_msg);
+    try {
+        auto schema = sqlift::extract(db->db);
+        return sqlift_dup_str(sqlift::schema_to_json(schema));
+    } catch (const std::exception& e) {
+        sqlift_set_error(err_type, err_msg, classify_exception(e), e.what());
+        return nullptr;
+    }
+}
+
+char* sqlift_diff(const char* current_json, const char* desired_json,
+                  int* err_type, char** err_msg) {
+    sqlift_clear_error(err_type, err_msg);
+    try {
+        auto current = sqlift::schema_from_json(current_json);
+        auto desired = sqlift::schema_from_json(desired_json);
+        auto plan = sqlift::diff(current, desired);
+        // Include warnings in the plan JSON (they're part of to_json output).
+        return sqlift_dup_str(sqlift::to_json(plan));
+    } catch (const std::exception& e) {
+        sqlift_set_error(err_type, err_msg, classify_exception(e), e.what());
+        return nullptr;
+    }
+}
+
+int sqlift_apply(sqlift_db* db, const char* plan_json, int allow_destructive,
+                 int* err_type, char** err_msg) {
+    sqlift_clear_error(err_type, err_msg);
+    try {
+        auto plan = sqlift::from_json(plan_json);
+        sqlift::ApplyOptions opts;
+        opts.allow_destructive = (allow_destructive != 0);
+        sqlift::apply(db->db, plan, opts);
+        return 0;
+    } catch (const std::exception& e) {
+        sqlift_set_error(err_type, err_msg, classify_exception(e), e.what());
+        return 1;
+    }
+}
+
+int64_t sqlift_migration_version(sqlift_db* db, int* err_type, char** err_msg) {
+    sqlift_clear_error(err_type, err_msg);
+    try {
+        return sqlift::migration_version(db->db);
+    } catch (const std::exception& e) {
+        sqlift_set_error(err_type, err_msg, classify_exception(e), e.what());
+        return -1;
+    }
+}
+
+char* sqlift_detect_redundant_indexes(const char* schema_json,
+                                      int* err_type, char** err_msg) {
+    sqlift_clear_error(err_type, err_msg);
+    try {
+        auto schema = sqlift::schema_from_json(schema_json);
+        auto warnings = sqlift::detect_redundant_indexes(schema);
+        return sqlift_dup_str(warnings_to_json(warnings));
+    } catch (const std::exception& e) {
+        sqlift_set_error(err_type, err_msg, classify_exception(e), e.what());
+        return nullptr;
+    }
+}
+
+char* sqlift_schema_hash(const char* schema_json,
+                         int* err_type, char** err_msg) {
+    sqlift_clear_error(err_type, err_msg);
+    try {
+        auto schema = sqlift::schema_from_json(schema_json);
+        return sqlift_dup_str(schema.hash());
+    } catch (const std::exception& e) {
+        sqlift_set_error(err_type, err_msg, classify_exception(e), e.what());
+        return nullptr;
+    }
+}
+
+int sqlift_db_query_int64(sqlift_db* db, const char* sql,
+                          int64_t* result, char** err_msg) {
+    if (err_msg) *err_msg = nullptr;
+    try {
+        sqlite3_stmt* stmt = nullptr;
+        int rc = sqlite3_prepare_v2(db->db.get(), sql, -1, &stmt, nullptr);
+        if (rc != SQLITE_OK) {
+            if (err_msg) *err_msg = sqlift_dup_str(sqlite3_errmsg(db->db.get()));
+            return 1;
+        }
+        rc = sqlite3_step(stmt);
+        if (rc == SQLITE_ROW) {
+            if (result) *result = sqlite3_column_int64(stmt, 0);
+            sqlite3_finalize(stmt);
+            return 0;
+        }
+        sqlite3_finalize(stmt);
+        if (rc == SQLITE_DONE) {
+            // No rows -- return 0 as default.
+            if (result) *result = 0;
+            return 0;
+        }
+        if (err_msg) *err_msg = sqlift_dup_str(sqlite3_errmsg(db->db.get()));
+        return 1;
+    } catch (const std::exception& e) {
+        if (err_msg) *err_msg = sqlift_dup_str(e.what());
+        return 1;
+    }
+}
+
+char* sqlift_db_query_text(sqlift_db* db, const char* sql, char** err_msg) {
+    if (err_msg) *err_msg = nullptr;
+    try {
+        sqlite3_stmt* stmt = nullptr;
+        int rc = sqlite3_prepare_v2(db->db.get(), sql, -1, &stmt, nullptr);
+        if (rc != SQLITE_OK) {
+            if (err_msg) *err_msg = sqlift_dup_str(sqlite3_errmsg(db->db.get()));
+            return nullptr;
+        }
+        rc = sqlite3_step(stmt);
+        if (rc == SQLITE_ROW) {
+            const char* text = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+            char* result = sqlift_dup_str(text ? text : "");
+            sqlite3_finalize(stmt);
+            return result;
+        }
+        sqlite3_finalize(stmt);
+        if (rc == SQLITE_DONE) {
+            // No rows -- return empty string.
+            return sqlift_dup_str("");
+        }
+        if (err_msg) *err_msg = sqlift_dup_str(sqlite3_errmsg(db->db.get()));
+        return nullptr;
+    } catch (const std::exception& e) {
+        if (err_msg) *err_msg = sqlift_dup_str(e.what());
+        return nullptr;
+    }
+}
+
+void sqlift_free(void* ptr) {
+    std::free(ptr);
+}
+
+} // extern "C"
+
+// ── sqlift_db_wrap (sqlpipe shim) ───────────────────────────────────
+// Wraps an existing sqlite3* for use with sqlift C API functions.
+// The handle is NOT owned — sqlift_db_close will not close it.
+// TODO: upstream to sqlift — the C API should accept sqlite3* directly.
+
+extern "C" sqlift_db* sqlift_db_wrap(sqlite3* handle) {
+    auto* sdb = new sqlift_db(":memory:", 0);
+    // Close the dummy :memory: db and swap in the borrowed handle.
+    sqlite3_close(sdb->db.get());
+    sqlite3** pdb = reinterpret_cast<sqlite3**>(&sdb->db);
+    *pdb = handle;
+    sdb->owns = false;
+    return sdb;
+}
+
+// ── sqldeep (query transpiler) ──────────────────────────────────
+// Source: vendor/src/sqldeep.cpp
+
+// Copyright 2026 Marcelo Cantos
+// SPDX-License-Identifier: Apache-2.0
+
+#include <cstdlib>
+#include <cstring>
+#include <map>
+#include <memory>
+#include <stdexcept>
+#include <string>
+#include <unordered_map>
+#include <variant>
+#include <vector>
+
+namespace sqldeep {
+
+// ── Internal C++ types (not exposed in public C header) ─────────────
+
+struct ForeignKey {
+    std::string from_table;   // child table (has the FK column(s))
+    std::string to_table;     // parent/referenced table
+
+    struct ColumnPair {
+        std::string from_column;  // FK column in child
+        std::string to_column;    // referenced column in parent
+    };
+    std::vector<ColumnPair> columns;  // supports multi-column FKs
+};
+
+enum class Backend { sqlite, postgres };
+
+class Error : public std::runtime_error {
+public:
+    Error(const std::string& msg, int line, int col)
+        : std::runtime_error(msg), line_(line), col_(col) {}
+    int line() const { return line_; }
+    int col() const { return col_; }
+private:
+    int line_;
+    int col_;
+};
+
+namespace {
+
+static constexpr int kMaxNestingDepth = 200;
+
+// ── Lexer ───────────────────────────────────────────────────────────
+
+enum class TokenType {
+    Ident,       // unquoted identifier or keyword
+    DqString,    // double-quoted string "..."
+    SqString,    // single-quoted string '...'
+    Number,      // numeric literal
+    LBrace,      // {
+    RBrace,      // }
+    LBracket,    // [
+    RBracket,    // ]
+    LParen,      // (
+    RParen,      // )
+    Comma,       // ,
+    Colon,       // :
+    Semicolon,   // ;
+    Other,       // any other character or operator
+    Eof,
+};
+
+struct Token {
+    TokenType type;
+    std::string text;
+    int line;
+    int col;
+    size_t src_begin; // offset in source where token text starts
+    size_t src_end;   // offset right after token text ends
+};
+
+struct LexerState {
+    size_t pos;
+    int line;
+    int col;
+};
+
+class Lexer {
+public:
+    explicit Lexer(const std::string& input)
+        : src_(input), pos_(0), line_(1), col_(1) {}
+
+    Token next() {
+        skip_whitespace_and_comments();
+        if (pos_ >= src_.size())
+            return {TokenType::Eof, "", line_, col_, pos_, pos_};
+
+        int tline = line_, tcol = col_;
+        size_t begin = pos_;
+        char c = src_[pos_];
+
+        switch (c) {
+        case '{': advance(); return {TokenType::LBrace,   "{", tline, tcol, begin, pos_};
+        case '}': advance(); return {TokenType::RBrace,   "}", tline, tcol, begin, pos_};
+        case '[': advance(); return {TokenType::LBracket, "[", tline, tcol, begin, pos_};
+        case ']': advance(); return {TokenType::RBracket, "]", tline, tcol, begin, pos_};
+        case '(': advance(); return {TokenType::LParen,   "(", tline, tcol, begin, pos_};
+        case ')': advance(); return {TokenType::RParen,   ")", tline, tcol, begin, pos_};
+        case ',': advance(); return {TokenType::Comma,    ",", tline, tcol, begin, pos_};
+        case ':': advance(); return {TokenType::Colon,    ":", tline, tcol, begin, pos_};
+        case ';': advance(); return {TokenType::Semicolon,";", tline, tcol, begin, pos_};
+        case '\'': return lex_string('\'', TokenType::SqString, tline, tcol, begin);
+        case '"':  return lex_string('"',  TokenType::DqString,  tline, tcol, begin);
+        default: break;
+        }
+
+        if (is_ident_start(c)) return lex_ident(tline, tcol, begin);
+        if (is_digit(c) || (c == '.' && pos_ + 1 < src_.size() && is_digit(src_[pos_ + 1])))
+            return lex_number(tline, tcol, begin);
+
+        // Operator or other character
+        std::string s(1, c);
+        advance();
+        if (pos_ < src_.size()) {
+            char n = src_[pos_];
+            if ((c == '<' && (n == '=' || n == '>' || n == '-')) ||
+                (c == '>' && n == '=') ||
+                (c == '!' && n == '=') ||
+                (c == '|' && n == '|') ||
+                (c == '<' && n == '<') ||
+                (c == '>' && n == '>') ||
+                (c == '-' && n == '>')) {
+                s += n;
+                advance();
+                // Extend -> to ->> when the > is touching (SQL JSON operator)
+                if (s == "->" && pos_ < src_.size() && src_[pos_] == '>') {
+                    s += '>';
+                    advance();
+                }
+            }
+        }
+        return {TokenType::Other, s, tline, tcol, begin, pos_};
+    }
+
+    Token peek() {
+        auto st = save();
+        Token t = next();
+        restore(st);
+        return t;
+    }
+
+    LexerState save() const { return {pos_, line_, col_}; }
+    void restore(const LexerState& st) { pos_ = st.pos; line_ = st.line; col_ = st.col; }
+
+    // Current position in source (right after last consumed token).
+    size_t offset() const { return pos_; }
+
+    const std::string& source() const { return src_; }
+
+    // Read raw source characters until '<' or '{', for XML body text.
+    // Returns the accumulated text. Lexer position advances past it.
+    std::string read_raw_until_xml_special() {
+        std::string text;
+        while (pos_ < src_.size() && src_[pos_] != '<' && src_[pos_] != '{') {
+            text += src_[pos_];
+            advance();
+        }
+        return text;
+    }
+
+    [[noreturn]] void error(const std::string& msg) {
+        throw Error(msg, line_, col_);
+    }
+
+    [[noreturn]] void error(const std::string& msg, int line, int col) {
+        throw Error(msg, line, col);
+    }
+
+private:
+    void advance() {
+        if (pos_ < src_.size()) {
+            if (src_[pos_] == '\n') { ++line_; col_ = 1; }
+            else { ++col_; }
+            ++pos_;
+        }
+    }
+
+    void skip_whitespace_and_comments() {
+        while (pos_ < src_.size()) {
+            if (std::isspace(static_cast<unsigned char>(src_[pos_]))) {
+                advance();
+            } else if (pos_ + 1 < src_.size() && src_[pos_] == '-' && src_[pos_ + 1] == '-') {
+                // SQL line comment: -- to end of line
+                advance(); advance();
+                while (pos_ < src_.size() && src_[pos_] != '\n') advance();
+            } else if (pos_ + 1 < src_.size() && src_[pos_] == '/' && src_[pos_ + 1] == '*') {
+                // SQL block comment: /* ... */ (flat, not nested)
+                int cline = line_, ccol = col_;
+                advance(); advance();
+                while (pos_ < src_.size()) {
+                    if (src_[pos_] == '*' && pos_ + 1 < src_.size() && src_[pos_ + 1] == '/') {
+                        advance(); advance();
+                        break;
+                    }
+                    advance();
+                }
+                if (pos_ >= src_.size() && (pos_ < 2 || src_[pos_ - 2] != '*' || src_[pos_ - 1] != '/'))
+                    error("unterminated block comment", cline, ccol);
+            } else {
+                break;
+            }
+        }
+    }
+
+    Token lex_string(char quote, TokenType type, int tline, int tcol, size_t begin) {
+        std::string s(1, quote);
+        advance(); // skip opening quote
+        while (pos_ < src_.size()) {
+            if (src_[pos_] == quote) {
+                // SQL doubled-quote escape: '' inside '...' or "" inside "..."
+                if (pos_ + 1 < src_.size() && src_[pos_ + 1] == quote) {
+                    s += quote; advance();
+                    s += quote; advance();
+                    continue;
+                }
+                break; // end of string
+            }
+            if (src_[pos_] == '\\' && pos_ + 1 < src_.size()) {
+                s += src_[pos_]; advance();
+                s += src_[pos_]; advance();
+            } else {
+                s += src_[pos_]; advance();
+            }
+        }
+        if (pos_ >= src_.size()) error("unterminated string literal", tline, tcol);
+        s += quote;
+        advance(); // skip closing quote
+        return {type, s, tline, tcol, begin, pos_};
+    }
+
+    Token lex_ident(int tline, int tcol, size_t begin) {
+        std::string s;
+        while (pos_ < src_.size() && is_ident_cont(src_[pos_])) {
+            s += src_[pos_]; advance();
+        }
+        return {TokenType::Ident, s, tline, tcol, begin, pos_};
+    }
+
+    Token lex_number(int tline, int tcol, size_t begin) {
+        std::string s;
+        while (pos_ < src_.size() && is_digit(src_[pos_])) {
+            s += src_[pos_]; advance();
+        }
+        if (pos_ < src_.size() && src_[pos_] == '.' &&
+            pos_ + 1 < src_.size() && is_digit(src_[pos_ + 1])) {
+            s += src_[pos_]; advance(); // '.'
+            while (pos_ < src_.size() && is_digit(src_[pos_])) {
+                s += src_[pos_]; advance();
+            }
+        }
+        if (pos_ < src_.size() && (src_[pos_] == 'e' || src_[pos_] == 'E')) {
+            s += src_[pos_]; advance();
+            if (pos_ < src_.size() && (src_[pos_] == '+' || src_[pos_] == '-')) {
+                s += src_[pos_]; advance();
+            }
+            while (pos_ < src_.size() && is_digit(src_[pos_])) {
+                s += src_[pos_]; advance();
+            }
+        }
+        return {TokenType::Number, s, tline, tcol, begin, pos_};
+    }
+
+    static bool is_ident_start(char c) {
+        return std::isalpha(static_cast<unsigned char>(c)) || c == '_';
+    }
+    static bool is_ident_cont(char c) {
+        return std::isalnum(static_cast<unsigned char>(c)) || c == '_';
+    }
+    static bool is_digit(char c) {
+        return std::isdigit(static_cast<unsigned char>(c));
+    }
+
+    const std::string& src_;
+    size_t pos_;
+    int line_;
+    int col_;
+};
+
+// ── AST ─────────────────────────────────────────────────────────────
+
+struct DeepSelect;
+struct ObjectLiteral;
+struct ArrayLiteral;
+struct JoinPath;
+struct RecursiveSelect;
+struct XmlElement;
+
+using SqlPart = std::variant<
+    std::string,
+    std::unique_ptr<DeepSelect>,
+    std::unique_ptr<ObjectLiteral>,
+    std::unique_ptr<ArrayLiteral>,
+    std::unique_ptr<JoinPath>,
+    std::unique_ptr<RecursiveSelect>,
+    std::unique_ptr<XmlElement>
+>;
+using SqlParts = std::vector<SqlPart>;
+
+struct ObjectLiteral {
+    struct Field {
+        std::string key;
+        std::string qualified_value; // non-empty = qualified bare field (sm.repo)
+        SqlParts computed_key; // non-empty = (expr) computed key
+        SqlParts value; // empty = bare field (uses key or qualified_value)
+        bool aggregate = false; // SELECT expr (no FROM) → json_group_array(expr)
+        bool recursive = false; // * = recurse with same shape
+    };
+    std::vector<Field> fields;
+};
+
+struct ArrayLiteral {
+    std::vector<SqlParts> elements;
+};
+
+struct JoinPath {
+    struct Step {
+        bool forward;       // true = ->, false = <-
+        std::string table;
+        std::string alias;  // empty if none
+        // Explicit column pairs: {child_col, parent_col}.
+        // Empty = use convention/FK resolution.
+        std::vector<std::pair<std::string, std::string>> columns;
+    };
+    std::string start_alias;  // e.g. "c"
+    std::string start_table;  // e.g. "customers" (resolved from alias_map)
+    std::vector<Step> steps;
+};
+
+enum class XmlMode { Xml, Jsonml, Jsx };
+
+struct DeepSelect {
+    std::variant<ObjectLiteral, ArrayLiteral, SqlParts> projection;
+    SqlParts tail;
+    bool singular = false;      // SELECT/1: no json_group_array, add LIMIT 1
+    bool xml_context = false;   // true = use xml/jsonml/jsx agg
+    XmlMode xml_mode = XmlMode::Xml;
+};
+
+struct RecursiveSelect {
+    std::vector<ObjectLiteral::Field> fields; // non-recursive fields
+    std::string children_field;               // name of recursive field
+    std::string table;                        // table to recurse on
+    std::string fk_column;                    // self-referential FK column
+    std::string pk_column;                    // PK column (default: "id")
+    SqlParts root_condition;                  // WHERE condition (without WHERE keyword)
+    bool singular = false;                    // SELECT/1: single root
+};
+
+struct XmlElement {
+    std::string tag;  // e.g. "div", "ui:Table.Row"
+    struct Attr {
+        std::string name;
+        SqlParts value;    // rendered expression (static string or dynamic)
+        bool is_dynamic;   // true = {expr}, false = "static"
+    };
+    std::vector<Attr> attrs;
+    struct Child {
+        enum Kind { Text, Interpolation, Element };
+        Kind kind;
+        std::string text;                      // kind == Text: raw body text
+        SqlParts expr;                         // kind == Interpolation: {expr}
+        std::unique_ptr<XmlElement> element;   // kind == Element: nested <tag>
+    };
+    std::vector<Child> children;
+    bool self_closing = false;
+    XmlMode mode = XmlMode::Xml;
+};
+
+// ── XML dedent ─────────────────────────────────────────────────────
+//
+// Multi-line XML literals carry source indentation in their text
+// children.  xml_dedent strips the common leading-space prefix from
+// all lines that follow a newline, so the output reflects relative
+// indentation only.
+
+static int xml_min_indent(const XmlElement& el) {
+    int min_indent = INT_MAX;
+    for (const auto& child : el.children) {
+        if (child.kind == XmlElement::Child::Text) {
+            const std::string& t = child.text;
+            size_t i = 0;
+            while (i < t.size()) {
+                size_t nl = t.find('\n', i);
+                if (nl == std::string::npos) break;
+                size_t ls = nl + 1;
+                int sp = 0;
+                while (ls + sp < t.size() && t[ls + sp] == ' ') ++sp;
+                // Skip only lines that are blank between two newlines.
+                // Lines that end at the text boundary still carry
+                // meaningful indentation (before a child element or
+                // closing tag).
+                if (ls + sp < t.size() && t[ls + sp] == '\n') {
+                    i = ls;
+                    continue;  // blank interior line
+                }
+                min_indent = std::min(min_indent, sp);
+                i = ls;
+            }
+        } else if (child.kind == XmlElement::Child::Element) {
+            min_indent = std::min(min_indent, xml_min_indent(*child.element));
+        }
+    }
+    return min_indent;
+}
+
+static void xml_strip_indent(XmlElement& el, int n) {
+    for (auto& child : el.children) {
+        if (child.kind == XmlElement::Child::Text) {
+            std::string out;
+            size_t i = 0;
+            while (i < child.text.size()) {
+                size_t nl = child.text.find('\n', i);
+                if (nl == std::string::npos) {
+                    out.append(child.text, i, std::string::npos);
+                    break;
+                }
+                out.append(child.text, i, nl - i + 1); // include \n
+                size_t ls = nl + 1;
+                int stripped = 0;
+                while (stripped < n && ls + stripped < child.text.size() &&
+                       child.text[ls + stripped] == ' ')
+                    ++stripped;
+                i = ls + stripped;
+            }
+            child.text = std::move(out);
+        } else if (child.kind == XmlElement::Child::Element) {
+            xml_strip_indent(*child.element, n);
+        }
+    }
+}
+
+static void xml_dedent(XmlElement& el) {
+    int n = xml_min_indent(el);
+    if (n > 0 && n < INT_MAX) xml_strip_indent(el, n);
+}
+
+// In JSON/XML value contexts, wrap a standalone true/false token as
+// sqldeep_json('true')/sqldeep_json('false') so it is returned as a
+// BLOB carrying JSON boolean semantics rather than integer 1/0.
+static void wrap_json_bool(SqlParts& parts) {
+    if (parts.size() != 1) return;
+    auto* s = std::get_if<std::string>(&parts[0]);
+    if (!s || s->size() < 4 || s->size() > 5) return;
+    // Case-insensitive check
+    std::string lower;
+    lower.reserve(s->size());
+    for (char c : *s)
+        lower += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    if (lower == "true")       *s = "sqldeep_json('true')";
+    else if (lower == "false") *s = "sqldeep_json('false')";
+}
+
+// ── Parser ──────────────────────────────────────────────────────────
+
+static bool is_keyword(const Token& t, const char* kw) {
+    if (t.type != TokenType::Ident) return false;
+    const auto& s = t.text;
+    size_t len = std::strlen(kw);
+    if (s.size() != len) return false;
+    for (size_t i = 0; i < len; ++i) {
+        if (std::toupper(static_cast<unsigned char>(s[i])) !=
+            std::toupper(static_cast<unsigned char>(kw[i])))
+            return false;
+    }
+    return true;
+}
+
+static bool is_sql_keyword(const std::string& s) {
+    static const char* keywords[] = {
+        "SELECT", "FROM", "WHERE", "JOIN", "INNER", "LEFT", "RIGHT",
+        "OUTER", "CROSS", "NATURAL", "ON", "ORDER", "GROUP", "HAVING",
+        "LIMIT", "UNION", "INTERSECT", "EXCEPT", "AS", "AND", "OR",
+        "NOT", "IN", "IS", "NULL", "LIKE", "BETWEEN", "EXISTS",
+        "CASE", "WHEN", "THEN", "ELSE", "END", "SET", "INTO",
+        "VALUES", "INSERT", "UPDATE", "DELETE", "DISTINCT", "ALL",
+        "ASC", "DESC", "BY", "OFFSET", "FETCH", "FOR", "WITH", "USING",
+        "RECURSE",
+    };
+    for (const char* kw : keywords) {
+        if (is_keyword({TokenType::Ident, s, 0, 0, 0, 0}, kw))
+            return true;
+    }
+    return false;
+}
+
+static bool is_from_or_join(const Token& t) {
+    return is_keyword(t, "FROM") || is_keyword(t, "JOIN");
+}
+
+// Parse ON/USING clause after a join path step.
+// If out is non-null, stores {child_col, parent_col} pairs.
+// If out is null (skip mode for prescan), just advances past the tokens.
+static void parse_on_using(Lexer& lex, bool forward,
+                           std::vector<std::pair<std::string,std::string>>* out) {
+    Token t = lex.peek();
+
+    if (is_keyword(t, "ON")) {
+        lex.next(); // consume ON
+        Token first = lex.peek();
+        if (first.type != TokenType::Ident)
+            lex.error("expected column name after ON", first.line, first.col);
+        lex.next(); // consume first ident
+
+        Token eq = lex.peek();
+        if (eq.type == TokenType::Other && eq.text == "=") {
+            // Explicit pair mode: left_col = right_col
+            lex.next(); // consume =
+            Token second = lex.peek();
+            if (second.type != TokenType::Ident)
+                lex.error("expected column name after '='",
+                          second.line, second.col);
+            lex.next(); // consume second ident
+
+            if (out) {
+                if (forward) {
+                    // child = right of arrow: {right_col, left_col}
+                    out->push_back({second.text, first.text});
+                } else {
+                    // child = left of arrow: {left_col, right_col}
+                    out->push_back({first.text, second.text});
+                }
+            }
+
+            // Loop: AND ident = ident (save/restore to avoid consuming
+            // outer SQL's AND when pattern doesn't match).
+            while (true) {
+                auto st = lex.save();
+                Token and_tok = lex.peek();
+                if (!is_keyword(and_tok, "AND")) break;
+                lex.next(); // tentatively consume AND
+                Token col1 = lex.peek();
+                if (col1.type != TokenType::Ident) { lex.restore(st); break; }
+                lex.next();
+                Token eq2 = lex.peek();
+                if (eq2.type != TokenType::Other || eq2.text != "=") {
+                    lex.restore(st); break;
+                }
+                lex.next();
+                Token col2 = lex.peek();
+                if (col2.type != TokenType::Ident) { lex.restore(st); break; }
+                lex.next();
+
+                if (out) {
+                    if (forward) {
+                        out->push_back({col2.text, col1.text});
+                    } else {
+                        out->push_back({col1.text, col2.text});
+                    }
+                }
+            }
+        } else {
+            // Shorthand mode: same column name in both tables
+            if (out) {
+                out->push_back({first.text, first.text});
+            }
+        }
+    } else if (is_keyword(t, "USING")) {
+        lex.next(); // consume USING
+        Token lparen = lex.peek();
+        if (lparen.type != TokenType::LParen)
+            lex.error("expected '(' after USING", lparen.line, lparen.col);
+        lex.next(); // consume (
+
+        Token check = lex.peek();
+        if (check.type == TokenType::RParen)
+            lex.error("empty USING clause", check.line, check.col);
+
+        while (true) {
+            Token col = lex.peek();
+            if (col.type != TokenType::Ident)
+                lex.error("expected column name in USING clause",
+                          col.line, col.col);
+            lex.next();
+
+            if (out) {
+                out->push_back({col.text, col.text});
+            }
+
+            Token next = lex.peek();
+            if (next.type == TokenType::Comma) {
+                lex.next();
+            } else if (next.type == TokenType::RParen) {
+                lex.next();
+                break;
+            } else {
+                lex.error("expected ',' or ')' in USING clause",
+                          next.line, next.col);
+            }
+        }
+    }
+}
+
+// Pre-scan input to build alias → table name map.
+static std::unordered_map<std::string, std::string>
+build_alias_map(const std::string& input) {
+    std::unordered_map<std::string, std::string> map;
+    Lexer lex(input);
+    int paren_depth = 0;
+
+    while (true) {
+        Token t = lex.next();
+        if (t.type == TokenType::Eof) break;
+
+        if (t.type == TokenType::LParen) { ++paren_depth; continue; }
+        if (t.type == TokenType::RParen) {
+            if (paren_depth > 0) --paren_depth;
+            continue;
+        }
+
+        // Only look for aliases at paren depth 0.
+        if (paren_depth > 0) continue;
+
+        if (!is_from_or_join(t)) continue;
+
+        // After FROM/JOIN, expect table name or alias->child pattern.
+        Token first = lex.peek();
+        if (first.type != TokenType::Ident) continue;
+        lex.next(); // consume first ident
+
+        Token second = lex.peek();
+
+        // Pattern: ident (-> | <-) table [alias] [(-> | <-) table [alias] ...]
+        if (second.type == TokenType::Other &&
+            (second.text == "->" || second.text == "<-")) {
+            while (true) {
+                Token arrow = lex.peek();
+                if (arrow.type != TokenType::Other ||
+                    (arrow.text != "->" && arrow.text != "<-"))
+                    break;
+                lex.next(); // consume arrow
+                Token table = lex.peek();
+                if (table.type != TokenType::Ident) break;
+                lex.next(); // consume table
+                Token alias = lex.peek();
+                if (alias.type == TokenType::Ident && !is_sql_keyword(alias.text)) {
+                    lex.next();
+                    map[alias.text] = table.text;
+                }
+                parse_on_using(lex, true, nullptr); // skip past ON/USING
+            }
+            continue;
+        }
+
+        // Pattern: ident AS ident
+        if (is_keyword(second, "AS")) {
+            lex.next(); // consume AS
+            Token alias = lex.peek();
+            if (alias.type == TokenType::Ident) {
+                lex.next();
+                map[alias.text] = first.text;
+            }
+            continue;
+        }
+
+        // Pattern: ident ident (table alias)
+        if (second.type == TokenType::Ident && !is_sql_keyword(second.text)) {
+            lex.next();
+            map[second.text] = first.text;
+            continue;
+        }
+    }
+
+    return map;
+}
+
+class Parser {
+public:
+    Parser(Lexer& lex, std::unordered_map<std::string, std::string> alias_map,
+           Backend backend = Backend::sqlite)
+        : lex_(lex), alias_map_(std::move(alias_map)), backend_(backend) {}
+
+    SqlParts parse_document() {
+        return parse_sql_parts(/*stop_comma=*/false,
+                               /*stop_rbrace=*/false,
+                               /*stop_rbracket=*/false,
+                               /*stop_rparen=*/false,
+                               /*depth=*/0);
+    }
+
+private:
+    void check_depth(int depth, int line, int col) {
+        if (depth > kMaxNestingDepth)
+            lex_.error("maximum nesting depth exceeded", line, col);
+    }
+
+    // Try to consume /1 after SELECT. Returns true if consumed.
+    bool try_consume_singular() {
+        auto st = lex_.save();
+        Token slash = lex_.peek();
+        if (slash.type == TokenType::Other && slash.text == "/") {
+            lex_.next();
+            Token one = lex_.peek();
+            if (one.type == TokenType::Number && one.text == "1") {
+                lex_.next();
+                return true;
+            }
+        }
+        lex_.restore(st);
+        return false;
+    }
+
+    // Lookahead: is the current position the start of a FROM-first deep
+    // select?  Scans forward (tracking nesting depth) looking for
+    // SELECT {/[ at depth 0.  Restores lexer state before returning.
+    bool is_from_first(bool stop_comma, bool stop_rbrace,
+                       bool stop_rbracket, bool stop_rparen) {
+        auto st = lex_.save();
+        int pd = 0, bd = 0, bkd = 0;
+        while (true) {
+            Token t = lex_.next();
+            if (t.type == TokenType::Eof) break;
+
+            if (pd == 0 && bd == 0 && bkd == 0) {
+                if (stop_comma && t.type == TokenType::Comma) break;
+                if (stop_rbrace && t.type == TokenType::RBrace) break;
+                if (stop_rbracket && t.type == TokenType::RBracket) break;
+                if (stop_rparen && t.type == TokenType::RParen) break;
+                if (t.type == TokenType::Semicolon) break;
+
+                if (is_keyword(t, "SELECT")) {
+                    lex_.restore(st);
+                    return true;
+                }
+            }
+
+            if (t.type == TokenType::LParen) ++pd;
+            if (t.type == TokenType::RParen && pd > 0) --pd;
+            if (t.type == TokenType::LBrace) ++bd;
+            if (t.type == TokenType::RBrace && bd > 0) --bd;
+            if (t.type == TokenType::LBracket) ++bkd;
+            if (t.type == TokenType::RBracket && bkd > 0) --bkd;
+        }
+        lex_.restore(st);
+        return false;
+    }
+
+    // Parse FROM-first select: FROM ... SELECT ...
+    // Current position is before FROM.
+    std::unique_ptr<DeepSelect> parse_from_first_select(
+            bool stop_comma, bool stop_rbrace,
+            bool stop_rbracket, bool stop_rparen,
+            int depth) {
+        Token from_tok = lex_.peek();
+        check_depth(depth, from_tok.line, from_tok.col);
+
+        // Parse body (FROM ... WHERE ... etc.) until SELECT
+        auto body = parse_sql_parts(stop_comma, stop_rbrace,
+                                    stop_rbracket, stop_rparen,
+                                    depth, /*stop_at_select=*/true);
+
+        // Consume SELECT [/1]
+        Token select_tok = lex_.next();
+        if (!is_keyword(select_tok, "SELECT"))
+            lex_.error("expected SELECT after FROM clause",
+                       select_tok.line, select_tok.col);
+        bool singular = try_consume_singular();
+
+        // Parse projection
+        auto ds = std::make_unique<DeepSelect>();
+        ds->singular = singular;
+        Token t = lex_.peek();
+        if (t.type == TokenType::LBrace) {
+            ds->projection = std::move(*parse_object_literal(depth));
+        } else if (t.type == TokenType::LBracket) {
+            ds->projection = std::move(*parse_array_literal(depth));
+        } else {
+            // Plain SELECT — just rearrange, no JSON wrapping
+            ds->projection = parse_sql_parts(stop_comma, stop_rbrace,
+                                             stop_rbracket, stop_rparen,
+                                             depth);
+        }
+
+        ds->tail = std::move(body);
+        return ds;
+    }
+
+    // Parse a sequence of SQL fragments interleaved with deep constructs.
+    SqlParts parse_sql_parts(bool stop_comma,
+                             bool stop_rbrace,
+                             bool stop_rbracket,
+                             bool stop_rparen,
+                             int depth,
+                             bool stop_at_select = false) {
+        SqlParts parts;
+        std::string accum;
+        size_t last_end = 0; // src position after last consumed raw token
+        bool has_raw = false;
+        std::vector<size_t> accum_paren_starts; // stack of '(' positions in accum
+
+        auto flush = [&]() {
+            if (!accum.empty()) {
+                parts.push_back(std::move(accum));
+                accum.clear();
+                // Invalidate paren-start positions that referred into the
+                // flushed accum — they're no longer meaningful.
+                for (auto& ps : accum_paren_starts)
+                    ps = SIZE_MAX;
+            }
+            has_raw = false;
+        };
+
+        // Flush accumulated raw SQL, preserving spacing before the
+        // deep construct whose first source token is next_tok.
+        auto flush_before = [&](const Token& next_tok) {
+            if (has_raw && last_end < next_tok.src_begin)
+                accum += " ";
+            flush();
+        };
+
+        bool need_space = false; // space needed after a non-string AST part
+        bool in_from_context = false; // true after FROM/JOIN in current scope
+        std::vector<bool> from_context_stack; // saved per paren scope
+
+        auto accum_token = [&](const Token& tok) {
+            if (has_raw) {
+                // Add space only if there was whitespace/comments in source
+                if (last_end < tok.src_begin) accum += " ";
+            } else if (need_space && last_end < tok.src_begin) {
+                accum += " ";
+            }
+            accum += tok.text;
+            last_end = tok.src_end;
+            has_raw = true;
+            need_space = false;
+        };
+
+        int paren_depth = 0;
+
+        while (true) {
+            Token t = lex_.peek();
+
+            if (t.type == TokenType::Eof) break;
+
+            // Stop conditions at paren depth 0
+            if (paren_depth == 0) {
+                if (stop_comma && t.type == TokenType::Comma) break;
+                if (stop_rbrace && t.type == TokenType::RBrace) break;
+                if (stop_rbracket && t.type == TokenType::RBracket) break;
+                if (stop_rparen && t.type == TokenType::RParen) break;
+            }
+
+            // Semicolons at depth 0 pass through at top level, stop otherwise
+            if (t.type == TokenType::Semicolon && paren_depth == 0) {
+                if (!stop_comma && !stop_rbrace && !stop_rbracket && !stop_rparen) {
+                    Token tok = lex_.next();
+                    accum_token(tok);
+                    continue;
+                }
+                break;
+            }
+
+            // Check for (SELECT {/[) or (FROM ... SELECT {/[) pattern
+            if (t.type == TokenType::LParen) {
+                auto st = lex_.save();
+                lex_.next(); // consume (
+                Token t2 = lex_.peek();
+                if (is_keyword(t2, "SELECT")) {
+                    lex_.next(); // consume SELECT
+                    bool singular = try_consume_singular();
+                    Token t3 = lex_.peek();
+                    if (t3.type == TokenType::LBrace || t3.type == TokenType::LBracket) {
+                        // Found (SELECT[/1] {/[)
+                        flush_before(t);
+                        auto part = parse_deep_or_recursive_select(
+                            t2, singular,
+                            /*stop_comma=*/false, /*stop_rbrace=*/false,
+                            /*stop_rbracket=*/false, /*stop_rparen=*/true,
+                            depth + 1);
+                        Token rp = lex_.next(); // consume )
+                        if (rp.type != TokenType::RParen)
+                            lex_.error("expected ')' after subquery", rp.line, rp.col);
+                        // At paren_depth > 0, we consumed explicit (...)
+                        // so emit parens — the renderer won't add them
+                        // because the part is at the top of a SqlParts.
+                        if (paren_depth > 0) parts.push_back(std::string("("));
+                        parts.push_back(std::move(part));
+                        if (paren_depth > 0) parts.push_back(std::string(")"));
+                        last_end = rp.src_end;
+                        need_space = true;
+                        continue;
+                    }
+                }
+                // Not (SELECT {/[) — try (FROM ... SELECT ...)
+                lex_.restore(st);
+                lex_.next(); // re-consume (
+                t2 = lex_.peek();
+                if (is_keyword(t2, "FROM") &&
+                    is_from_first(false, false, false, /*stop_rparen=*/true)) {
+                    flush_before(t);
+                    auto ds = parse_from_first_select(
+                        /*stop_comma=*/false, /*stop_rbrace=*/false,
+                        /*stop_rbracket=*/false, /*stop_rparen=*/true,
+                        depth + 1);
+                    Token rp = lex_.next(); // consume )
+                    if (rp.type != TokenType::RParen)
+                        lex_.error("expected ')' after subquery",
+                                   rp.line, rp.col);
+                    // Plain projection: inline with explicit parens
+                    // (deep projections use DeepSelect whose renderer
+                    // adds parens when nested)
+                    if (std::holds_alternative<SqlParts>(ds->projection)) {
+                        parts.push_back(std::string("(SELECT "));
+                        for (auto& p : std::get<SqlParts>(ds->projection))
+                            parts.push_back(std::move(p));
+                        if (!ds->tail.empty()) {
+                            parts.push_back(std::string(" "));
+                            for (auto& p : ds->tail)
+                                parts.push_back(std::move(p));
+                        }
+                        parts.push_back(std::string(")"));
+                    } else {
+                        if (paren_depth > 0) parts.push_back(std::string("("));
+                        parts.push_back(std::move(ds));
+                        if (paren_depth > 0) parts.push_back(std::string(")"));
+                    }
+                    last_end = rp.src_end;
+                    need_space = true;
+                    continue;
+                }
+
+                // Not a deep subquery pattern, restore to before (
+                lex_.restore(st);
+            }
+
+            // Check for SELECT[/1] {/[/xml at any depth
+            if (is_keyword(t, "SELECT") && !stop_at_select) {
+                auto st = lex_.save();
+                lex_.next(); // consume SELECT
+                bool singular = try_consume_singular();
+                Token t2 = lex_.peek();
+                if (t2.type == TokenType::LBrace || t2.type == TokenType::LBracket) {
+                    flush_before(t);
+                    Token sel = {TokenType::Ident, "SELECT", t.line, t.col,
+                                 t.src_begin, t.src_end};
+                    auto part = parse_deep_or_recursive_select(
+                                                sel, singular,
+                                                stop_comma, stop_rbrace,
+                                                stop_rbracket, stop_rparen,
+                                                depth + 1);
+                    parts.push_back(std::move(part));
+                    last_end = lex_.offset();
+                    need_space = true;
+                    continue;
+                }
+                if (singular) {
+                    // SELECT/1 without {/[ — parse rest as plain SELECT
+                    // with LIMIT 1. Emit "SELECT" as raw SQL and let
+                    // the expression (XML, wrapper, etc.) be parsed by
+                    // subsequent handlers; append LIMIT 1 at the end.
+                    flush_before(t);
+                    auto rest = parse_sql_parts(stop_comma, stop_rbrace,
+                                                stop_rbracket, stop_rparen,
+                                                depth);
+                    parts.push_back(std::string("SELECT "));
+                    for (auto& p : rest)
+                        parts.push_back(std::move(p));
+                    parts.push_back(std::string(" LIMIT 1"));
+                    last_end = lex_.offset();
+                    need_space = true;
+                    continue;
+                }
+                // Not deep, not singular — restore and accumulate
+                lex_.restore(st);
+            }
+
+            // stop_at_select: break when SELECT at depth 0
+            if (stop_at_select && is_keyword(t, "SELECT") &&
+                paren_depth == 0) {
+                break;
+            }
+
+            // Check for FROM-first: FROM ... SELECT {/[
+            if (is_keyword(t, "FROM") && !stop_at_select) {
+                if (is_from_first(stop_comma, stop_rbrace,
+                                  stop_rbracket, stop_rparen)) {
+                    flush_before(t);
+                    auto ds = parse_from_first_select(
+                        stop_comma, stop_rbrace,
+                        stop_rbracket, stop_rparen,
+                        depth + 1);
+                    parts.push_back(std::move(ds));
+                    last_end = lex_.offset();
+                    need_space = true;
+                    continue;
+                }
+            }
+
+            // Check for inline { or [ (object/array literals).
+            // Valid at any paren depth — e.g. json_group_array({name, value}).
+            if (t.type == TokenType::LBrace) {
+                flush_before(t);
+                auto obj = parse_object_literal(depth + 1);
+                parts.push_back(std::move(obj));
+                last_end = lex_.offset();
+                need_space = true;
+                continue;
+            }
+
+            if (t.type == TokenType::LBracket) {
+                flush_before(t);
+                auto arr = parse_array_literal(depth + 1);
+                parts.push_back(std::move(arr));
+                last_end = lex_.offset();
+                need_space = true;
+                continue;
+            }
+
+            // Check for jsx(<...>), jsonml(<...>)
+            if (t.type == TokenType::Ident &&
+                (t.text == "jsx" || t.text == "jsonml")) {
+                XmlMode wrapper_mode = (t.text == "jsx") ? XmlMode::Jsx : XmlMode::Jsonml;
+                auto st = lex_.save();
+                lex_.next(); // consume wrapper name
+                Token t2 = lex_.peek();
+                if (t2.type == TokenType::LParen) {
+                    lex_.next(); // consume (
+                    Token t3 = lex_.peek();
+                    if (t3.type == TokenType::Other && t3.text == "<") {
+                        auto st2 = lex_.save();
+                        lex_.next(); // consume <
+                        Token t4 = lex_.peek();
+                        if (t4.type == TokenType::Ident) {
+                            lex_.restore(st2); // put back < ident
+                            flush_before(t);
+                            auto el = parse_xml_element(depth + 1,
+                                                        wrapper_mode);
+                            xml_dedent(*el);
+                            Token close = lex_.peek();
+                            if (close.type != TokenType::RParen)
+                                lex_.error("expected ')' after XML wrapper",
+                                           close.line, close.col);
+                            lex_.next(); // consume )
+                            parts.push_back(std::move(el));
+                            last_end = lex_.offset();
+                            need_space = true;
+                            continue;
+                        }
+                        lex_.restore(st2);
+                    }
+                }
+                lex_.restore(st);
+            }
+
+            // Check for XML element: < followed by ident (tag name).
+            // Unambiguous at any depth — < cannot start a SQL expression.
+            if (t.type == TokenType::Other && t.text == "<") {
+                auto st = lex_.save();
+                lex_.next(); // consume <
+                Token t2 = lex_.peek();
+                if (t2.type == TokenType::Ident) {
+                    lex_.restore(st);
+                    flush_before(t);
+                    auto el = parse_xml_element(depth + 1);
+                    xml_dedent(*el);
+                    parts.push_back(std::move(el));
+                    last_end = lex_.offset();
+                    need_space = true;
+                    continue;
+                }
+                lex_.restore(st);
+            }
+
+            // Track paren depth with per-scope FROM context
+            if (t.type == TokenType::LParen) {
+                ++paren_depth;
+                from_context_stack.push_back(in_from_context);
+                in_from_context = false; // new scope starts outside FROM
+            }
+            if (t.type == TokenType::RParen) {
+                if (paren_depth == 0)
+                    lex_.error("unmatched ')'", t.line, t.col);
+                --paren_depth;
+                if (!from_context_stack.empty()) {
+                    in_from_context = from_context_stack.back();
+                    from_context_stack.pop_back();
+                }
+            }
+
+            // Track FROM context for join path detection.
+            // -> and <- are only join operators after FROM/JOIN.
+            if (t.type == TokenType::Ident) {
+                if (is_from_or_join(t)) {
+                    in_from_context = true;
+                } else if (is_keyword(t, "SELECT") || is_keyword(t, "WHERE") ||
+                           is_keyword(t, "GROUP") || is_keyword(t, "ORDER") ||
+                           is_keyword(t, "HAVING") || is_keyword(t, "LIMIT") ||
+                           is_keyword(t, "UNION") || is_keyword(t, "INTERSECT") ||
+                           is_keyword(t, "EXCEPT") || is_keyword(t, "SET")) {
+                    in_from_context = false;
+                }
+            }
+
+            // Check for ident (-> | <-) ... (join path) — only in FROM context
+            if (t.type == TokenType::Ident && in_from_context) {
+                auto st = lex_.save();
+                Token alias_tok = lex_.next(); // consume ident
+                Token arrow = lex_.peek();
+                if (arrow.type == TokenType::Other &&
+                    (arrow.text == "->" || arrow.text == "<-")) {
+                    auto it = alias_map_.find(alias_tok.text);
+                    if (it == alias_map_.end())
+                        lex_.error("unknown table alias '" +
+                                   alias_tok.text + "'",
+                                   alias_tok.line, alias_tok.col);
+                    auto jp = std::make_unique<JoinPath>();
+                    jp->start_alias = alias_tok.text;
+                    jp->start_table = it->second;
+                    while (true) {
+                        Token arr = lex_.peek();
+                        if (arr.type != TokenType::Other ||
+                            (arr.text != "->" && arr.text != "<-"))
+                            break;
+                        lex_.next(); // consume arrow
+                        bool forward = (arr.text == "->");
+                        Token table_tok = lex_.peek();
+                        if (table_tok.type != TokenType::Ident)
+                            lex_.error("expected table name after '" +
+                                       arr.text + "'",
+                                       arr.line, arr.col);
+                        lex_.next(); // consume table
+                        std::string alias;
+                        Token next = lex_.peek();
+                        if (next.type == TokenType::Ident &&
+                            !is_sql_keyword(next.text)) {
+                            lex_.next(); // consume alias
+                            alias = next.text;
+                        }
+                        std::vector<std::pair<std::string,std::string>> columns;
+                        parse_on_using(lex_, forward, &columns);
+                        jp->steps.push_back({forward, table_tok.text, alias,
+                                             std::move(columns)});
+                    }
+                    flush_before(alias_tok);
+                    parts.push_back(std::move(jp));
+                    last_end = lex_.offset();
+                    need_space = true;
+                    continue;
+                }
+                lex_.restore(st);
+            }
+
+            // Accumulate raw SQL token, with JSON path detection on ')'
+            if (t.type == TokenType::LParen) {
+                Token tok = lex_.next();
+                // Record position in accum where '(' will be appended
+                size_t pos = accum.size();
+                if (has_raw && last_end < tok.src_begin) ++pos; // space will be added
+                else if (need_space && last_end < tok.src_begin) ++pos;
+                accum_paren_starts.push_back(pos);
+                accum_token(tok);
+            } else if (t.type == TokenType::RParen) {
+                Token tok = lex_.next();
+                accum_token(tok);
+                if (!accum_paren_starts.empty()) {
+                    size_t start = accum_paren_starts.back();
+                    accum_paren_starts.pop_back();
+                    if (start != SIZE_MAX &&
+                        try_transform_json_path(accum, start))
+                        last_end = lex_.offset();
+                }
+            } else {
+                Token tok = lex_.next();
+                accum_token(tok);
+            }
+        }
+
+        flush();
+        return parts;
+    }
+
+    // Parse RECURSE ON (fk [= pk]) [WHERE ...]
+    // Called after parsing object literal with a recursive field.
+    std::unique_ptr<RecursiveSelect> parse_recursive_select(
+            ObjectLiteral obj, bool singular,
+            bool stop_comma, bool stop_rbrace,
+            bool stop_rbracket, bool stop_rparen,
+            int depth) {
+        auto rs = std::make_unique<RecursiveSelect>();
+        rs->singular = singular;
+
+        // Separate recursive field from non-recursive fields
+        for (auto& f : obj.fields) {
+            if (f.recursive) {
+                rs->children_field = f.key;
+            } else {
+                rs->fields.push_back(std::move(f));
+            }
+        }
+
+        // Expect FROM table
+        Token from_tok = lex_.peek();
+        if (!is_keyword(from_tok, "FROM"))
+            lex_.error("expected FROM after recursive object literal",
+                       from_tok.line, from_tok.col);
+        lex_.next(); // consume FROM
+        Token table_tok = lex_.peek();
+        if (table_tok.type != TokenType::Ident)
+            lex_.error("expected table name after FROM",
+                       table_tok.line, table_tok.col);
+        lex_.next();
+        rs->table = table_tok.text;
+
+        // Expect RECURSE ON (fk [= pk])
+        Token recurse_tok = lex_.peek();
+        if (!is_keyword(recurse_tok, "RECURSE"))
+            lex_.error("expected RECURSE after table name",
+                       recurse_tok.line, recurse_tok.col);
+        lex_.next();
+        Token on_tok = lex_.peek();
+        if (!is_keyword(on_tok, "ON"))
+            lex_.error("expected ON after RECURSE",
+                       on_tok.line, on_tok.col);
+        lex_.next();
+        Token lparen = lex_.peek();
+        if (lparen.type != TokenType::LParen)
+            lex_.error("expected '(' after RECURSE ON",
+                       lparen.line, lparen.col);
+        lex_.next();
+        Token fk_tok = lex_.peek();
+        if (fk_tok.type != TokenType::Ident)
+            lex_.error("expected FK column name",
+                       fk_tok.line, fk_tok.col);
+        lex_.next();
+        rs->fk_column = fk_tok.text;
+        rs->pk_column = "id"; // default
+
+        Token eq_or_rp = lex_.peek();
+        if (eq_or_rp.type == TokenType::Other && eq_or_rp.text == "=") {
+            lex_.next(); // consume =
+            Token pk_tok = lex_.peek();
+            if (pk_tok.type != TokenType::Ident)
+                lex_.error("expected PK column name after '='",
+                           pk_tok.line, pk_tok.col);
+            lex_.next();
+            rs->pk_column = pk_tok.text;
+            eq_or_rp = lex_.peek();
+        }
+        if (eq_or_rp.type != TokenType::RParen)
+            lex_.error("expected ')' after RECURSE ON clause",
+                       eq_or_rp.line, eq_or_rp.col);
+        lex_.next(); // consume )
+
+        // Optional WHERE condition
+        Token where_tok = lex_.peek();
+        if (is_keyword(where_tok, "WHERE")) {
+            lex_.next(); // consume WHERE
+            rs->root_condition = parse_sql_parts(stop_comma, stop_rbrace,
+                                                  stop_rbracket, stop_rparen,
+                                                  depth);
+        }
+
+        return rs;
+    }
+
+    // Parse deep select — SELECT keyword has already been consumed.
+    // singular: true if /1 was already consumed after SELECT.
+    // Returns either a DeepSelect or a RecursiveSelect (via SqlPart).
+    SqlPart parse_deep_or_recursive_select(
+            const Token& select_tok,
+            bool singular,
+            bool stop_comma, bool stop_rbrace,
+            bool stop_rbracket, bool stop_rparen,
+            int depth) {
+        check_depth(depth, select_tok.line, select_tok.col);
+
+        Token t = lex_.peek();
+        if (t.type == TokenType::LBrace) {
+            auto obj = parse_object_literal(depth);
+
+            // Check if any field is recursive
+            for (const auto& f : obj->fields) {
+                if (f.recursive) {
+                    return parse_recursive_select(
+                        std::move(*obj), singular,
+                        stop_comma, stop_rbrace,
+                        stop_rbracket, stop_rparen, depth);
+                }
+            }
+
+            // Normal deep select
+            auto ds = std::make_unique<DeepSelect>();
+            ds->singular = singular;
+            ds->projection = std::move(*obj);
+            ds->tail = parse_sql_parts(stop_comma, stop_rbrace,
+                                       stop_rbracket, stop_rparen, depth);
+            return ds;
+        } else if (t.type == TokenType::LBracket) {
+            auto ds = std::make_unique<DeepSelect>();
+            ds->singular = singular;
+            ds->projection = std::move(*parse_array_literal(depth));
+            ds->tail = parse_sql_parts(stop_comma, stop_rbrace,
+                                       stop_rbracket, stop_rparen, depth);
+            return ds;
+        } else {
+            lex_.error("expected '{' or '[' after SELECT",
+                       select_tok.line, select_tok.col);
+        }
+    }
+
+    std::unique_ptr<ObjectLiteral> parse_object_literal(int depth) {
+        Token lbrace = lex_.next();
+        if (lbrace.type != TokenType::LBrace)
+            lex_.error("expected '{'", lbrace.line, lbrace.col);
+        check_depth(depth, lbrace.line, lbrace.col);
+
+        auto obj = std::make_unique<ObjectLiteral>();
+
+        while (true) {
+            Token t = lex_.peek();
+            if (t.type == TokenType::RBrace) { lex_.next(); break; }
+            if (t.type == TokenType::Eof)
+                lex_.error("unterminated '{'", lbrace.line, lbrace.col);
+
+            obj->fields.push_back(parse_field(depth));
+
+            t = lex_.peek();
+            if (t.type == TokenType::Comma) {
+                lex_.next();
+            } else if (t.type != TokenType::RBrace) {
+                lex_.error("expected ',' or '}' in object literal");
+            }
+        }
+
+        return obj;
+    }
+
+    ObjectLiteral::Field parse_field(int depth) {
+        ObjectLiteral::Field field;
+
+        Token key = lex_.peek();
+        if (key.type == TokenType::LParen) {
+            // Computed key: (expr): value
+            lex_.next(); // consume '('
+            field.computed_key = parse_sql_parts(/*stop_comma=*/false,
+                                                 /*stop_rbrace=*/false,
+                                                 /*stop_rbracket=*/false,
+                                                 /*stop_rparen=*/true,
+                                                 depth);
+            if (field.computed_key.empty())
+                lex_.error("expected expression in computed key", key.line, key.col);
+            Token rparen = lex_.peek();
+            if (rparen.type != TokenType::RParen)
+                lex_.error("expected ')' after computed key", rparen.line, rparen.col);
+            lex_.next(); // consume ')'
+        } else {
+            key = lex_.next();
+            if (key.type == TokenType::Ident) {
+                field.key = key.text;
+                // Qualified bare field: sm.repo → key="repo", value="sm.repo"
+                // Look ahead for .ident chains before the colon check.
+                std::string qualified;
+                while (true) {
+                    Token dot = lex_.peek();
+                    if (dot.type != TokenType::Other || dot.text != ".") break;
+                    auto st = lex_.save();
+                    lex_.next(); // consume .
+                    Token next = lex_.peek();
+                    if (next.type != TokenType::Ident) {
+                        lex_.restore(st);
+                        break;
+                    }
+                    lex_.next(); // consume ident
+                    if (qualified.empty()) {
+                        qualified = field.key + "." + next.text;
+                    } else {
+                        qualified += "." + next.text;
+                    }
+                    field.key = next.text; // key is always the last component
+                }
+                if (!qualified.empty()) {
+                    // Stash the full qualified name as the value
+                    field.qualified_value = qualified;
+                }
+            } else if (key.type == TokenType::DqString) {
+                // Strip outer quotes and unescape \" → " and \\ → \.
+                auto raw = key.text.substr(1, key.text.size() - 2);
+                field.key.reserve(raw.size());
+                for (size_t i = 0; i < raw.size(); ++i) {
+                    if (raw[i] == '\\' && i + 1 < raw.size() &&
+                        (raw[i + 1] == '"' || raw[i + 1] == '\\')) {
+                        field.key += raw[++i];
+                    } else if (raw[i] == '"' && i + 1 < raw.size() && raw[i + 1] == '"') {
+                        field.key += '"';
+                        ++i; // skip doubled quote
+                    } else {
+                        field.key += raw[i];
+                    }
+                }
+            } else {
+                lex_.error("expected field name (identifier, double-quoted string, or computed key)",
+                           key.line, key.col);
+            }
+        }
+
+        Token t = lex_.peek();
+        if (!field.computed_key.empty() && t.type != TokenType::Colon)
+            lex_.error("expected ':' after computed key", t.line, t.col);
+        if (t.type == TokenType::Colon) {
+            lex_.next();
+
+            // Check for * → recursive field
+            Token t2 = lex_.peek();
+            if (t2.type == TokenType::Other && t2.text == "*") {
+                lex_.next(); // consume *
+                field.recursive = true;
+                return field;
+            }
+
+            // Check for SELECT expr (no FROM) → aggregate field
+            t2 = lex_.peek();
+            if (is_keyword(t2, "SELECT")) {
+                auto st = lex_.save();
+                lex_.next(); // consume SELECT
+                bool singular = try_consume_singular();
+                Token t3 = lex_.peek();
+                if (t3.type != TokenType::LBrace && t3.type != TokenType::LBracket) {
+                    // SELECT expr (no { or [) — aggregate over current group
+                    field.aggregate = !singular;
+                    field.value = parse_sql_parts(/*stop_comma=*/true,
+                                                  /*stop_rbrace=*/true,
+                                                  /*stop_rbracket=*/false,
+                                                  /*stop_rparen=*/false,
+                                                  depth);
+                    if (field.value.empty())
+                        lex_.error("expected expression after 'SELECT'",
+                                   t2.line, t2.col);
+                    wrap_json_bool(field.value);
+                    return field;
+                }
+                // SELECT {/[ — restore and fall through to normal parsing
+                lex_.restore(st);
+            }
+
+            field.value = parse_sql_parts(/*stop_comma=*/true,
+                                          /*stop_rbrace=*/true,
+                                          /*stop_rbracket=*/false,
+                                          /*stop_rparen=*/false,
+                                          depth);
+            if (field.value.empty())
+                lex_.error("expected expression after ':'", t.line, t.col);
+            wrap_json_bool(field.value);
+        }
+
+        return field;
+    }
+
+    std::unique_ptr<ArrayLiteral> parse_array_literal(int depth) {
+        Token lbracket = lex_.next();
+        if (lbracket.type != TokenType::LBracket)
+            lex_.error("expected '['", lbracket.line, lbracket.col);
+        check_depth(depth, lbracket.line, lbracket.col);
+
+        auto arr = std::make_unique<ArrayLiteral>();
+
+        while (true) {
+            Token t = lex_.peek();
+            if (t.type == TokenType::RBracket) { lex_.next(); break; }
+            if (t.type == TokenType::Eof)
+                lex_.error("unterminated '['", lbracket.line, lbracket.col);
+
+            auto elem = parse_sql_parts(/*stop_comma=*/true,
+                                        /*stop_rbrace=*/false,
+                                        /*stop_rbracket=*/true,
+                                        /*stop_rparen=*/false,
+                                        depth);
+            if (elem.empty())
+                lex_.error("expected expression in array literal");
+            wrap_json_bool(elem);
+            arr->elements.push_back(std::move(elem));
+
+            t = lex_.peek();
+            if (t.type == TokenType::Comma) {
+                lex_.next();
+            } else if (t.type != TokenType::RBracket) {
+                lex_.error("expected ',' or ']' in array literal");
+            }
+        }
+
+        return arr;
+    }
+
+    // Parse XML tag name, allowing dots and colons for namespaced tags
+    // (e.g. "ui:Table.Row").
+    std::string parse_xml_tag_name() {
+        Token t = lex_.next();
+        if (t.type != TokenType::Ident)
+            lex_.error("expected tag name", t.line, t.col);
+        std::string name = t.text;
+        while (true) {
+            Token next = lex_.peek();
+            if (next.type == TokenType::Colon ||
+                (next.type == TokenType::Other && next.text == ".")) {
+                lex_.next();
+                name += next.text;
+                Token part = lex_.next();
+                if (part.type != TokenType::Ident)
+                    lex_.error("expected identifier after '" + next.text +
+                               "' in tag name", part.line, part.col);
+                name += part.text;
+            } else {
+                break;
+            }
+        }
+        return name;
+    }
+
+    std::unique_ptr<XmlElement> parse_xml_element(int depth,
+                                                     XmlMode xml_mode = XmlMode::Xml) {
+        Token lt = lex_.next(); // consume <
+        if (lt.type != TokenType::Other || lt.text != "<")
+            lex_.error("expected '<'", lt.line, lt.col);
+        check_depth(depth, lt.line, lt.col);
+
+        auto el = std::make_unique<XmlElement>();
+        el->mode = xml_mode;
+        el->tag = parse_xml_tag_name();
+
+        // Parse attributes until > or />
+        while (true) {
+            Token t = lex_.peek();
+
+            // Self-closing />
+            if (t.type == TokenType::Other && t.text == "/") {
+                lex_.next();
+                Token gt = lex_.next();
+                if (gt.type != TokenType::Other || gt.text != ">")
+                    lex_.error("expected '>' after '/'", gt.line, gt.col);
+                el->self_closing = true;
+                return el;
+            }
+
+            // End of open tag
+            if (t.type == TokenType::Other && t.text == ">") {
+                lex_.next();
+                break;
+            }
+
+            if (t.type == TokenType::Eof)
+                lex_.error("unterminated XML element", lt.line, lt.col);
+
+            // Attribute: name [ = value ]
+            if (t.type != TokenType::Ident)
+                lex_.error("expected attribute name or '>'", t.line, t.col);
+            lex_.next();
+            std::string attr_name = t.text;
+
+            Token eq = lex_.peek();
+            if (eq.type != TokenType::Other || eq.text != "=") {
+                // Boolean attribute: emit sqldeep_json('true') so xml_attrs renders bare name
+                SqlParts val;
+                val.push_back(std::string("sqldeep_json('true')"));
+                el->attrs.push_back({attr_name, std::move(val), false});
+                continue;
+            }
+            lex_.next(); // consume =
+
+            Token val = lex_.peek();
+            if (val.type == TokenType::DqString) {
+                // Static attribute: name="value"
+                lex_.next();
+                SqlParts sval;
+                // Convert "..." to '...' for SQL
+                std::string content = val.text.substr(1, val.text.size() - 2);
+                sval.push_back(std::string("'") + content + "'");
+                el->attrs.push_back({attr_name, std::move(sval), false});
+            } else if (val.type == TokenType::LBrace) {
+                // Dynamic attribute: name={expr}
+                lex_.next(); // consume {
+                auto expr = parse_sql_parts(/*stop_comma=*/false,
+                                            /*stop_rbrace=*/true,
+                                            /*stop_rbracket=*/false,
+                                            /*stop_rparen=*/false,
+                                            depth);
+                Token rb = lex_.next();
+                if (rb.type != TokenType::RBrace)
+                    lex_.error("expected '}' after attribute expression",
+                               rb.line, rb.col);
+                wrap_json_bool(expr);
+                el->attrs.push_back({attr_name, std::move(expr), true});
+            } else {
+                lex_.error("expected '\"...' or '{...}' after '='",
+                           val.line, val.col);
+            }
+        }
+
+        // Parse children until </tag>
+        while (true) {
+            // Read raw text until < or {
+            std::string text = lex_.read_raw_until_xml_special();
+            if (!text.empty()) {
+                XmlElement::Child child;
+                child.kind = XmlElement::Child::Text;
+                child.text = std::move(text);
+                el->children.push_back(std::move(child));
+            }
+
+            // Check what stopped us
+            Token t = lex_.peek();
+            if (t.type == TokenType::Eof)
+                lex_.error("unterminated XML element '<" + el->tag + ">'",
+                           lt.line, lt.col);
+
+            if (t.type == TokenType::Other && t.text == "<") {
+                // Peek further: < followed by / = closing tag,
+                // < followed by ident = child element
+                auto st = lex_.save();
+                lex_.next(); // consume <
+                Token t2 = lex_.peek();
+
+                if (t2.type == TokenType::Other && t2.text == "/") {
+                    // Closing tag </tag>
+                    lex_.next(); // consume /
+                    std::string close_tag = parse_xml_tag_name();
+                    if (close_tag != el->tag)
+                        lex_.error("mismatched closing tag: expected '</" +
+                                   el->tag + ">' but found '</" +
+                                   close_tag + ">'", t.line, t.col);
+                    Token gt = lex_.next();
+                    if (gt.type != TokenType::Other || gt.text != ">")
+                        lex_.error("expected '>' in closing tag",
+                                   gt.line, gt.col);
+                    break;
+                }
+
+                if (t2.type == TokenType::Ident) {
+                    // Child element — restore to before < and recurse
+                    lex_.restore(st);
+                    XmlElement::Child child;
+                    child.kind = XmlElement::Child::Element;
+                    child.element = parse_xml_element(depth + 1, xml_mode);
+                    el->children.push_back(std::move(child));
+                    continue;
+                }
+
+                // Bare < in content is an error
+                lex_.error("unexpected '<' in XML content", t.line, t.col);
+            }
+
+            if (t.type == TokenType::LBrace) {
+                lex_.next(); // consume {
+
+                // Check for {{ — JSON object inside interpolation
+                Token t2 = lex_.peek();
+                if (t2.type == TokenType::LBrace) {
+                    auto obj = parse_object_literal(depth + 1);
+                    Token rb = lex_.next();
+                    if (rb.type != TokenType::RBrace)
+                        lex_.error("expected '}' after interpolated object",
+                                   rb.line, rb.col);
+                    XmlElement::Child child;
+                    child.kind = XmlElement::Child::Interpolation;
+                    child.expr.push_back(std::move(obj));
+                    el->children.push_back(std::move(child));
+                    continue;
+                }
+
+                // {SELECT ...} — subquery inside XML
+                if (is_keyword(t2, "SELECT")) {
+                    lex_.next(); // consume SELECT
+                    bool singular = try_consume_singular();
+                    Token t3 = lex_.peek();
+
+                    // SELECT followed by XML element: wrap in DeepSelect
+                    if (t3.type == TokenType::Other && t3.text == "<") {
+                        auto st2 = lex_.save();
+                        lex_.next(); // consume <
+                        Token t4 = lex_.peek();
+                        lex_.restore(st2);
+                        if (t4.type == TokenType::Ident) {
+                            auto xml_el = parse_xml_element(depth + 1, xml_mode);
+                            SqlParts proj;
+                            proj.push_back(std::move(xml_el));
+
+                            auto tail = parse_sql_parts(
+                                /*stop_comma=*/false,
+                                /*stop_rbrace=*/true,
+                                /*stop_rbracket=*/false,
+                                /*stop_rparen=*/false,
+                                depth + 1);
+
+                            auto ds = std::make_unique<DeepSelect>();
+                            ds->projection = std::move(proj);
+                            ds->tail = std::move(tail);
+                            ds->singular = singular;
+                            ds->xml_context = true;
+                            ds->xml_mode = xml_mode;
+
+                            Token rb = lex_.next();
+                            if (rb.type != TokenType::RBrace)
+                                lex_.error("expected '}' after XML subquery",
+                                           rb.line, rb.col);
+                            XmlElement::Child child;
+                            child.kind = XmlElement::Child::Interpolation;
+                            child.expr.push_back(std::move(ds));
+                            el->children.push_back(std::move(child));
+                            continue;
+                        }
+                    }
+
+                    // SELECT followed by { or [ — existing deep select
+                    if (t3.type == TokenType::LBrace ||
+                        t3.type == TokenType::LBracket) {
+                        auto part = parse_deep_or_recursive_select(
+                            t2, singular,
+                            /*stop_comma=*/false,
+                            /*stop_rbrace=*/true,
+                            /*stop_rbracket=*/false,
+                            /*stop_rparen=*/false,
+                            depth + 1);
+                        Token rb = lex_.next();
+                        if (rb.type != TokenType::RBrace)
+                            lex_.error("expected '}' after subquery",
+                                       rb.line, rb.col);
+                        XmlElement::Child child;
+                        child.kind = XmlElement::Child::Interpolation;
+                        child.expr.push_back(std::move(part));
+                        el->children.push_back(std::move(child));
+                        continue;
+                    }
+
+                    // SELECT followed by plain expression — restore and
+                    // fall through to generic expression parsing
+                    // We need to un-consume SELECT, but we already consumed it.
+                    // Simplest: build a DeepSelect with SqlParts projection.
+                    auto proj = parse_sql_parts(
+                        /*stop_comma=*/false,
+                        /*stop_rbrace=*/true,
+                        /*stop_rbracket=*/false,
+                        /*stop_rparen=*/false,
+                        depth + 1,
+                        /*stop_at_select=*/false);
+                    // Split projection from tail at FROM keyword
+                    // Actually, just wrap in DeepSelect with plain projection
+                    auto ds = std::make_unique<DeepSelect>();
+                    ds->projection = std::move(proj);
+                    ds->singular = singular;
+                    ds->xml_context = true;
+                    ds->xml_mode = xml_mode;
+
+                    Token rb = lex_.next();
+                    if (rb.type != TokenType::RBrace)
+                        lex_.error("expected '}' after subquery",
+                                   rb.line, rb.col);
+                    XmlElement::Child child;
+                    child.kind = XmlElement::Child::Interpolation;
+                    child.expr.push_back(std::move(ds));
+                    el->children.push_back(std::move(child));
+                    continue;
+                }
+
+                // {FROM ... SELECT ...} — FROM-first subquery inside XML
+                if (is_keyword(t2, "FROM") &&
+                    is_from_first(false, true, false, false)) {
+                    auto ds = parse_from_first_select(
+                        /*stop_comma=*/false, /*stop_rbrace=*/true,
+                        /*stop_rbracket=*/false, /*stop_rparen=*/false,
+                        depth + 1);
+                    ds->xml_context = true;
+                    ds->xml_mode = xml_mode;
+                    Token rb = lex_.next();
+                    if (rb.type != TokenType::RBrace)
+                        lex_.error("expected '}' after FROM-first subquery",
+                                   rb.line, rb.col);
+                    XmlElement::Child child;
+                    child.kind = XmlElement::Child::Interpolation;
+                    child.expr.push_back(std::move(ds));
+                    el->children.push_back(std::move(child));
+                    continue;
+                }
+
+                // {expr} — plain interpolation
+                auto expr = parse_sql_parts(/*stop_comma=*/false,
+                                            /*stop_rbrace=*/true,
+                                            /*stop_rbracket=*/false,
+                                            /*stop_rparen=*/false,
+                                            depth + 1);
+                Token rb = lex_.next();
+                if (rb.type != TokenType::RBrace)
+                    lex_.error("expected '}' after interpolation",
+                               rb.line, rb.col);
+                wrap_json_bool(expr);
+                XmlElement::Child child;
+                child.kind = XmlElement::Child::Interpolation;
+                child.expr = std::move(expr);
+                el->children.push_back(std::move(child));
+                continue;
+            }
+        }
+
+        return el;
+    }
+
+    // Check if '(' at position start in accum is a JSON path base
+    // (not a function call). A function call has an identifier (not a SQL
+    // keyword) immediately before '('. SQL keywords like WHERE, AND, SELECT
+    // can precede parenthesized JSON path bases.
+    static bool can_be_json_path_base(const std::string& accum, size_t start) {
+        if (start == 0) return true;
+        size_t i = start;
+        // Skip trailing spaces
+        while (i > 0 && accum[i - 1] == ' ') --i;
+        if (i == 0) return true;
+        char c = accum[i - 1];
+        if (c == ')') return false; // nested parens = function-like
+        if (!(std::isalnum(static_cast<unsigned char>(c)) || c == '_'))
+            return true; // operator, comma, etc. — not a function call
+        // Extract the preceding word
+        size_t end = i;
+        while (i > 0 && (std::isalnum(static_cast<unsigned char>(accum[i - 1])) ||
+                         accum[i - 1] == '_'))
+            --i;
+        std::string word = accum.substr(i, end - i);
+        // SQL keywords can precede a path base; bare identifiers are function calls
+        return is_sql_keyword(word);
+    }
+
+    // After accumulating ')' at the end of accum, check if the paren group
+    // starting at `start` is followed by .ident or [number] path segments.
+    // If so, transform it into json_extract() / jsonb_extract_path() in place.
+    // Returns true if a transformation was applied (tokens consumed from lexer).
+    bool try_transform_json_path(std::string& accum, size_t start) {
+        if (!can_be_json_path_base(accum, start)) return false;
+
+        // Peek ahead for .ident or [
+        Token next = lex_.peek();
+        bool has_dot = (next.type == TokenType::Other && next.text == ".");
+        bool has_bracket = (next.type == TokenType::LBracket);
+        if (!has_dot && !has_bracket) return false;
+
+        // If dot, check it's followed by an ident (not a number or operator)
+        if (has_dot) {
+            auto st = lex_.save();
+            lex_.next(); // consume .
+            Token after_dot = lex_.peek();
+            lex_.restore(st);
+            if (after_dot.type != TokenType::Ident) return false;
+        }
+
+        // Extract base expression (everything inside parens, excluding parens)
+        std::string base = accum.substr(start + 1, accum.size() - start - 2);
+        accum.resize(start);
+
+        // Parse path segments
+        struct PathSeg {
+            bool is_field; // true = .ident, false = [number]
+            std::string value;
+        };
+        std::vector<PathSeg> segs;
+
+        while (true) {
+            Token t = lex_.peek();
+            if (t.type == TokenType::Other && t.text == ".") {
+                auto st = lex_.save();
+                lex_.next(); // consume .
+                Token ident = lex_.peek();
+                if (ident.type != TokenType::Ident) {
+                    lex_.restore(st);
+                    break;
+                }
+                lex_.next(); // consume ident
+                segs.push_back({true, ident.text});
+            } else if (t.type == TokenType::LBracket) {
+                lex_.next(); // consume [
+                Token idx = lex_.peek();
+                if (idx.type != TokenType::Number)
+                    lex_.error("expected array index", idx.line, idx.col);
+                lex_.next(); // consume number
+                Token rb = lex_.peek();
+                if (rb.type != TokenType::RBracket)
+                    lex_.error("expected ']'", rb.line, rb.col);
+                lex_.next(); // consume ]
+                segs.push_back({false, idx.text});
+            } else {
+                break;
+            }
+        }
+
+        if (segs.empty()) {
+            // No segments parsed — restore the parens
+            accum += "(";
+            accum += base;
+            accum += ")";
+            return false;
+        }
+
+        // Render json_extract / jsonb_extract_path
+        if (backend_ == Backend::postgres) {
+            accum += "jsonb_extract_path(";
+            accum += base;
+            for (const auto& seg : segs) {
+                accum += ", '";
+                accum += seg.value;
+                accum += "'";
+            }
+            accum += ")";
+        } else {
+            accum += "json_extract(CAST((";
+            accum += base;
+            accum += ") AS TEXT), '$";
+            for (const auto& seg : segs) {
+                if (seg.is_field) {
+                    accum += ".";
+                    accum += seg.value;
+                } else {
+                    accum += "[";
+                    accum += seg.value;
+                    accum += "]";
+                }
+            }
+            accum += "')";
+        }
+        return true;
+    }
+
+    Lexer& lex_;
+    std::unordered_map<std::string, std::string> alias_map_;
+    Backend backend_;
+};
+
+// ── Renderer ────────────────────────────────────────────────────────
+
+// Escape single-quote characters for use inside a SQL string literal.
+static std::string sql_escape_key(const std::string& s) {
+    std::string r;
+    r.reserve(s.size());
+    for (char c : s) {
+        if (c == '\'') r += "''";
+        else r += c;
+    }
+    return r;
+}
+
+// FK index: maps (from_table, to_table) → list of FKs between them.
+using FkIndex = std::map<std::pair<std::string,std::string>,
+                         std::vector<const ForeignKey*>>;
+
+FkIndex build_fk_index(const std::vector<ForeignKey>& fks) {
+    FkIndex idx;
+    for (const auto& fk : fks) {
+        idx[{fk.from_table, fk.to_table}].push_back(&fk);
+    }
+    return idx;
+}
+
+// Resolve column pairs for a join between child_table and parent_table.
+// In convention mode (fk_index == nullptr), returns {(parent+"_id", parent+"_id")}.
+// In FK mode, looks up the index and errors if 0 or 2+ matches.
+std::vector<std::pair<std::string,std::string>>
+resolve_fk_columns(const std::string& child_table,
+                   const std::string& parent_table,
+                   const FkIndex* fk_index) {
+    if (!fk_index) {
+        // Convention mode
+        std::string col = parent_table + "_id";
+        return {{col, col}};
+    }
+    auto it = fk_index->find({child_table, parent_table});
+    if (it == fk_index->end() || it->second.empty()) {
+        throw Error("no foreign key from '" + child_table + "' to '" +
+                    parent_table + "'", 0, 0);
+    }
+    if (it->second.size() > 1) {
+        throw Error("ambiguous foreign key from '" + child_table + "' to '" +
+                    parent_table + "' (" + std::to_string(it->second.size()) +
+                    " candidates)", 0, 0);
+    }
+    const auto& fk = *it->second[0];
+    std::vector<std::pair<std::string,std::string>> cols;
+    cols.reserve(fk.columns.size());
+    for (const auto& cp : fk.columns) {
+        cols.emplace_back(cp.from_column, cp.to_column);
+    }
+    return cols;
+}
+
+class Renderer {
+public:
+    explicit Renderer(const FkIndex* fk_index = nullptr,
+                      Backend backend = Backend::sqlite)
+        : fk_index_(fk_index), backend_(backend) {
+        switch (backend) {
+        case Backend::postgres:
+            fn_object_      = "jsonb_build_object";
+            fn_array_       = "jsonb_build_array";
+            fn_group_array_ = "jsonb_agg";
+            break;
+        default:
+            fn_object_      = "sqldeep_json_object";
+            fn_array_       = "sqldeep_json_array";
+            fn_group_array_ = "sqldeep_json_group_array";
+            break;
+        }
+    }
+
+    std::string render_document(const SqlParts& parts) {
+        std::string out;
+        render_parts(parts, out, /*nested=*/false);
+        return out;
+    }
+
+private:
+    void render_parts(const SqlParts& parts, std::string& out, bool nested) {
+        for (const auto& part : parts) {
+            std::visit([&](const auto& v) {
+                using T = std::decay_t<decltype(v)>;
+                if constexpr (std::is_same_v<T, std::string>) {
+                    out += v;
+                } else if constexpr (std::is_same_v<T, std::unique_ptr<DeepSelect>>) {
+                    render_deep_select(*v, out, nested);
+                } else if constexpr (std::is_same_v<T, std::unique_ptr<ObjectLiteral>>) {
+                    render_object(*v, out);
+                } else if constexpr (std::is_same_v<T, std::unique_ptr<ArrayLiteral>>) {
+                    render_array(*v, out);
+                } else if constexpr (std::is_same_v<T, std::unique_ptr<JoinPath>>) {
+                    render_join_path(*v, out);
+                } else if constexpr (std::is_same_v<T, std::unique_ptr<RecursiveSelect>>) {
+                    render_recursive_select(*v, out);
+                } else if constexpr (std::is_same_v<T, std::unique_ptr<XmlElement>>) {
+                    render_xml_element(*v, out);
+                }
+            }, part);
+        }
+    }
+
+    void render_deep_select(const DeepSelect& ds, std::string& out, bool nested) {
+        // SqlParts projection: plain rearrangement or XML subquery
+        if (std::holds_alternative<SqlParts>(ds.projection)) {
+            if (nested) out += "(";
+            out += "SELECT ";
+            if (ds.xml_context && !ds.singular) {
+                switch (ds.xml_mode) {
+                case XmlMode::Jsx:    out += "jsx_agg(";    break;
+                case XmlMode::Jsonml: out += "jsonml_agg("; break;
+                default:              out += "xml_agg(";    break;
+                }
+                render_parts(std::get<SqlParts>(ds.projection), out, true);
+                out += ")";
+            } else {
+                render_parts(std::get<SqlParts>(ds.projection), out, true);
+            }
+            if (!ds.tail.empty()) {
+                out += " ";
+                render_parts(ds.tail, out, true);
+            }
+            if (ds.singular) out += " LIMIT 1";
+            if (nested) out += ")";
+            return;
+        }
+
+        if (nested) out += "(";
+        out += "SELECT ";
+
+        bool is_object = std::holds_alternative<ObjectLiteral>(ds.projection);
+        bool use_group = nested && !ds.singular;
+
+        if (use_group) { out += fn_group_array_; out += "("; }
+
+        if (is_object) {
+            render_object(std::get<ObjectLiteral>(ds.projection), out);
+        } else {
+            const auto& arr = std::get<ArrayLiteral>(ds.projection);
+            if (arr.elements.size() == 1) {
+                if (!nested && !ds.singular) { out += fn_group_array_; out += "("; }
+                render_parts(arr.elements[0], out, /*nested=*/true);
+                if (!nested && !ds.singular) out += ")";
+            } else {
+                if (!nested && !ds.singular) { out += fn_group_array_; out += "("; }
+                render_array(arr, out);
+                if (!nested && !ds.singular) out += ")";
+            }
+        }
+
+        if (use_group) out += ")";
+
+        if (!ds.tail.empty()) {
+            out += " ";
+            render_parts(ds.tail, out, /*nested=*/true);
+        }
+
+        if (ds.singular) out += " LIMIT 1";
+
+        if (nested) out += ")";
+    }
+
+    void render_object(const ObjectLiteral& obj, std::string& out) {
+        out += fn_object_;
+        out += "(";
+        for (size_t i = 0; i < obj.fields.size(); ++i) {
+            if (i > 0) out += ", ";
+            const auto& f = obj.fields[i];
+            if (!f.computed_key.empty()) {
+                render_parts(f.computed_key, out, /*nested=*/true);
+            } else {
+                out += "'";
+                out += sql_escape_key(f.key);
+                out += "'";
+            }
+            out += ", ";
+            if (f.value.empty()) {
+                out += f.qualified_value.empty() ? f.key : f.qualified_value;
+            } else if (f.aggregate) {
+                out += fn_group_array_;
+                out += "(";
+                // No CAST inside custom JSON functions — they handle
+                // BLOBs natively (SQLite) or N/A (PostgreSQL).
+                render_parts(f.value, out, /*nested=*/true);
+                out += ")";
+            } else {
+                render_parts(f.value, out, /*nested=*/true);
+            }
+        }
+        out += ")";
+    }
+
+    void render_array(const ArrayLiteral& arr, std::string& out) {
+        out += fn_array_;
+        out += "(";
+        for (size_t i = 0; i < arr.elements.size(); ++i) {
+            if (i > 0) out += ", ";
+            render_parts(arr.elements[i], out, /*nested=*/true);
+        }
+        out += ")";
+    }
+
+    // Emit "lhs.col1 = rhs.col1 [AND lhs.col2 = rhs.col2 ...]"
+    static void emit_join_condition(
+            const std::vector<std::pair<std::string,std::string>>& cols,
+            const std::string& child_ref,
+            const std::string& parent_ref,
+            std::string& out) {
+        for (size_t i = 0; i < cols.size(); ++i) {
+            if (i > 0) out += " AND ";
+            out += child_ref + "." + cols[i].first + " = " +
+                   parent_ref + "." + cols[i].second;
+        }
+    }
+
+    void render_join_path(const JoinPath& jp, std::string& out) {
+        // Step 1: FROM target
+        const auto& s1 = jp.steps[0];
+        out += s1.table;
+        const auto& s1_ref = s1.alias.empty() ? s1.table : s1.alias;
+        if (!s1.alias.empty()) {
+            out += " ";
+            out += s1.alias;
+        }
+
+        // Steps 2+: JOINs
+        std::string prev_table = s1.table;
+        std::string prev_ref = s1_ref;
+        for (size_t i = 1; i < jp.steps.size(); ++i) {
+            const auto& step = jp.steps[i];
+            const auto& step_ref = step.alias.empty() ? step.table : step.alias;
+            out += " JOIN ";
+            out += step.table;
+            if (!step.alias.empty()) {
+                out += " ";
+                out += step.alias;
+            }
+            out += " ON ";
+            if (step.forward) {
+                // curr is child of prev
+                auto cols = step.columns.empty()
+                    ? resolve_fk_columns(step.table, prev_table, fk_index_)
+                    : step.columns;
+                emit_join_condition(cols, step_ref, prev_ref, out);
+            } else {
+                // prev is child of curr
+                auto cols = step.columns.empty()
+                    ? resolve_fk_columns(prev_table, step.table, fk_index_)
+                    : step.columns;
+                emit_join_condition(cols, prev_ref, step_ref, out);
+            }
+            prev_table = step.table;
+            prev_ref = step_ref;
+        }
+
+        // WHERE: correlate step 1 to start alias
+        out += " WHERE ";
+        if (s1.forward) {
+            auto cols = s1.columns.empty()
+                ? resolve_fk_columns(s1.table, jp.start_table, fk_index_)
+                : s1.columns;
+            emit_join_condition(cols, s1_ref, jp.start_alias, out);
+        } else {
+            auto cols = s1.columns.empty()
+                ? resolve_fk_columns(jp.start_table, s1.table, fk_index_)
+                : s1.columns;
+            emit_join_condition(cols, jp.start_alias, s1_ref, out);
+        }
+    }
+
+    void render_recursive_select(const RecursiveSelect& rs, std::string& out) {
+        bool is_pg = (backend_ == Backend::postgres);
+
+        // Build json_object(...) argument list for non-recursive fields
+        std::string obj_args;
+        std::string col_list;    // column names for CTE
+        std::string col_select;  // column references with c. prefix for recursive step
+        for (size_t i = 0; i < rs.fields.size(); ++i) {
+            const auto& f = rs.fields[i];
+            std::string col = f.value.empty() ? f.key : f.key; // column name
+            std::string expr;
+            if (f.value.empty()) {
+                expr = f.qualified_value.empty() ? f.key : f.qualified_value;
+            } else {
+                // For renamed fields, the value is the SQL expression
+                std::string val_str;
+                // Render the value parts to a string
+                Renderer tmp(fk_index_, backend_);
+                val_str = tmp.render_document(f.value);
+                expr = val_str;
+                col = val_str; // use the expression as the column name
+            }
+            if (i > 0) { col_list += ", "; col_select += ", "; }
+            col_list += col;
+            col_select += "c." + col;
+
+            if (i > 0) obj_args += ", ";
+            obj_args += "'";
+            obj_args += sql_escape_key(f.key);
+            obj_args += "', ";
+            obj_args += col;
+        }
+
+        // Add FK and PK columns to CTE column list
+        col_list += ", " + rs.fk_column;
+        col_select += ", c." + rs.fk_column;
+        if (rs.pk_column != rs.fk_column) {
+            // PK might already be in the field list
+            bool pk_in_fields = false;
+            for (const auto& f : rs.fields) {
+                std::string col = f.value.empty() ? f.key : f.key;
+                if (f.value.empty() && f.key == rs.pk_column) { pk_in_fields = true; break; }
+            }
+            if (!pk_in_fields) {
+                col_list += ", " + rs.pk_column;
+                col_select += ", c." + rs.pk_column;
+            }
+        }
+
+        std::string pad_fn = is_pg
+            ? "lpad(CAST(" + rs.pk_column + " AS text), 10, '0')"
+            : "printf('%010d', " + rs.pk_column + ")";
+        std::string c_pad_fn = is_pg
+            ? "lpad(CAST(c." + rs.pk_column + " AS text), 10, '0')"
+            : "printf('%010d', c." + rs.pk_column + ")";
+        std::string high_char = is_pg ? "chr(127)" : "char(127)";
+        std::string concat_fn_open = is_pg
+            ? "string_agg(_fragment, '' ORDER BY _sort_key)"
+            : "group_concat(_fragment, '')";
+
+        // Emit the 3-CTE bracket-injection template
+        out += "WITH RECURSIVE _sdq_dfs(";
+        out += col_list;
+        out += ", _depth, _path) AS (SELECT ";
+        out += col_list;
+        out += ", 0, ";
+        out += pad_fn;
+        out += " FROM ";
+        out += rs.table;
+        if (!rs.root_condition.empty()) {
+            out += " WHERE ";
+            render_parts(rs.root_condition, out, /*nested=*/false);
+        }
+        out += " UNION ALL SELECT ";
+        out += col_select;
+        out += ", d._depth + 1, d._path || '/' || ";
+        out += c_pad_fn;
+        out += " FROM ";
+        out += rs.table;
+        out += " c JOIN _sdq_dfs d ON c.";
+        out += rs.fk_column;
+        out += " = d.";
+        out += rs.pk_column;
+        out += "), _sdq_ranked AS (SELECT *, ";
+        out += fn_object_;
+        out += "(";
+        out += obj_args;
+        out += ") AS _obj, ROW_NUMBER() OVER (PARTITION BY ";
+        out += rs.fk_column;
+        out += " ORDER BY ";
+        out += rs.pk_column;
+        out += ") AS _child_rank FROM _sdq_dfs), ";
+        out += "_sdq_events(_sort_key, _fragment) AS (SELECT _path, ";
+        out += "CASE WHEN _child_rank > 1 THEN ',' ELSE '' END || ";
+        out += "substr(_obj, 1, length(_obj) - 1) || ',\"";
+        out += sql_escape_key(rs.children_field);
+        out += "\":[' FROM _sdq_ranked UNION ALL SELECT _path || ";
+        out += high_char;
+        out += ", ']}' FROM _sdq_ranked) SELECT ";
+
+        if (!rs.singular) {
+            out += "'[' || ";
+        }
+        if (is_pg) {
+            out += concat_fn_open;
+        } else {
+            out += "group_concat(_fragment, '')";
+        }
+        if (!rs.singular) {
+            out += " || ']'";
+        }
+        out += " FROM (SELECT _fragment FROM _sdq_events ORDER BY _sort_key)";
+    }
+
+    void render_xml_element(const XmlElement& el, std::string& out,
+                             XmlMode mode_override = XmlMode::Xml) {
+        XmlMode mode = (el.mode != XmlMode::Xml) ? el.mode : mode_override;
+        const char* fn_element;
+        const char* fn_attrs;
+        switch (mode) {
+        case XmlMode::Jsx:
+            fn_element = "xml_element_jsx('";
+            fn_attrs = ", xml_attrs_jsx(";
+            break;
+        case XmlMode::Jsonml:
+            fn_element = "xml_element_jsonml('";
+            fn_attrs = ", xml_attrs_jsonml(";
+            break;
+        default:
+            fn_element = "xml_element('";
+            fn_attrs = ", xml_attrs(";
+            break;
+        }
+
+        out += fn_element;
+        out += el.tag;
+        if (el.self_closing) out += "/";
+        out += "'";
+
+        // Attributes
+        if (!el.attrs.empty()) {
+            out += fn_attrs;
+            for (size_t i = 0; i < el.attrs.size(); ++i) {
+                if (i > 0) out += ", ";
+                out += "'";
+                out += el.attrs[i].name;
+                out += "', ";
+                render_parts(el.attrs[i].value, out, /*nested=*/true);
+            }
+            out += ")";
+        }
+
+        // Children
+        for (const auto& child : el.children) {
+            out += ", ";
+            switch (child.kind) {
+            case XmlElement::Child::Text: {
+                out += "'";
+                // Escape single quotes for SQL string literal
+                for (char c : child.text) {
+                    if (c == '\'') out += "''";
+                    else out += c;
+                }
+                out += "'";
+                break;
+            }
+            case XmlElement::Child::Interpolation:
+                render_parts(child.expr, out, /*nested=*/true);
+                break;
+            case XmlElement::Child::Element:
+                render_xml_element(*child.element, out, mode);
+                break;
+            }
+        }
+
+        out += ")";
+    }
+
+    const FkIndex* fk_index_;
+    Backend backend_;
+    const char* fn_object_;
+    const char* fn_array_;
+    const char* fn_group_array_;
+};
+
+} // anonymous namespace
+
+// ── Public API ──────────────────────────────────────────────────────
+
+std::string transpile(const std::string& input) {
+    auto alias_map = build_alias_map(input);
+    Lexer lex(input);
+    Parser parser(lex, std::move(alias_map));
+    SqlParts doc = parser.parse_document();
+    Renderer renderer;
+    return renderer.render_document(doc);
+}
+
+std::string transpile(const std::string& input,
+                      const std::vector<ForeignKey>& foreign_keys) {
+    auto alias_map = build_alias_map(input);
+    Lexer lex(input);
+    Parser parser(lex, std::move(alias_map));
+    SqlParts doc = parser.parse_document();
+    auto fk_idx = build_fk_index(foreign_keys);
+    Renderer renderer(&fk_idx);
+    return renderer.render_document(doc);
+}
+
+std::string transpile(const std::string& input, Backend backend) {
+    auto alias_map = build_alias_map(input);
+    Lexer lex(input);
+    Parser parser(lex, std::move(alias_map), backend);
+    SqlParts doc = parser.parse_document();
+    Renderer renderer(nullptr, backend);
+    return renderer.render_document(doc);
+}
+
+std::string transpile(const std::string& input,
+                      const std::vector<ForeignKey>& foreign_keys,
+                      Backend backend) {
+    auto alias_map = build_alias_map(input);
+    Lexer lex(input);
+    Parser parser(lex, std::move(alias_map), backend);
+    SqlParts doc = parser.parse_document();
+    auto fk_idx = build_fk_index(foreign_keys);
+    Renderer renderer(&fk_idx, backend);
+    return renderer.render_document(doc);
+}
+
+} // namespace sqldeep
+
+// ── C API bridge ────────────────────────────────────────────────────
+
+namespace {
+
+// Duplicate a std::string to a malloc'd C string (caller frees with sqldeep_free).
+char* sqldeep_dup_str(const std::string& s) {
+    char* p = static_cast<char*>(std::malloc(s.size() + 1));
+    if (p) std::memcpy(p, s.c_str(), s.size() + 1);
+    return p;
+}
+
+// Set error output pointers. msg is malloc'd; caller frees with sqldeep_free.
+void sqldeep_set_error(char** err_msg, int* err_line, int* err_col,
+               const sqldeep::Error& e) {
+    if (err_msg)  *err_msg = sqldeep_dup_str(e.what());
+    if (err_line) *err_line = e.line();
+    if (err_col)  *err_col = e.col();
+}
+
+void sqldeep_clear_error(char** err_msg, int* err_line, int* err_col) {
+    if (err_msg)  *err_msg = nullptr;
+    if (err_line) *err_line = 0;
+    if (err_col)  *err_col = 0;
+}
+
+sqldeep::Backend to_backend(sqldeep_backend b) {
+    return b == SQLDEEP_POSTGRES ? sqldeep::Backend::postgres
+                                 : sqldeep::Backend::sqlite;
+}
+
+std::vector<sqldeep::ForeignKey> to_cpp_fks(const sqldeep_foreign_key* fks,
+                                             int fk_count) {
+    std::vector<sqldeep::ForeignKey> cpp_fks;
+    cpp_fks.reserve(fk_count);
+    for (int i = 0; i < fk_count; ++i) {
+        sqldeep::ForeignKey fk;
+        fk.from_table = fks[i].from_table;
+        fk.to_table   = fks[i].to_table;
+        fk.columns.reserve(fks[i].column_count);
+        for (int j = 0; j < fks[i].column_count; ++j) {
+            fk.columns.push_back({
+                fks[i].columns[j].from_column,
+                fks[i].columns[j].to_column,
+            });
+        }
+        cpp_fks.push_back(std::move(fk));
+    }
+    return cpp_fks;
+}
+
+} // namespace
+
+extern "C" {
+
+char* sqldeep_transpile(const char* input,
+                        char** err_msg, int* err_line, int* err_col) {
+    return sqldeep_transpile_backend(input, SQLDEEP_SQLITE,
+                                     err_msg, err_line, err_col);
+}
+
+char* sqldeep_transpile_fk(const char* input,
+                           const sqldeep_foreign_key* fks, int fk_count,
+                           char** err_msg, int* err_line, int* err_col) {
+    return sqldeep_transpile_fk_backend(input, SQLDEEP_SQLITE, fks, fk_count,
+                                        err_msg, err_line, err_col);
+}
+
+char* sqldeep_transpile_backend(const char* input,
+                                sqldeep_backend backend,
+                                char** err_msg, int* err_line, int* err_col) {
+    sqldeep_clear_error(err_msg, err_line, err_col);
+    try {
+        return sqldeep_dup_str(sqldeep::transpile(input, to_backend(backend)));
+    } catch (const sqldeep::Error& e) {
+        sqldeep_set_error(err_msg, err_line, err_col, e);
+        return nullptr;
+    }
+}
+
+char* sqldeep_transpile_fk_backend(const char* input,
+                                   sqldeep_backend backend,
+                                   const sqldeep_foreign_key* fks, int fk_count,
+                                   char** err_msg, int* err_line, int* err_col) {
+    sqldeep_clear_error(err_msg, err_line, err_col);
+    try {
+        auto cpp_fks = to_cpp_fks(fks, fk_count);
+        return sqldeep_dup_str(sqldeep::transpile(input, cpp_fks, to_backend(backend)));
+    } catch (const sqldeep::Error& e) {
+        sqldeep_set_error(err_msg, err_line, err_col, e);
+        return nullptr;
+    }
+}
+
+const char* sqldeep_version(void) {
+    return SQLDEEP_VERSION;
+}
+
+void sqldeep_free(void* ptr) {
+    std::free(ptr);
+}
+
+} // extern "C"
+
+// ── sqldeep_xml (XML runtime for SQLite) ───────────────────────
+// Source: vendor/src/sqldeep_xml.c
+
+extern "C" {
+// Copyright 2026 Marcelo Cantos
+// SPDX-License-Identifier: Apache-2.0
+//
+// SQLite runtime implementations of xml_element, xml_attrs, and xml_agg.
+//
+// BLOB protocol: all XML output is returned as BLOB so xml_element can
+// distinguish "already-XML" children (pass through) from plain TEXT
+// (which must be escaped).  The caller uses CAST(... AS TEXT) to
+// convert the final result back to a string.
+
+
+#include <string.h>
+
+static int is_xml_blob(sqlite3_value *v) {
+    return sqlite3_value_type(v) == SQLITE_BLOB;
+}
+
+// ── Escaping helpers ────────────────────────────────────────────────
+
+static int xml_escaped_len(const char *s) {
+    int n = 0;
+    for (; *s; ++s) {
+        switch (*s) {
+        case '<': n += 4; break;
+        case '>': n += 4; break;
+        case '&': n += 5; break;
+        default:  n++; break;
+        }
+    }
+    return n;
+}
+
+static void xml_escape_text_to(const char *s, char *out, int *pos) {
+    for (; *s; ++s) {
+        switch (*s) {
+        case '<': memcpy(out + *pos, "&lt;", 4); *pos += 4; break;
+        case '>': memcpy(out + *pos, "&gt;", 4); *pos += 4; break;
+        case '&': memcpy(out + *pos, "&amp;", 5); *pos += 5; break;
+        default:  out[*pos] = *s; (*pos)++; break;
+        }
+    }
+}
+
+// ── xml_attrs(name1, value1, name2, value2, ...) ────────────────────
+
+static void sd_xml_attrs(sqlite3_context *ctx, int argc,
+                          sqlite3_value **argv) {
+    int i, len = 0;
+    if (argc % 2 != 0) {
+        sqlite3_result_error(ctx, "xml_attrs requires even number of args", -1);
+        return;
+    }
+    for (i = 0; i < argc; i += 2) {
+        const char *val;
+        if (sqlite3_value_type(argv[i + 1]) == SQLITE_NULL) continue;
+        /* sqldeep_json('true') / sqldeep_json('false') = boolean BLOB */
+        if (sqlite3_value_type(argv[i + 1]) == SQLITE_BLOB) {
+            int blen = sqlite3_value_bytes(argv[i + 1]);
+            const char *b = (const char *)sqlite3_value_blob(argv[i + 1]);
+            if (blen == 5 && memcmp(b, "false", 5) == 0) continue;
+            /* true → bare attribute name */
+            len += 1 + (int)strlen((const char *)sqlite3_value_text(argv[i]));
+            continue;
+        }
+        len += 1; /* space */
+        len += (int)strlen((const char *)sqlite3_value_text(argv[i]));
+        val = (const char *)sqlite3_value_text(argv[i + 1]);
+        len += 2 + xml_escaped_len(val); /* ="..." */
+    }
+    char *out = (char *)sqlite3_malloc(len + 1);
+    if (!out) { sqlite3_result_error_nomem(ctx); return; }
+    int pos = 0;
+    for (i = 0; i < argc; i += 2) {
+        const char *name, *val;
+        if (sqlite3_value_type(argv[i + 1]) == SQLITE_NULL) continue;
+        name = (const char *)sqlite3_value_text(argv[i]);
+        /* sqldeep_json('true') / sqldeep_json('false') = boolean BLOB */
+        if (sqlite3_value_type(argv[i + 1]) == SQLITE_BLOB) {
+            int blen = sqlite3_value_bytes(argv[i + 1]);
+            const char *b = (const char *)sqlite3_value_blob(argv[i + 1]);
+            if (blen == 5 && memcmp(b, "false", 5) == 0) continue;
+            /* true (or any other JSON BLOB) → bare attribute name */
+            out[pos++] = ' ';
+            memcpy(out + pos, name, strlen(name));
+            pos += (int)strlen(name);
+            continue;
+        }
+        val = (const char *)sqlite3_value_text(argv[i + 1]);
+        out[pos++] = ' ';
+        memcpy(out + pos, name, strlen(name));
+        pos += (int)strlen(name);
+        out[pos++] = '=';
+        out[pos++] = '"';
+        for (const char *p = val; *p; ++p) {
+            switch (*p) {
+            case '"': memcpy(out + pos, "&quot;", 6); pos += 6; break;
+            case '<': memcpy(out + pos, "&lt;", 4); pos += 4; break;
+            case '>': memcpy(out + pos, "&gt;", 4); pos += 4; break;
+            case '&': memcpy(out + pos, "&amp;", 5); pos += 5; break;
+            default:  out[pos++] = *p; break;
+            }
+        }
+        out[pos++] = '"';
+    }
+    out[pos] = '\0';
+    sqlite3_result_blob(ctx, out, pos, sqlite3_free);
+}
+
+// ── xml_element(tag, [attrs], ...children) ──────────────────────────
+
+static void sd_xml_element(sqlite3_context *ctx, int argc,
+                            sqlite3_value **argv) {
+    if (argc < 1) {
+        sqlite3_result_error(ctx, "xml_element requires at least 1 arg", -1);
+        return;
+    }
+    const char *tag = (const char *)sqlite3_value_text(argv[0]);
+    int taglen = (int)strlen(tag);
+    int self_closing = (taglen > 0 && tag[taglen - 1] == '/');
+    if (self_closing) taglen--; /* strip trailing '/' from tag name */
+    const char *attrs = "";
+    int attrslen = 0;
+    int child_start = 1;
+
+    if (argc > 1 && is_xml_blob(argv[1])) {
+        const char *a = (const char *)sqlite3_value_blob(argv[1]);
+        int alen = sqlite3_value_bytes(argv[1]);
+        if (alen > 0 && a[0] == ' ') {
+            attrs = a;
+            attrslen = alen;
+            child_start = 2;
+        }
+    }
+
+    int has_children = 0;
+    int children_len = 0;
+    for (int i = child_start; i < argc; ++i) {
+        if (sqlite3_value_type(argv[i]) == SQLITE_NULL) continue;
+        has_children = 1;
+        if (is_xml_blob(argv[i])) {
+            children_len += sqlite3_value_bytes(argv[i]);
+        } else {
+            const char *c = (const char *)sqlite3_value_text(argv[i]);
+            children_len += xml_escaped_len(c);
+        }
+    }
+
+    /* <tag attrs> children </tag> or <tag attrs/> + NUL */
+    int outlen = 1 + taglen + attrslen +
+                 (self_closing ? 2
+                  : has_children ? 1 + children_len + 2 + taglen + 1
+                  : 1 + 2 + taglen + 1) + 1;
+    char *out = (char *)sqlite3_malloc(outlen);
+    if (!out) { sqlite3_result_error_nomem(ctx); return; }
+    int pos = 0;
+    out[pos++] = '<';
+    memcpy(out + pos, tag, taglen); pos += taglen;
+    memcpy(out + pos, attrs, attrslen); pos += attrslen;
+
+    if (self_closing) {
+        out[pos++] = '/';
+        out[pos++] = '>';
+    } else if (has_children) {
+        out[pos++] = '>';
+        for (int i = child_start; i < argc; ++i) {
+            if (sqlite3_value_type(argv[i]) == SQLITE_NULL) continue;
+            if (is_xml_blob(argv[i])) {
+                int blen = sqlite3_value_bytes(argv[i]);
+                memcpy(out + pos, sqlite3_value_blob(argv[i]), blen);
+                pos += blen;
+            } else {
+                const char *c = (const char *)sqlite3_value_text(argv[i]);
+                xml_escape_text_to(c, out, &pos);
+            }
+        }
+        out[pos++] = '<';
+        out[pos++] = '/';
+        memcpy(out + pos, tag, taglen); pos += taglen;
+        out[pos++] = '>';
+    } else {
+        out[pos++] = '>';
+        out[pos++] = '<';
+        out[pos++] = '/';
+        memcpy(out + pos, tag, taglen); pos += taglen;
+        out[pos++] = '>';
+    }
+    out[pos] = '\0';
+    sqlite3_result_blob(ctx, out, pos, sqlite3_free);
+}
+
+// ── xml_agg (aggregate) ─────────────────────────────────────────────
+
+typedef struct XmlAggCtx {
+    char *buf;
+    int len;
+    int cap;
+} XmlAggCtx;
+
+static void xml_agg_append(XmlAggCtx *p, const char *s, int n) {
+    if (p->len + n >= p->cap) {
+        int newcap = (p->cap + n) * 2 + 64;
+        p->buf = (char *)sqlite3_realloc(p->buf, newcap);
+        p->cap = newcap;
+    }
+    memcpy(p->buf + p->len, s, n);
+    p->len += n;
+}
+
+static void sd_xml_agg_step(sqlite3_context *ctx, int argc,
+                             sqlite3_value **argv) {
+    (void)argc;
+    if (sqlite3_value_type(argv[0]) == SQLITE_NULL) return;
+    XmlAggCtx *p = (XmlAggCtx *)sqlite3_aggregate_context(ctx, sizeof(*p));
+    if (!p) return;
+    if (is_xml_blob(argv[0])) {
+        int blen = sqlite3_value_bytes(argv[0]);
+        xml_agg_append(p, (const char *)sqlite3_value_blob(argv[0]), blen);
+    } else {
+        const char *v = (const char *)sqlite3_value_text(argv[0]);
+        for (const char *c = v; *c; ++c) {
+            switch (*c) {
+            case '<': xml_agg_append(p, "&lt;", 4); break;
+            case '>': xml_agg_append(p, "&gt;", 4); break;
+            case '&': xml_agg_append(p, "&amp;", 5); break;
+            default: xml_agg_append(p, c, 1); break;
+            }
+        }
+    }
+}
+
+static void sd_xml_agg_final(sqlite3_context *ctx) {
+    XmlAggCtx *p = (XmlAggCtx *)sqlite3_aggregate_context(ctx, 0);
+    if (!p || !p->buf || p->len == 0) {
+        sqlite3_result_blob(ctx, "", 0, SQLITE_STATIC);
+        return;
+    }
+    sqlite3_result_blob(ctx, p->buf, p->len, sqlite3_free);
+}
+
+// ── JSON string escaping helper ──────────────────────────────────────
+
+static int json_escaped_len(const char *s, int n) {
+    int len = 0;
+    for (int i = 0; i < n; ++i) {
+        unsigned char c = (unsigned char)s[i];
+        switch (c) {
+        case '"': case '\\': len += 2; break;
+        case '\b': case '\f': case '\n': case '\r': case '\t': len += 2; break;
+        default:
+            if (c < 0x20) len += 6; /* \uXXXX */
+            else len++;
+            break;
+        }
+    }
+    return len;
+}
+
+static void json_escape_to(const char *s, int n, char *out, int *pos) {
+    static const char hex[] = "0123456789abcdef";
+    for (int i = 0; i < n; ++i) {
+        unsigned char c = (unsigned char)s[i];
+        switch (c) {
+        case '"':  out[(*pos)++] = '\\'; out[(*pos)++] = '"'; break;
+        case '\\': out[(*pos)++] = '\\'; out[(*pos)++] = '\\'; break;
+        case '\b': out[(*pos)++] = '\\'; out[(*pos)++] = 'b'; break;
+        case '\f': out[(*pos)++] = '\\'; out[(*pos)++] = 'f'; break;
+        case '\n': out[(*pos)++] = '\\'; out[(*pos)++] = 'n'; break;
+        case '\r': out[(*pos)++] = '\\'; out[(*pos)++] = 'r'; break;
+        case '\t': out[(*pos)++] = '\\'; out[(*pos)++] = 't'; break;
+        default:
+            if (c < 0x20) {
+                out[(*pos)++] = '\\'; out[(*pos)++] = 'u';
+                out[(*pos)++] = '0'; out[(*pos)++] = '0';
+                out[(*pos)++] = hex[c >> 4]; out[(*pos)++] = hex[c & 0xf];
+            } else {
+                out[(*pos)++] = (char)c;
+            }
+            break;
+        }
+    }
+}
+
+// ── BLOB helpers for JSONML/JSX ────────────────────────────────────
+//
+// Like XML mode, JSONML/JSX functions return BLOB to distinguish
+// structured output from plain text.  JSONML BLOBs start with '[',
+// attrs BLOBs with '{'.  XML BLOBs start with '<'.  Custom JSON
+// functions (sqldeep_json_object, sqldeep_json_array) inspect BLOBs:
+// '<' → XML (quote as string); '['/'{' → JSON (inline raw).
+
+// ── xml_attrs_jsonml(name1, value1, name2, value2, ...) ─────────────
+
+static void sd_xml_attrs_jsonml(sqlite3_context *ctx, int argc,
+                                 sqlite3_value **argv) {
+    int i, len = 2; /* {} */
+    int nattrs = 0;
+    if (argc % 2 != 0) {
+        sqlite3_result_error(ctx, "xml_attrs_jsonml requires even number of args", -1);
+        return;
+    }
+    for (i = 0; i < argc; i += 2) {
+        const char *name, *val;
+        int namelen, vallen;
+        if (sqlite3_value_type(argv[i + 1]) == SQLITE_NULL) continue;
+        nattrs++;
+        name = (const char *)sqlite3_value_text(argv[i]);
+        namelen = (int)strlen(name);
+        val = (const char *)sqlite3_value_text(argv[i + 1]);
+        vallen = (int)strlen(val);
+        len += 2 + json_escaped_len(name, namelen); /* "name" */
+        len += 1; /* : */
+        len += 2 + json_escaped_len(val, vallen);   /* "val" */
+    }
+    if (nattrs > 1) len += nattrs - 1; /* commas */
+    char *out = (char *)sqlite3_malloc(len + 1);
+    if (!out) { sqlite3_result_error_nomem(ctx); return; }
+    int pos = 0;
+    int written = 0;
+    out[pos++] = '{';
+    for (i = 0; i < argc; i += 2) {
+        const char *name, *val;
+        int namelen, vallen;
+        if (sqlite3_value_type(argv[i + 1]) == SQLITE_NULL) continue;
+        if (written++ > 0) out[pos++] = ',';
+        name = (const char *)sqlite3_value_text(argv[i]);
+        namelen = (int)strlen(name);
+        val = (const char *)sqlite3_value_text(argv[i + 1]);
+        vallen = (int)strlen(val);
+        out[pos++] = '"';
+        json_escape_to(name, namelen, out, &pos);
+        out[pos++] = '"';
+        out[pos++] = ':';
+        out[pos++] = '"';
+        json_escape_to(val, vallen, out, &pos);
+        out[pos++] = '"';
+    }
+    out[pos++] = '}';
+    out[pos] = '\0';
+    sqlite3_result_blob(ctx, out, pos, sqlite3_free);
+}
+
+// ── xml_element_jsonml(tag, [attrs], ...children) ───────────────────
+
+static void sd_xml_element_jsonml(sqlite3_context *ctx, int argc,
+                                   sqlite3_value **argv) {
+    if (argc < 1) {
+        sqlite3_result_error(ctx, "xml_element_jsonml requires at least 1 arg", -1);
+        return;
+    }
+    const char *tag = (const char *)sqlite3_value_text(argv[0]);
+    int taglen = (int)strlen(tag);
+    if (taglen > 0 && tag[taglen - 1] == '/') taglen--; /* strip void marker */
+    int child_start = 1;
+    const char *attrs = NULL;
+    int attrslen = 0;
+
+    /* Detect attrs BLOB: starts with '{' */
+    if (argc > 1 && is_xml_blob(argv[1])) {
+        const char *a = (const char *)sqlite3_value_blob(argv[1]);
+        int alen = sqlite3_value_bytes(argv[1]);
+        if (alen > 0 && a[0] == '{') {
+            attrs = a;
+            attrslen = alen;
+            child_start = 2;
+        }
+    }
+
+    /* Calculate output length: ["tag",{attrs},children...] */
+    int len = 1; /* [ */
+    len += 2 + json_escaped_len(tag, taglen); /* "tag" */
+    if (attrs) {
+        len += 1 + attrslen; /* ,{attrs} */
+    }
+    for (int i = child_start; i < argc; ++i) {
+        if (sqlite3_value_type(argv[i]) == SQLITE_NULL) continue;
+        if (is_xml_blob(argv[i])) {
+            int blen = sqlite3_value_bytes(argv[i]);
+            if (blen == 0) continue; /* empty agg result */
+            len += 1 + blen; /* comma + raw JSONML */
+        } else {
+            /* Text — JSON string */
+            const char *c = (const char *)sqlite3_value_text(argv[i]);
+            int clen = (int)strlen(c);
+            len += 1 + 2 + json_escaped_len(c, clen); /* comma + "..." */
+        }
+    }
+    len += 1; /* ] */
+
+    char *out = (char *)sqlite3_malloc(len + 1);
+    if (!out) { sqlite3_result_error_nomem(ctx); return; }
+    int pos = 0;
+    out[pos++] = '[';
+    out[pos++] = '"';
+    json_escape_to(tag, taglen, out, &pos);
+    out[pos++] = '"';
+    if (attrs) {
+        out[pos++] = ',';
+        memcpy(out + pos, attrs, attrslen);
+        pos += attrslen;
+    }
+    for (int i = child_start; i < argc; ++i) {
+        if (sqlite3_value_type(argv[i]) == SQLITE_NULL) continue;
+        if (is_xml_blob(argv[i])) {
+            int blen = sqlite3_value_bytes(argv[i]);
+            if (blen == 0) continue;
+            out[pos++] = ',';
+            memcpy(out + pos, sqlite3_value_blob(argv[i]), blen);
+            pos += blen;
+        } else {
+            const char *c = (const char *)sqlite3_value_text(argv[i]);
+            int clen = (int)strlen(c);
+            out[pos++] = ',';
+            out[pos++] = '"';
+            json_escape_to(c, clen, out, &pos);
+            out[pos++] = '"';
+        }
+    }
+    out[pos++] = ']';
+    out[pos] = '\0';
+    sqlite3_result_blob(ctx, out, pos, sqlite3_free);
+}
+
+// ── jsonml_agg (aggregate) ──────────────────────────────────────────
+// Collects JSONML fragments as comma-separated bytes in a BLOB.
+
+static void sd_jsonml_agg_step(sqlite3_context *ctx, int argc,
+                                sqlite3_value **argv) {
+    (void)argc;
+    if (sqlite3_value_type(argv[0]) == SQLITE_NULL) return;
+    XmlAggCtx *p = (XmlAggCtx *)sqlite3_aggregate_context(ctx, sizeof(*p));
+    if (!p) return;
+    if (p->len > 0) xml_agg_append(p, ",", 1);
+    if (is_xml_blob(argv[0])) {
+        int blen = sqlite3_value_bytes(argv[0]);
+        xml_agg_append(p, (const char *)sqlite3_value_blob(argv[0]), blen);
+    } else {
+        /* Text child — emit as JSON string */
+        const char *v = (const char *)sqlite3_value_text(argv[0]);
+        int vlen = (int)strlen(v);
+        int elen = 2 + json_escaped_len(v, vlen);
+        /* Ensure capacity and write directly */
+        if (p->len + elen >= p->cap) {
+            int newcap = (p->cap + elen) * 2 + 64;
+            p->buf = (char *)sqlite3_realloc(p->buf, newcap);
+            p->cap = newcap;
+        }
+        p->buf[p->len++] = '"';
+        json_escape_to(v, vlen, p->buf, &p->len);
+        p->buf[p->len++] = '"';
+    }
+}
+
+static void sd_jsonml_agg_final(sqlite3_context *ctx) {
+    XmlAggCtx *p = (XmlAggCtx *)sqlite3_aggregate_context(ctx, 0);
+    if (!p || !p->buf || p->len == 0) {
+        sqlite3_result_blob(ctx, "", 0, SQLITE_STATIC);
+        return;
+    }
+    sqlite3_result_blob(ctx, p->buf, p->len, sqlite3_free);
+}
+
+// ── xml_attrs_jsx(name1, value1, name2, value2, ...) ──────────────
+// Like xml_attrs_jsonml, but values that are JSON BLOBs, INTEGER, or
+// FLOAT are emitted as raw JSON values instead of quoted strings.
+// This lets sqldeep_json_object(...), numbers, and booleans flow
+// through as live values in the JSX attributes object.
+
+/* Return true if the value should be emitted as raw JSON (unquoted).
+   BLOBs that don't start with '<' are JSON (inline raw).
+   BLOBs starting with '<' are XML (will be quoted as strings). */
+static int jsx_is_raw(sqlite3_value *v) {
+    int t = sqlite3_value_type(v);
+    if (t == SQLITE_INTEGER || t == SQLITE_FLOAT) return 1;
+    if (t == SQLITE_BLOB) {
+        int blen = sqlite3_value_bytes(v);
+        if (blen > 0) {
+            const char *b = (const char *)sqlite3_value_blob(v);
+            return b[0] != '<'; /* not XML → JSON */
+        }
+    }
+    return 0;
+}
+
+static void sd_xml_attrs_jsx(sqlite3_context *ctx, int argc,
+                              sqlite3_value **argv) {
+    int i, len = 2; /* {} */
+    int nattrs = 0;
+    if (argc % 2 != 0) {
+        sqlite3_result_error(ctx, "xml_attrs_jsx requires even number of args", -1);
+        return;
+    }
+    for (i = 0; i < argc; i += 2) {
+        const char *name;
+        int namelen, vallen;
+        int raw;
+        if (sqlite3_value_type(argv[i + 1]) == SQLITE_NULL) continue;
+        nattrs++;
+        /* Check raw BEFORE sqlite3_value_text (which coerces BLOB→TEXT) */
+        raw = jsx_is_raw(argv[i + 1]);
+        name = (const char *)sqlite3_value_text(argv[i]);
+        namelen = (int)strlen(name);
+        if (raw && sqlite3_value_type(argv[i + 1]) == SQLITE_BLOB) {
+            vallen = sqlite3_value_bytes(argv[i + 1]);
+        } else {
+            vallen = (int)strlen((const char *)sqlite3_value_text(argv[i + 1]));
+        }
+        len += 2 + json_escaped_len(name, namelen); /* "name" */
+        len += 1; /* : */
+        if (raw) {
+            len += vallen; /* raw JSON/number */
+        } else {
+            const char *val = (const char *)sqlite3_value_text(argv[i + 1]);
+            len += 2 + json_escaped_len(val, vallen); /* "val" */
+        }
+    }
+    if (nattrs > 1) len += nattrs - 1; /* commas */
+    char *out = (char *)sqlite3_malloc(len + 1);
+    if (!out) { sqlite3_result_error_nomem(ctx); return; }
+    int pos = 0;
+    int written = 0;
+    out[pos++] = '{';
+    for (i = 0; i < argc; i += 2) {
+        const char *name;
+        int namelen, vallen;
+        int raw;
+        if (sqlite3_value_type(argv[i + 1]) == SQLITE_NULL) continue;
+        if (written++ > 0) out[pos++] = ',';
+        /* Check raw BEFORE sqlite3_value_text (which coerces BLOB→TEXT) */
+        raw = jsx_is_raw(argv[i + 1]);
+        name = (const char *)sqlite3_value_text(argv[i]);
+        namelen = (int)strlen(name);
+        out[pos++] = '"';
+        json_escape_to(name, namelen, out, &pos);
+        out[pos++] = '"';
+        out[pos++] = ':';
+        if (raw) {
+            /* JSON/numeric value — emit raw */
+            const char *val;
+            if (sqlite3_value_type(argv[i + 1]) == SQLITE_BLOB) {
+                val = (const char *)sqlite3_value_blob(argv[i + 1]);
+                vallen = sqlite3_value_bytes(argv[i + 1]);
+            } else {
+                val = (const char *)sqlite3_value_text(argv[i + 1]);
+                vallen = (int)strlen(val);
+            }
+            memcpy(out + pos, val, vallen);
+            pos += vallen;
+        } else {
+            /* Plain text value — emit as JSON string */
+            const char *val = (const char *)sqlite3_value_text(argv[i + 1]);
+            vallen = (int)strlen(val);
+            out[pos++] = '"';
+            json_escape_to(val, vallen, out, &pos);
+            out[pos++] = '"';
+        }
+    }
+    out[pos++] = '}';
+    out[pos] = '\0';
+    sqlite3_result_blob(ctx, out, pos, sqlite3_free);
+}
+
+// ── sqldeep_json_object / sqldeep_json_array / sqldeep_json ─────────
+//
+// Drop-in replacements for json_object/json_array/json that handle BLOB
+// values from the sqldeep XML/JSONML/JSX ecosystem.  All return BLOBs
+// so structured values survive through views, CTEs, and subqueries.
+//
+// BLOB discrimination (no SQLite subtypes involved):
+//   BLOB starting with '<'  → XML markup, quote as JSON string
+//   BLOB not starting with '<' → JSON, inline raw
+//   TEXT                     → quote as JSON string
+//   INTEGER / FLOAT          → emit as JSON number
+//   NULL                     → emit JSON null
+
+/* Append a sqldeep value to a JSON output buffer. */
+static void json_append_value(sqlite3_value *v, char *out, int *pos) {
+    int t = sqlite3_value_type(v);
+    if (t == SQLITE_NULL) {
+        memcpy(out + *pos, "null", 4); *pos += 4;
+    } else if (t == SQLITE_INTEGER || t == SQLITE_FLOAT) {
+        const char *s = (const char *)sqlite3_value_text(v);
+        int slen = (int)strlen(s);
+        memcpy(out + *pos, s, slen); *pos += slen;
+    } else if (t == SQLITE_BLOB) {
+        int blen = sqlite3_value_bytes(v);
+        const char *b = (const char *)sqlite3_value_blob(v);
+        if (blen > 0 && b[0] == '<') {
+            /* XML BLOB — quote as JSON string */
+            out[(*pos)++] = '"';
+            json_escape_to(b, blen, out, pos);
+            out[(*pos)++] = '"';
+        } else {
+            /* JSON BLOB — inline raw */
+            memcpy(out + *pos, b, blen); *pos += blen;
+        }
+    } else {
+        /* TEXT — quote as JSON string */
+        const char *s = (const char *)sqlite3_value_text(v);
+        int slen = (int)strlen(s);
+        out[(*pos)++] = '"';
+        json_escape_to(s, slen, out, pos);
+        out[(*pos)++] = '"';
+    }
+}
+
+/* Calculate the JSON output length for a value. */
+static int json_value_len(sqlite3_value *v) {
+    int t = sqlite3_value_type(v);
+    if (t == SQLITE_NULL) return 4; /* null */
+    if (t == SQLITE_INTEGER || t == SQLITE_FLOAT)
+        return (int)strlen((const char *)sqlite3_value_text(v));
+    if (t == SQLITE_BLOB) {
+        int blen = sqlite3_value_bytes(v);
+        const char *b = (const char *)sqlite3_value_blob(v);
+        if (blen > 0 && b[0] == '<')
+            return 2 + json_escaped_len(b, blen); /* "..." */
+        return blen; /* raw JSON */
+    }
+    /* TEXT */
+    {
+        const char *s = (const char *)sqlite3_value_text(v);
+        int slen = (int)strlen(s);
+        return 2 + json_escaped_len(s, slen); /* "..." */
+    }
+}
+
+/* sqldeep_json_object(key1, val1, key2, val2, ...) */
+static void sd_json_object(sqlite3_context *ctx, int argc,
+                             sqlite3_value **argv) {
+    if (argc % 2 != 0) {
+        sqlite3_result_error(ctx, "sqldeep_json_object requires even number of args", -1);
+        return;
+    }
+    int len = 2; /* {} */
+    int nfields = 0;
+    for (int i = 0; i < argc; i += 2) {
+        const char *key = (const char *)sqlite3_value_text(argv[i]);
+        int klen = (int)strlen(key);
+        nfields++;
+        len += 2 + json_escaped_len(key, klen); /* "key" */
+        len += 1; /* : */
+        len += json_value_len(argv[i + 1]);
+    }
+    if (nfields > 1) len += nfields - 1; /* commas */
+
+    char *out = (char *)sqlite3_malloc(len + 1);
+    if (!out) { sqlite3_result_error_nomem(ctx); return; }
+    int pos = 0;
+    out[pos++] = '{';
+    for (int i = 0; i < argc; i += 2) {
+        if (i > 0) out[pos++] = ',';
+        const char *key = (const char *)sqlite3_value_text(argv[i]);
+        int klen = (int)strlen(key);
+        out[pos++] = '"';
+        json_escape_to(key, klen, out, &pos);
+        out[pos++] = '"';
+        out[pos++] = ':';
+        json_append_value(argv[i + 1], out, &pos);
+    }
+    out[pos++] = '}';
+    out[pos] = '\0';
+    sqlite3_result_blob(ctx, out, pos, sqlite3_free);
+}
+
+/* sqldeep_json_array(val1, val2, ...) */
+static void sd_json_array(sqlite3_context *ctx, int argc,
+                            sqlite3_value **argv) {
+    int len = 2; /* [] */
+    for (int i = 0; i < argc; ++i)
+        len += json_value_len(argv[i]);
+    if (argc > 1) len += argc - 1; /* commas */
+
+    char *out = (char *)sqlite3_malloc(len + 1);
+    if (!out) { sqlite3_result_error_nomem(ctx); return; }
+    int pos = 0;
+    out[pos++] = '[';
+    for (int i = 0; i < argc; ++i) {
+        if (i > 0) out[pos++] = ',';
+        json_append_value(argv[i], out, &pos);
+    }
+    out[pos++] = ']';
+    out[pos] = '\0';
+    sqlite3_result_blob(ctx, out, pos, sqlite3_free);
+}
+
+/* sqldeep_json_group_array(val) — aggregate */
+/* Collects values into a JSON array, handling BLOBs like sd_json_array. */
+
+static void sd_json_group_array_step(sqlite3_context *ctx, int argc,
+                                      sqlite3_value **argv) {
+    (void)argc;
+    if (sqlite3_value_type(argv[0]) == SQLITE_NULL) return;
+    XmlAggCtx *p = (XmlAggCtx *)sqlite3_aggregate_context(ctx, sizeof(*p));
+    if (!p) return;
+    if (p->len > 0) xml_agg_append(p, ",", 1);
+
+    /* Compute the JSON representation and append it. */
+    int vlen = json_value_len(argv[0]);
+    /* Ensure capacity */
+    if (p->len + vlen >= p->cap) {
+        int newcap = (p->cap + vlen) * 2 + 64;
+        p->buf = (char *)sqlite3_realloc(p->buf, newcap);
+        p->cap = newcap;
+    }
+    json_append_value(argv[0], p->buf, &p->len);
+}
+
+static void sd_json_group_array_final(sqlite3_context *ctx) {
+    XmlAggCtx *p = (XmlAggCtx *)sqlite3_aggregate_context(ctx, 0);
+    if (!p || !p->buf || p->len == 0) {
+        sqlite3_result_blob(ctx, "[]", 2, SQLITE_STATIC);
+        return;
+    }
+    /* Wrap in [ ... ] */
+    int total = 1 + p->len + 1;
+    char *out = (char *)sqlite3_malloc(total + 1);
+    if (!out) {
+        sqlite3_free(p->buf);
+        sqlite3_result_error_nomem(ctx);
+        return;
+    }
+    out[0] = '[';
+    memcpy(out + 1, p->buf, p->len);
+    out[1 + p->len] = ']';
+    out[total] = '\0';
+    sqlite3_free(p->buf);
+    p->buf = NULL;
+    p->len = 0;
+    sqlite3_result_blob(ctx, out, total, sqlite3_free);
+}
+
+/* sqldeep_json(text) — returns text content as a BLOB so it is
+   recognised as structured JSON by other sqldeep functions. */
+static void sd_json(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
+    (void)argc;
+    if (sqlite3_value_type(argv[0]) == SQLITE_NULL) {
+        sqlite3_result_null(ctx);
+        return;
+    }
+    const char *s = (const char *)sqlite3_value_text(argv[0]);
+    int slen = (int)strlen(s);
+    sqlite3_result_blob(ctx, s, slen, SQLITE_TRANSIENT);
+}
+
+// ── Public registration ───────────────────────────────────────────���─
+
+int sqldeep_register_sqlite_xml(sqlite3 *db) {
+    int rc;
+    rc = sqlite3_create_function(db, "xml_element", -1, SQLITE_UTF8,
+                                 0, sd_xml_element, 0, 0);
+    if (rc != SQLITE_OK) return rc;
+    rc = sqlite3_create_function(db, "xml_attrs", -1, SQLITE_UTF8,
+                                 0, sd_xml_attrs, 0, 0);
+    if (rc != SQLITE_OK) return rc;
+    rc = sqlite3_create_function(db, "xml_agg", 1, SQLITE_UTF8,
+                                 0, 0, sd_xml_agg_step, sd_xml_agg_final);
+    if (rc != SQLITE_OK) return rc;
+    /* All functions use pure BLOB protocol — no SQLITE_SUBTYPE needed. */
+    rc = sqlite3_create_function(db, "xml_element_jsonml", -1, SQLITE_UTF8,
+                                 0, sd_xml_element_jsonml, 0, 0);
+    if (rc != SQLITE_OK) return rc;
+    rc = sqlite3_create_function(db, "xml_attrs_jsonml", -1, SQLITE_UTF8,
+                                 0, sd_xml_attrs_jsonml, 0, 0);
+    if (rc != SQLITE_OK) return rc;
+    rc = sqlite3_create_function(db, "jsonml_agg", 1, SQLITE_UTF8,
+                                 0, 0, sd_jsonml_agg_step, sd_jsonml_agg_final);
+    if (rc != SQLITE_OK) return rc;
+    rc = sqlite3_create_function(db, "xml_element_jsx", -1, SQLITE_UTF8,
+                                 0, sd_xml_element_jsonml, 0, 0);
+    if (rc != SQLITE_OK) return rc;
+    rc = sqlite3_create_function(db, "xml_attrs_jsx", -1, SQLITE_UTF8,
+                                 0, sd_xml_attrs_jsx, 0, 0);
+    if (rc != SQLITE_OK) return rc;
+    rc = sqlite3_create_function(db, "jsx_agg", 1, SQLITE_UTF8,
+                                 0, 0, sd_jsonml_agg_step, sd_jsonml_agg_final);
+    if (rc != SQLITE_OK) return rc;
+    /* Custom JSON functions — return BLOBs, handle BLOB values from
+       XML/JSONML/JSX.  No SQLITE_SUBTYPE needed (pure BLOB protocol). */
+    rc = sqlite3_create_function(db, "sqldeep_json", 1, SQLITE_UTF8,
+                                 0, sd_json, 0, 0);
+    if (rc != SQLITE_OK) return rc;
+    rc = sqlite3_create_function(db, "sqldeep_json_object", -1, SQLITE_UTF8,
+                                 0, sd_json_object, 0, 0);
+    if (rc != SQLITE_OK) return rc;
+    rc = sqlite3_create_function(db, "sqldeep_json_array", -1, SQLITE_UTF8,
+                                 0, sd_json_array, 0, 0);
+    if (rc != SQLITE_OK) return rc;
+    rc = sqlite3_create_function(db, "sqldeep_json_group_array", 1,
+                                 SQLITE_UTF8,
+                                 0, 0, sd_json_group_array_step,
+                                 sd_json_group_array_final);
+    return rc;
+}
+} // extern "C"

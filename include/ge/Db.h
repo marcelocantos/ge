@@ -4,82 +4,53 @@
 // Game database interface. The engine provides a Db via Context; the game
 // prepares statements and subscribes to query results without knowing
 // whether the backing store is a local file or a replicated :memory: DB.
+//
+// Thin wrapper around sqlpipe::Database — adds the engine ownership
+// model (Context creates, game consumes) and shared_ptr semantics.
 #pragma once
 
-#include <cstdint>
-#include <functional>
+#include <sqlpipe.h>
+
 #include <memory>
 #include <string>
-#include <string_view>
-#include <variant>
-#include <vector>
 
 struct sqlite3;
 
 namespace ge {
 
-/// Column value — mirrors SQLite's type system.
-using Value = std::variant<
-    std::monostate,             // NULL
-    std::int64_t,               // INTEGER
-    double,                     // REAL
-    std::string,                // TEXT
-    std::vector<std::uint8_t>   // BLOB
->;
+// Re-export sqlpipe types used by the game layer.
+using Value = sqlpipe::Value;
+using QueryResult = sqlpipe::QueryResult;
+using SubscriptionCallback = sqlpipe::SubscriptionCallback;
 
-/// Result set returned by Stmt::query() and delivered to subscriptions.
-struct QueryResult {
-    std::vector<std::string>              columns;
-    std::vector<std::vector<Value>>       rows;
-};
+/// RAII query subscription. Unsubscribes when destroyed.
+using Subscription = sqlpipe::Subscription;
 
-/// RAII query subscription. Unsubscribes when the last copy is destroyed.
-class Subscription {
-public:
-    Subscription() = default;
-
-private:
-    struct M;
-    std::shared_ptr<M> m;
-    friend class Stmt;
-};
-
-/// Prepared statement. exec() runs plain SQL; query() and subscribe()
-/// transform the SQL through sqldeep before execution.
-class Stmt {
-public:
-    /// Execute the statement (plain SQL, no sqldeep transformation).
-    void exec();
-
-    /// Execute the statement as a query (sqldeep-transformed) and return
-    /// the full result set.
-    QueryResult query();
-
-    /// Subscribe to the query (sqldeep-transformed). The callback fires
-    /// whenever the result set changes due to a write on this Db.
-    /// Returns an RAII Subscription whose destructor unsubscribes.
-    Subscription subscribe(std::function<void(const QueryResult&)> callback);
-
-private:
-    struct M;
-    std::shared_ptr<M> m;
-    friend class Db;
-};
-
-/// Game database. Wraps a sqlite3 handle with query subscriptions
-/// (via sqlpipe QueryWatch) and sqldeep query transformation.
-/// Cheaply copyable (shared_ptr internals).
+/// Game database. Wraps sqlpipe::Database with shared_ptr semantics
+/// so it can be cheaply copied into lambdas and shared across systems.
 class Db {
 public:
     Db() = default;
 
-    /// Prepare a statement. The SQL may use sqldeep syntax for query()
-    /// and subscribe(), or plain SQL for exec().
-    Stmt prepare(std::string_view sql);
+    /// Execute DDL/DML SQL (sqldeep-transformed). Fires subscriptions
+    /// if data changes.
+    void exec(const std::string& sql);
+
+    /// Execute a query (sqldeep-transformed) and return the result set.
+    QueryResult query(const std::string& sql) const;
+
+    /// Subscribe to a query (sqldeep-transformed). The callback fires
+    /// whenever the result set changes. Fires once immediately with
+    /// the initial result. Returns an RAII Subscription.
+    Subscription subscribe(const std::string& sql, SubscriptionCallback cb);
+
+    /// Fire subscriptions after external writes (e.g. sqlpipe replication).
+    void notify();
+    void notify(const std::set<std::string>& affected_tables);
 
     /// Raw handle — temporary bridge for legacy code (GameDb) that uses
     /// sqlite3 prepared statements directly. Will be removed once all
-    /// game queries migrate to Stmt.
+    /// game queries migrate to exec/query/subscribe.
     sqlite3* handle() const;
 
     /// True if this Db wraps a live database.
@@ -89,11 +60,9 @@ private:
     struct M;
     std::shared_ptr<M> m;
 
-    // Engine constructs Db with a raw handle.
-    explicit Db(sqlite3* handle);
+    // Engine constructs Db with a path (":memory:" or file path).
+    explicit Db(const std::string& path);
     friend class Context;
-    friend class Stmt;
-    friend class Subscription;
 };
 
 } // namespace ge
