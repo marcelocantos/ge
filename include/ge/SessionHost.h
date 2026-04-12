@@ -48,6 +48,10 @@ struct RunConfig {
     std::function<void(int w, int h)> onRender;
     std::function<void(const SDL_Event&)> onEvent;
     std::function<void()> onShutdown;
+
+    // Session requirements — sent to the player after setup.
+    uint8_t sensors = 0;      // Bitmask: wire::kSensorAccelerometer
+    uint8_t orientation = 0;  // SDL_ORIENTATION_* to lock, 0 = no lock
 };
 
 // Configuration for the session host.

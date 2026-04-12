@@ -266,6 +266,22 @@ void run(Factory factory, const SessionHostConfig& config) {
                     sess->ready = true;
                     SPDLOG_INFO("Session '{}': ready ({}x{})", id, w, h);
 
+                    // Send SessionConfig if the game declared requirements.
+                    if (sess->config.sensors || sess->config.orientation) {
+                        wire::MessageHeader cfgHdr{};
+                        cfgHdr.magic = wire::kSessionConfigMagic;
+                        cfgHdr.length = sizeof(wire::SessionConfig);
+                        wire::SessionConfig cfg{};
+                        cfg.sensors = sess->config.sensors;
+                        cfg.orientation = sess->config.orientation;
+                        std::vector<uint8_t> cfgMsg(sizeof(cfgHdr) + sizeof(cfg));
+                        std::memcpy(cfgMsg.data(), &cfgHdr, sizeof(cfgHdr));
+                        std::memcpy(cfgMsg.data() + sizeof(cfgHdr), &cfg, sizeof(cfg));
+                        wirePtr->sendBinary(cfgMsg.data(), cfgMsg.size());
+                        SPDLOG_INFO("Session '{}': sent SessionConfig (sensors=0x{:x}, orientation={})",
+                                    id, cfg.sensors, cfg.orientation);
+                    }
+
                 } else if (magic == wire::kSdlEventMagic && sess->ready &&
                            data.size() >= sizeof(wire::MessageHeader) + sizeof(SDL_Event)) {
                     SDL_Event ev;

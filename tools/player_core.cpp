@@ -79,10 +79,12 @@ int playerCore(const std::string& host, int port) {
 
     SPDLOG_INFO("PLAYER sizeof(SDL_Event)={}", sizeof(SDL_Event));
 
-    if (!SDL_Init(SDL_INIT_VIDEO)) {
+    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_SENSOR)) {
         SPDLOG_ERROR("SDL_Init failed: {}", SDL_GetError());
         return 1;
     }
+
+    // Accelerometer opened on demand when SessionConfig arrives from server.
 
     // Window starts at a reasonable logical size; the server renders at
     // the actual pixel dimensions (accounting for Retina/HiDPI scaling).
@@ -212,6 +214,45 @@ int playerCore(const std::string& host, int port) {
         }
     };
 
+    SDL_Sensor* accelSensor = nullptr;  // opened on SessionConfig
+
+    // Handle SessionConfig from server: open sensors, lock orientation.
+    auto applySessionConfig = [&](const wire::SessionConfig& cfg) {
+        if ((cfg.sensors & wire::kSensorAccelerometer) && !accelSensor) {
+            int count = 0;
+            SDL_SensorID* sensors = SDL_GetSensors(&count);
+            if (sensors) {
+                for (int i = 0; i < count; i++) {
+                    if (SDL_GetSensorTypeForID(sensors[i]) == SDL_SENSOR_ACCEL) {
+                        accelSensor = SDL_OpenSensor(sensors[i]);
+                        if (accelSensor) {
+                            SPDLOG_INFO("Opened accelerometer (server requested)");
+                        }
+                        break;
+                    }
+                }
+                SDL_free(sensors);
+            }
+        }
+        if (cfg.orientation != 0 && window) {
+            SDL_SetWindowFullscreenMode(window, nullptr);
+            // Orientation hint: "LandscapeLeft", "Portrait", etc.
+            // SDL_ORIENTATION values: 1=landscape, 2=landscape_flipped,
+            // 3=portrait, 4=portrait_flipped
+            const char* hint = nullptr;
+            switch (cfg.orientation) {
+            case 1: hint = "LandscapeLeft"; break;
+            case 2: hint = "LandscapeRight"; break;
+            case 3: hint = "Portrait"; break;
+            case 4: hint = "PortraitUpsideDown"; break;
+            }
+            if (hint) {
+                SDL_SetHint(SDL_HINT_ORIENTATIONS, hint);
+                SPDLOG_INFO("Orientation locked to {} (server requested)", hint);
+            }
+        }
+    };
+
     uint64_t frameCount = 0;
     bool running = true;
 
@@ -247,6 +288,11 @@ int playerCore(const std::string& host, int port) {
             case SDL_EVENT_FINGER_DOWN:
             case SDL_EVENT_FINGER_UP:
                 mapEvent(e);
+                sendEvent(e);
+                break;
+            case SDL_EVENT_KEY_DOWN:
+            case SDL_EVENT_KEY_UP:
+            case SDL_EVENT_SENSOR_UPDATE:
                 sendEvent(e);
                 break;
             }
@@ -296,6 +342,11 @@ int playerCore(const std::string& host, int port) {
                 if (frameCount % 300 == 0) {
                     SPDLOG_INFO("Decoded {} frames", frameCount);
                 }
+            } else if (magic == wire::kSessionConfigMagic &&
+                       data.size() >= sizeof(wire::MessageHeader) + sizeof(wire::SessionConfig)) {
+                wire::SessionConfig cfg;
+                std::memcpy(&cfg, data.data() + sizeof(wire::MessageHeader), sizeof(cfg));
+                applySessionConfig(cfg);
             } else if (magic == wire::kServerAssignedMagic) {
                 SPDLOG_INFO("Server assigned");
             } else if (magic == wire::kSessionEndMagic) {

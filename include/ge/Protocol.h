@@ -26,6 +26,7 @@ constexpr uint32_t kStreamStartMagic    = 0x47453257;  // "GE2W" — ged → pla
 constexpr uint32_t kStreamStopMagic     = 0x47453258;  // "GE2X" — ged → player: stop streaming
 constexpr uint32_t kSafeAreaMagic       = 0x47453245;  // "GE2E" — player → server: safe area update
 constexpr uint32_t kAspectLockMagic     = 0x47453260;  // "GE2`" — server → player: lock aspect ratio
+constexpr uint32_t kSessionConfigMagic  = 0x47453243;  // "GE2C" — server → player: session requirements
 
 constexpr uint16_t kProtocolVersion = 6;  // Dawn wire removed
 constexpr size_t   kMaxMessageSize = 512 * 1024 * 1024;  // 512MB (matches ged/bridge.go)
@@ -59,6 +60,17 @@ struct AspectLock {
     uint32_t magic = kAspectLockMagic;
     float ratio;  // width/height (e.g. 0.6948 for 954:1373), 0 = unlock
 };
+
+// Server → player: session requirements (sensors, orientation).
+// Sent once after session setup; player applies immediately.
+struct SessionConfig {
+    uint32_t magic = kSessionConfigMagic;
+    uint8_t  sensors;       // Bitmask: 1 = accelerometer
+    uint8_t  orientation;   // SDL_ORIENTATION_* value to lock, 0 = no lock
+    uint8_t  _pad[2] = {};
+};
+
+constexpr uint8_t kSensorAccelerometer = 1;
 
 // Header for binary wire messages.
 struct MessageHeader {
