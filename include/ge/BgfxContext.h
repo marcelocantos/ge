@@ -1,13 +1,9 @@
 // Copyright 2026 Marcelo Cantos
 // SPDX-License-Identifier: Apache-2.0
 //
-// Owns bgfx init/shutdown and the underlying native surface. In
-// headless mode, provides frame capture via an offscreen bgfx
-// framebuffer + async readback texture.
+// Owns bgfx init/shutdown and the underlying native surface.
 #pragma once
 
-#include <cstdint>
-#include <cstddef>
 #include <memory>
 
 struct SDL_Window;
@@ -29,11 +25,6 @@ public:
     int height() const;
     bool shouldQuit() const;
     SDL_Window* window() const;
-
-    bool isCaptureEnabled() const;
-    uint16_t captureFrameBuffer() const;
-    void submitCaptureBlit();
-    bool readCapturedFrame(uint32_t currentFrame, uint8_t* dst, size_t dstSize);
 
 private:
     struct M;
