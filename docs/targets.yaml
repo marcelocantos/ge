@@ -1,0 +1,121 @@
+schema_version: 1
+targets:
+  T1:
+    name: Game servers can run inside the player via WebAssembly
+    kind: work
+    status: identified
+    value: 3.0
+    cost: 8.0
+    acceptance:
+    - A ge game server (C++ app using the ge API) can be compiled to WebAssembly and loaded directly into
+      the player process. In this mode, the server's Dawn wire commands are routed in-process rather than
+      over TCP, eliminating network latency and the need for a separate server process in single-player
+      scenarios.
+    context: "The current architecture requires three processes (ged, game server, player) connected via\
+      \ TCP/WebSocket. This is ideal for multi-player and remote rendering, but adds unnecessary complexity\
+      \ for single-player use on a single device. If the game server can be compiled to Wasm and embedded\
+      \ in the player, a single app binary can run the full experience — particularly valuable for mobile\
+      \ deployment where running a background TCP server is impractical or forbidden.\n\nKey considerations:\n\
+      - ge already has `SessionDirect.cpp` for in-process rendering (no wire).\n  Wasm deployment is a\
+      \ middle ground: the server runs in-process but\n  still uses the wire protocol (since the server\
+      \ targets the Dawn wire\n  client, not native Dawn).\n- The in-process wire transport (`WireTransport.cpp`)\
+      \ already exists\n  for testing — could serve as the Wasm transport layer.\n- Emscripten (`emcc`)\
+      \ is available for C++ → Wasm compilation.\n- Platform-specific code in game servers (file I/O,\
+      \ threading) would\n  need Wasm-compatible alternatives or abstractions.\n- Asset loading strategy:\
+      \ bundle in Wasm module vs fetch from network.\n- Threading model: Wasm threads (SharedArrayBuffer)\
+      \ vs single-threaded\n  event loop."
+    origin: migrated from docs/targets.md
+    discovered: '2026-04-12'
+  T2:
+    name: Smoke test validates network connectivity between laptop and device
+    kind: work
+    status: identified
+    value: 1.0
+    cost: 2.0
+    acceptance:
+    - '`smoke-test.sh` detects when the device cannot reach ged over the network, before any player launch
+      or code debugging begins. Reports the specific failure (no WiFi IP, firewall blocking, device unreachable,
+      or device→laptop path broken) with actionable remediation.'
+    context: 'Lost 2+ hours debugging code when the actual problem was laptop WiFi silently stopped accepting
+      incoming connections. All local checks passed (ged listening, device registered via USB). The device→laptop
+      network path was broken but nothing detected it. Need two layers: local network sanity checks (WiFi
+      IP, firewall, ping device) and a `ge-probe` iOS app for definitive device→laptop HTTP connectivity
+      testing.'
+    origin: discovered while using smoke-test.sh during yourworld 🎯T8 debugging
+    discovered: '2026-04-12'
+  T3:
+    name: Player sends mip cache manifest before rendering begins
+    kind: work
+    status: identified
+    value: 8.0
+    cost: 5.0
+    acceptance:
+    - On connect, player sends all cached mip hash values to the server (via ge) before the first wire
+      command. Server skips texture upload commands for any mip already cached on the device. Rendering
+      pipeline is only mutated for uncached textures. Reconnection with a fully-cached device produces
+      no texture upload wire commands.
+    context: Currently the server sends all texture data and the player reactively checks its local mip
+      cache (hit/miss). This still mutates the rendering pipeline with large WriteTexture commands even
+      when the player already has the data. For ~270MB of initial textures, this dominates reconnection
+      time. A preemptive cache manifest exchange would let the server skip cached uploads entirely.
+    origin: migrated from docs/targets.md
+    discovered: '2026-04-12'
+  T4:
+    name: playerLoop takes a config struct with named fields
+    kind: work
+    status: identified
+    value: 3.0
+    cost: 2.0
+    acceptance:
+    - '`playerLoop()` accepts a single `PlayerLoopConfig` struct (or similar) instead of positional parameters.
+      Call sites use designated initializers (`.checkOverride = ...`, `.discover = ...`, `.name = ...`).
+      The `Player` constructor may also be refactored to a config struct if touched.'
+    context: '`playerLoop` accumulated parameters across iterations (discover → checkOverride + discover
+      + name). Positional args are opaque at call sites. Named fields via a config struct make the API
+      self-documenting and easier to extend.'
+    origin: migrated from docs/targets.md
+    discovered: '2026-04-12'
+  T5:
+    name: Player has a connection management screen
+    kind: work
+    status: identified
+    value: 3.0
+    cost: 3.0
+    acceptance:
+    - Player has a gesture-accessible screen to scan a new QR code, manually enter a server address, or
+      forget the saved address. Accessible from the connected state (not just on startup).
+    context: The persistence mechanism works (player remembers server address), but there's no UI for
+      the user to manage saved connections.
+    origin: migrated from docs/targets.md
+    discovered: '2026-04-12'
+  T6:
+    name: Player can switch between active servers without QR
+    kind: work
+    status: identified
+    value: 2.0
+    cost: 2.0
+    acceptance:
+    - Dashboard has a "move player to server" control. Player switches seamlessly via `kServerAssignedMagic`.
+      No disconnect/reconnect visible to user.
+    context: With persistent address, player auto-connects to saved server. If two servers are on the
+      same network, player has no reason to fall back to QR. Dashboard is the natural control plane.
+    origin: migrated from docs/targets.md
+    discovered: '2026-04-12'
+  T7:
+    name: Audio pauses when the app is backgrounded
+    kind: work
+    status: identified
+    value: 5.0
+    cost: 2.0
+    acceptance:
+    - On iOS and Android, backgrounding the app silences all ge audio. Foregrounding resumes it. Works
+      in both wire mode (player) and direct mode (standalone app). No game code changes required. Desktop
+      platforms are unaffected.
+    context: User reported music keeps playing when the iOS app is backgrounded. Currently `ge::Audio`
+      (server-side) sends play/stop/volume commands, and `AudioPlayer` (player-side, wire mode) or equivalent
+      direct-mode playback handles them. Neither layer responds to app lifecycle events. The engine should
+      intercept `SDL_EVENT_DID_ENTER_BACKGROUND` / `SDL_EVENT_DID_ENTER_FOREGROUND` and pause/resume audio
+      automatically. In wire mode this means the player pauses its `AudioPlayer`; in direct mode the session
+      or audio subsystem does it directly.
+    origin: manual (user-reported from yourworld)
+    discovered: '2026-04-12'
