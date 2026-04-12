@@ -182,10 +182,10 @@ void run(Factory factory, const SessionHostConfig& config) {
                         continue;
                     }
 
-                    // Send SessionConfig immediately on the wire so the
-                    // player can apply orientation/sensor hints BEFORE
-                    // creating its window and sending DeviceInfo.
-                    if (config.sensors || config.orientation) {
+                    // Always send SessionConfig on the wire so the player
+                    // can apply orientation/sensor hints BEFORE creating
+                    // its window. The player blocks on this message.
+                    {
                         wire::MessageHeader cfgHdr{};
                         cfgHdr.magic = wire::kSessionConfigMagic;
                         cfgHdr.length = sizeof(wire::SessionConfig);

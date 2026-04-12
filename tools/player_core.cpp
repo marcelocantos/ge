@@ -78,12 +78,14 @@ int playerCore(const std::string& host, int port) {
     SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "0");
     SDL_SetHint(SDL_HINT_MOUSE_TOUCH_EVENTS, "0");
 
-    SPDLOG_INFO("PLAYER sizeof(SDL_Event)={}", sizeof(SDL_Event));
+    fprintf(stderr, "MM2: player_core entry (pre-init)\n");
+    SDL_Log("MM2: player_core entry");
 
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_SENSOR)) {
         SPDLOG_ERROR("SDL_Init failed: {}", SDL_GetError());
         return 1;
     }
+    SDL_Log("MM2: SDL_Init OK");
 
     // ── Connect to ged BEFORE creating the window ──────────────────────
     // This lets us receive SessionConfig (orientation lock, sensor needs)
@@ -120,18 +122,19 @@ int playerCore(const std::string& host, int port) {
         SPDLOG_INFO("DeviceInfo sent ({}x{} @{}x)", w, h, pr);
     }
 
-    // Read messages until we get SessionConfig or a non-housekeeping message.
-    // ged sends ServerAssigned when the player connects; the server sends
-    // SessionConfig after receiving player_attached on the sideband (before
-    // DeviceInfo, which travels on the wire). This blocks until the server
-    // is ready, which is fine — we can't show anything yet anyway.
+    // Wait for SessionConfig — the server's signal that it's ready.
+    SDL_Log("MM2: waiting for SessionConfig...");
     SDL_Sensor* accelSensor = nullptr;
     uint8_t requestedOrientation = 0;
     while (conn->isOpen()) {
         std::vector<char> msg;
-        if (!conn->recvBinary(msg) || msg.size() < 8) break;
+        if (!conn->recvBinary(msg) || msg.size() < 8) {
+            SDL_Log("MM2: recvBinary failed or short (%zu bytes)", msg.size());
+            break;
+        }
         uint32_t magic = 0;
         std::memcpy(&magic, msg.data(), 4);
+        SDL_Log("MM2: pre-window msg: magic=0x%08x size=%zu", magic, msg.size());
 
         if (magic == wire::kSessionConfigMagic &&
             msg.size() >= sizeof(wire::MessageHeader) + sizeof(wire::SessionConfig)) {
@@ -163,25 +166,19 @@ int playerCore(const std::string& host, int port) {
                 }
                 if (hint) {
                     SDL_SetHint(SDL_HINT_ORIENTATIONS, hint);
-                    SPDLOG_INFO("Orientation locked to {} (server requested)", hint);
+                    SDL_Log("MM2: orientation hint set to: %s", hint);
                 }
             }
             break;
         }
-        if (magic == wire::kServerAssignedMagic ||
-            magic == wire::kStreamStartMagic) {
-            SPDLOG_INFO("Pre-window: skipping message 0x{:08x}", magic);
-            continue;  // ged housekeeping — keep waiting for SessionConfig
-        }
-        // Got a video frame or unknown message — server didn't send config.
-        break;
+        // ged housekeeping (ServerAssigned, etc.) — skip and keep waiting.
+        continue;
     }
 
     // ── Create window (orientation hint already applied) ───────────────
 
     const char* appliedHint = SDL_GetHint(SDL_HINT_ORIENTATIONS);
-    SPDLOG_INFO("Creating window (SDL_HINT_ORIENTATIONS={})",
-                appliedHint ? appliedHint : "(null)");
+    SDL_Log("MM2: creating window (SDL_HINT_ORIENTATIONS=%s)", appliedHint ? appliedHint : "(null)");
 
     SDL_Window* window = SDL_CreateWindow(
         "GE Player", 820, 1180,
