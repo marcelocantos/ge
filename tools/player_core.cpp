@@ -84,15 +84,105 @@ int playerCore(const std::string& host, int port) {
         return 1;
     }
 
-    // Accelerometer opened on demand when SessionConfig arrives from server.
+    // ── Connect to ged BEFORE creating the window ──────────────────────
+    // This lets us receive SessionConfig (orientation lock, sensor needs)
+    // and apply hints before SDL_CreateWindow, where Android reads them.
 
-    // Window starts at a reasonable logical size; the server renders at
-    // the actual pixel dimensions (accounting for Retina/HiDPI scaling).
+    std::string path = "/ws/wire?name=yourworld";
+    auto conn = ge::connectWebSocket(host, port, path, 2000);
+    if (!conn || !conn->isOpen()) {
+        SPDLOG_ERROR("Failed to connect to ged");
+        SDL_Quit();
+        return 1;
+    }
+    SPDLOG_INFO("Connected to ged");
+
+    // Get screen dimensions from the primary display (no window needed).
+    const SDL_DisplayMode* dm = SDL_GetCurrentDisplayMode(SDL_GetPrimaryDisplay());
+    int pixW = dm ? dm->w : 1080;
+    int pixH = dm ? dm->h : 2400;
+    int pixelRatio = (dm && dm->pixel_density > 0) ? int(dm->pixel_density) : 1;
+
+    // Send DeviceInfo so the server can set up and reply with SessionConfig.
+    {
+        wire::MessageHeader hdr{};
+        hdr.magic = wire::kDeviceInfoMagic;
+        hdr.length = sizeof(wire::DeviceInfo);
+        wire::DeviceInfo devInfo{};
+        devInfo.width = pixW;
+        devInfo.height = pixH;
+        devInfo.pixelRatio = pixelRatio;
+        devInfo.deviceClass = 3; // desktop
+        std::vector<uint8_t> msg(sizeof(hdr) + sizeof(devInfo));
+        std::memcpy(msg.data(), &hdr, sizeof(hdr));
+        std::memcpy(msg.data() + sizeof(hdr), &devInfo, sizeof(devInfo));
+        conn->sendBinary(msg.data(), msg.size());
+        SPDLOG_INFO("DeviceInfo sent ({}x{} @{}x)", pixW, pixH, pixelRatio);
+    }
+
+    // Read messages until we get SessionConfig or a video frame. ged sends
+    // ServerAssigned first (from the broker), then the wire is established
+    // and the server sends SessionConfig. We need to drain the ged messages
+    // to reach it. This blocks until the server is ready, which is fine —
+    // we can't show anything until we have the session config anyway.
+    SDL_Sensor* accelSensor = nullptr;
+    while (conn->isOpen()) {
+        std::vector<char> msg;
+        if (!conn->recvBinary(msg) || msg.size() < 8) break;
+        uint32_t magic = 0;
+        std::memcpy(&magic, msg.data(), 4);
+
+        if (magic == wire::kSessionConfigMagic &&
+            msg.size() >= sizeof(wire::MessageHeader) + sizeof(wire::SessionConfig)) {
+            wire::SessionConfig cfg;
+            std::memcpy(&cfg, msg.data() + sizeof(wire::MessageHeader), sizeof(cfg));
+
+            if (cfg.sensors & wire::kSensorAccelerometer) {
+                int count = 0;
+                SDL_SensorID* sensors = SDL_GetSensors(&count);
+                if (sensors) {
+                    for (int i = 0; i < count; i++) {
+                        if (SDL_GetSensorTypeForID(sensors[i]) == SDL_SENSOR_ACCEL) {
+                            accelSensor = SDL_OpenSensor(sensors[i]);
+                            if (accelSensor) SPDLOG_INFO("Opened accelerometer (server requested)");
+                            break;
+                        }
+                    }
+                    SDL_free(sensors);
+                }
+            }
+            if (cfg.orientation != 0) {
+                const char* hint = nullptr;
+                switch (cfg.orientation) {
+                case 1: hint = "LandscapeLeft"; break;
+                case 2: hint = "LandscapeRight"; break;
+                case 3: hint = "Portrait"; break;
+                case 4: hint = "PortraitUpsideDown"; break;
+                }
+                if (hint) {
+                    SDL_SetHint(SDL_HINT_ORIENTATIONS, hint);
+                    SPDLOG_INFO("Orientation locked to {} (server requested)", hint);
+                }
+            }
+            break;
+        }
+        if (magic == wire::kServerAssignedMagic ||
+            magic == wire::kStreamStartMagic) {
+            SPDLOG_INFO("Pre-window: skipping message 0x{:08x}", magic);
+            continue;  // ged housekeeping — keep waiting for SessionConfig
+        }
+        // Got a video frame or unknown message — server didn't send config.
+        break;
+    }
+
+    // ── Create window (orientation hint already applied) ───────────────
+
     SDL_Window* window = SDL_CreateWindow(
         "GE Player", 820, 1180,
         SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
     if (!window) {
         SPDLOG_ERROR("SDL_CreateWindow failed: {}", SDL_GetError());
+        SDL_Quit();
         return 1;
     }
 
@@ -125,45 +215,6 @@ int playerCore(const std::string& host, int port) {
     });
 
     AVCCParser avccParser;
-
-    // Connect to ged as a player
-    std::string path = "/ws/wire?name=yourworld";
-    auto conn = ge::connectWebSocket(host, port, path, 2000);
-    if (!conn || !conn->isOpen()) {
-        SPDLOG_ERROR("Failed to connect to ged");
-        SDL_DestroyRenderer(renderer);
-        SDL_DestroyWindow(window);
-        SDL_Quit();
-        return 1;
-    }
-    SPDLOG_INFO("Connected to ged");
-
-    // Query actual pixel dimensions (Retina/HiDPI-aware).
-    int pixW, pixH;
-    SDL_GetWindowSizeInPixels(window, &pixW, &pixH);
-    int logW, logH;
-    SDL_GetWindowSize(window, &logW, &logH);
-    int pixelRatio = (logW > 0) ? (pixW / logW) : 1;
-
-    // Send DeviceInfo: [MessageHeader][DeviceInfo struct]
-    // ged expects this exact layout as the first binary frame.
-    wire::MessageHeader hdr{};
-    hdr.magic = wire::kDeviceInfoMagic;
-    hdr.length = sizeof(wire::DeviceInfo);
-    wire::DeviceInfo devInfo{};
-    devInfo.width = pixW;
-    devInfo.height = pixH;
-    devInfo.pixelRatio = pixelRatio;
-    devInfo.deviceClass = 3; // desktop
-
-    std::vector<uint8_t> devInfoMsg(sizeof(hdr) + sizeof(devInfo));
-    std::memcpy(devInfoMsg.data(), &hdr, sizeof(hdr));
-    std::memcpy(devInfoMsg.data() + sizeof(hdr), &devInfo, sizeof(devInfo));
-    conn->sendBinary(devInfoMsg.data(), devInfoMsg.size());
-    SPDLOG_INFO("DeviceInfo sent ({}x{} @{}x)", pixW, pixH, pixelRatio);
-
-    // No send/recv timeouts — the ping-safe recvFrame fix prevents
-    // blocking, and event coalescing limits send volume.
 
     // Helper to send an SDL event to the server via ged
     auto sendEvent = [&](const SDL_Event& e) {
@@ -211,45 +262,6 @@ int playerCore(const std::string& host, int port) {
             float py = e.tfinger.y * wh;
             e.tfinger.x = (px - offsetX) / scale;
             e.tfinger.y = (py - offsetY) / scale;
-        }
-    };
-
-    SDL_Sensor* accelSensor = nullptr;  // opened on SessionConfig
-
-    // Handle SessionConfig from server: open sensors, lock orientation.
-    auto applySessionConfig = [&](const wire::SessionConfig& cfg) {
-        if ((cfg.sensors & wire::kSensorAccelerometer) && !accelSensor) {
-            int count = 0;
-            SDL_SensorID* sensors = SDL_GetSensors(&count);
-            if (sensors) {
-                for (int i = 0; i < count; i++) {
-                    if (SDL_GetSensorTypeForID(sensors[i]) == SDL_SENSOR_ACCEL) {
-                        accelSensor = SDL_OpenSensor(sensors[i]);
-                        if (accelSensor) {
-                            SPDLOG_INFO("Opened accelerometer (server requested)");
-                        }
-                        break;
-                    }
-                }
-                SDL_free(sensors);
-            }
-        }
-        if (cfg.orientation != 0 && window) {
-            SDL_SetWindowFullscreenMode(window, nullptr);
-            // Orientation hint: "LandscapeLeft", "Portrait", etc.
-            // SDL_ORIENTATION values: 1=landscape, 2=landscape_flipped,
-            // 3=portrait, 4=portrait_flipped
-            const char* hint = nullptr;
-            switch (cfg.orientation) {
-            case 1: hint = "LandscapeLeft"; break;
-            case 2: hint = "LandscapeRight"; break;
-            case 3: hint = "Portrait"; break;
-            case 4: hint = "PortraitUpsideDown"; break;
-            }
-            if (hint) {
-                SDL_SetHint(SDL_HINT_ORIENTATIONS, hint);
-                SPDLOG_INFO("Orientation locked to {} (server requested)", hint);
-            }
         }
     };
 
@@ -342,11 +354,8 @@ int playerCore(const std::string& host, int port) {
                 if (frameCount % 300 == 0) {
                     SPDLOG_INFO("Decoded {} frames", frameCount);
                 }
-            } else if (magic == wire::kSessionConfigMagic &&
-                       data.size() >= sizeof(wire::MessageHeader) + sizeof(wire::SessionConfig)) {
-                wire::SessionConfig cfg;
-                std::memcpy(&cfg, data.data() + sizeof(wire::MessageHeader), sizeof(cfg));
-                applySessionConfig(cfg);
+            } else if (magic == wire::kSessionConfigMagic) {
+                // Already handled during pre-window setup; ignore late arrivals.
             } else if (magic == wire::kServerAssignedMagic) {
                 SPDLOG_INFO("Server assigned");
             } else if (magic == wire::kSessionEndMagic) {
