@@ -1,25 +1,34 @@
-# TODO: Port from Dawn to bgfx. Currently broken — see T53.
 cmake_minimum_required(VERSION 3.22)
 project(GeRemote LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 23)
 
 set(GE_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../../../../../..)
 
-# SDL3 — built from source as part of this build
+# SDL3 — built from source as part of the Gradle build
 add_subdirectory(
     ${GE_ROOT}/vendor/github.com/libsdl-org/SDL
     ${CMAKE_CURRENT_BINARY_DIR}/SDL3
 )
 
-# Sources — Android entry point + wire transport + QR + sqlite3/sqlpipe
-# NOTE: player_core.cpp and player_platform_android.cpp removed (deleted; need bgfx port)
+# Sources — Android entry point + shared H.264 player core + support
 add_library(main SHARED
     ${CMAKE_CURRENT_SOURCE_DIR}/main.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/QRScanner_android.cpp
+    ${GE_ROOT}/tools/player_core.cpp
     ${GE_ROOT}/tools/AudioPlayer.cpp
     ${GE_ROOT}/src/WebSocketClient.cpp
+    ${GE_ROOT}/src/VideoDecoder_android.cpp
+    ${GE_ROOT}/src/Signal.cpp
+    ${GE_ROOT}/src/Resource.cpp
+    ${GE_ROOT}/src/FileIO.cpp
     ${GE_ROOT}/vendor/src/sqlite3.c
     ${GE_ROOT}/vendor/src/sqlpipe.cpp
+    ${GE_ROOT}/vendor/src/lz4.c
+    ${GE_ROOT}/vendor/github.com/sqliteai/liteparser/src/arena.c
+    ${GE_ROOT}/vendor/github.com/sqliteai/liteparser/src/liteparser.c
+    ${GE_ROOT}/vendor/github.com/sqliteai/liteparser/src/lp_tokenize.c
+    ${GE_ROOT}/vendor/github.com/sqliteai/liteparser/src/lp_unparse.c
+    ${GE_ROOT}/vendor/github.com/sqliteai/liteparser/src/parse.c
 )
 
 target_compile_definitions(main PRIVATE
@@ -34,12 +43,15 @@ target_include_directories(main PRIVATE
     ${GE_ROOT}/vendor/include
     ${GE_ROOT}/vendor/github.com/gabime/spdlog/include
     ${GE_ROOT}/vendor/github.com/chriskohlhoff/asio/include
+    ${GE_ROOT}/vendor/github.com/libsdl-org/SDL/include
+    ${GE_ROOT}/vendor/github.com/sqliteai/liteparser/src
     ${GE_ROOT}/tools
 )
 
-# SDL3 + Android system libs
+# SDL3 + Android system libs + MediaCodec
 target_link_libraries(main PRIVATE
     SDL3::SDL3
     android
     log
+    mediandk
 )
