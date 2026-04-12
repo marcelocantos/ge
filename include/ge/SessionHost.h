@@ -48,10 +48,6 @@ struct RunConfig {
     std::function<void(int w, int h)> onRender;
     std::function<void(const SDL_Event&)> onEvent;
     std::function<void()> onShutdown;
-
-    // Session requirements — sent to the player after setup.
-    uint8_t sensors = 0;      // Bitmask: wire::kSensorAccelerometer
-    uint8_t orientation = 0;  // SDL_ORIENTATION_* to lock, 0 = no lock
 };
 
 // Configuration for the session host.
@@ -68,6 +64,12 @@ struct SessionHostConfig {
     // the player and synced via sqlpipe.
     const char* orgName = nullptr;
     const char* appName = nullptr;
+
+    // Session requirements — sent to the player on attachment, BEFORE
+    // DeviceInfo, so the player can apply orientation/sensor hints before
+    // creating its window. Game-wide, not per-session.
+    uint8_t sensors = 0;      // Bitmask: wire::kSensorAccelerometer
+    uint8_t orientation = 0;  // wire::kOrientation* value, 0 = no lock
 };
 
 // Factory receives platform context and returns render loop callbacks.

@@ -5,6 +5,7 @@
 // VideoToolbox, and renders to an SDL3 window.
 
 #include "player_core.h"
+#include "player_orientation.h"
 
 #include <SDL3/SDL.h>
 #include <spdlog/spdlog.h>
@@ -97,35 +98,35 @@ int playerCore(const std::string& host, int port) {
     }
     SPDLOG_INFO("Connected to ged");
 
-    // Get screen dimensions from the primary display (no window needed).
-    const SDL_DisplayMode* dm = SDL_GetCurrentDisplayMode(SDL_GetPrimaryDisplay());
-    int pixW = dm ? dm->w : 1080;
-    int pixH = dm ? dm->h : 2400;
-    int pixelRatio = (dm && dm->pixel_density > 0) ? int(dm->pixel_density) : 1;
-
-    // Send DeviceInfo so the server can set up and reply with SessionConfig.
+    // Send DeviceInfo with display dimensions. ged needs this to bridge
+    // the player to the server wire.
     {
+        const SDL_DisplayMode* dm = SDL_GetCurrentDisplayMode(SDL_GetPrimaryDisplay());
+        int w = dm ? dm->w : 1080;
+        int h = dm ? dm->h : 2400;
+        int pr = (dm && dm->pixel_density > 0) ? int(dm->pixel_density) : 1;
         wire::MessageHeader hdr{};
         hdr.magic = wire::kDeviceInfoMagic;
         hdr.length = sizeof(wire::DeviceInfo);
         wire::DeviceInfo devInfo{};
-        devInfo.width = pixW;
-        devInfo.height = pixH;
-        devInfo.pixelRatio = pixelRatio;
-        devInfo.deviceClass = 3; // desktop
+        devInfo.width = w;
+        devInfo.height = h;
+        devInfo.pixelRatio = pr;
+        devInfo.deviceClass = 3;
         std::vector<uint8_t> msg(sizeof(hdr) + sizeof(devInfo));
         std::memcpy(msg.data(), &hdr, sizeof(hdr));
         std::memcpy(msg.data() + sizeof(hdr), &devInfo, sizeof(devInfo));
         conn->sendBinary(msg.data(), msg.size());
-        SPDLOG_INFO("DeviceInfo sent ({}x{} @{}x)", pixW, pixH, pixelRatio);
+        SPDLOG_INFO("DeviceInfo sent ({}x{} @{}x)", w, h, pr);
     }
 
-    // Read messages until we get SessionConfig or a video frame. ged sends
-    // ServerAssigned first (from the broker), then the wire is established
-    // and the server sends SessionConfig. We need to drain the ged messages
-    // to reach it. This blocks until the server is ready, which is fine —
-    // we can't show anything until we have the session config anyway.
+    // Read messages until we get SessionConfig or a non-housekeeping message.
+    // ged sends ServerAssigned when the player connects; the server sends
+    // SessionConfig after receiving player_attached on the sideband (before
+    // DeviceInfo, which travels on the wire). This blocks until the server
+    // is ready, which is fine — we can't show anything yet anyway.
     SDL_Sensor* accelSensor = nullptr;
+    uint8_t requestedOrientation = 0;
     while (conn->isOpen()) {
         std::vector<char> msg;
         if (!conn->recvBinary(msg) || msg.size() < 8) break;
@@ -152,12 +153,13 @@ int playerCore(const std::string& host, int port) {
                 }
             }
             if (cfg.orientation != 0) {
+                requestedOrientation = cfg.orientation;
                 const char* hint = nullptr;
                 switch (cfg.orientation) {
-                case 1: hint = "LandscapeLeft"; break;
-                case 2: hint = "LandscapeRight"; break;
-                case 3: hint = "Portrait"; break;
-                case 4: hint = "PortraitUpsideDown"; break;
+                case wire::kOrientationLandscape:        hint = "LandscapeLeft"; break;
+                case wire::kOrientationLandscapeFlipped: hint = "LandscapeRight"; break;
+                case wire::kOrientationPortrait:         hint = "Portrait"; break;
+                case wire::kOrientationPortraitFlipped:  hint = "PortraitUpsideDown"; break;
                 }
                 if (hint) {
                     SDL_SetHint(SDL_HINT_ORIENTATIONS, hint);
@@ -177,6 +179,10 @@ int playerCore(const std::string& host, int port) {
 
     // ── Create window (orientation hint already applied) ───────────────
 
+    const char* appliedHint = SDL_GetHint(SDL_HINT_ORIENTATIONS);
+    SPDLOG_INFO("Creating window (SDL_HINT_ORIENTATIONS={})",
+                appliedHint ? appliedHint : "(null)");
+
     SDL_Window* window = SDL_CreateWindow(
         "GE Player", 820, 1180,
         SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
@@ -185,6 +191,12 @@ int playerCore(const std::string& host, int port) {
         SDL_Quit();
         return 1;
     }
+
+    // On iPad (iPadOS 16+), supportedInterfaceOrientations alone doesn't
+    // prevent rotation — the window scene's geometry preferences must also
+    // be set via requestGeometryUpdateWithPreferences. This is a no-op on
+    // non-iOS platforms.
+    playerForceOrientation(requestedOrientation);
 
     SDL_Renderer* renderer = SDL_CreateRenderer(window, nullptr);
     if (!renderer) {

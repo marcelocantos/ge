@@ -21,6 +21,7 @@ set(SOURCES
     ${GE_ROOT}/vendor/src/sqlpipe.cpp
     ${GE_ROOT}/vendor/src/sqlift.cpp
     ${GE_ROOT}/vendor/src/lz4.c
+    ${GE_ROOT}/tools/player_orientation_ios.mm
     ${CMAKE_CURRENT_SOURCE_DIR}/QRScanner.mm
     ${CMAKE_CURRENT_SOURCE_DIR}/KeychainStore.mm
 )

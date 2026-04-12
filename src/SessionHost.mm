@@ -182,6 +182,24 @@ void run(Factory factory, const SessionHostConfig& config) {
                         continue;
                     }
 
+                    // Send SessionConfig immediately on the wire so the
+                    // player can apply orientation/sensor hints BEFORE
+                    // creating its window and sending DeviceInfo.
+                    if (config.sensors || config.orientation) {
+                        wire::MessageHeader cfgHdr{};
+                        cfgHdr.magic = wire::kSessionConfigMagic;
+                        cfgHdr.length = sizeof(wire::SessionConfig);
+                        wire::SessionConfig cfg{};
+                        cfg.sensors = config.sensors;
+                        cfg.orientation = config.orientation;
+                        std::vector<uint8_t> cfgMsg(sizeof(cfgHdr) + sizeof(cfg));
+                        std::memcpy(cfgMsg.data(), &cfgHdr, sizeof(cfgHdr));
+                        std::memcpy(cfgMsg.data() + sizeof(cfgHdr), &cfg, sizeof(cfg));
+                        wire->sendBinary(cfgMsg.data(), cfgMsg.size());
+                        SPDLOG_INFO("Session '{}': sent SessionConfig (sensors=0x{:x}, orientation={})",
+                                    sessionId, cfg.sensors, cfg.orientation);
+                    }
+
                     auto sess = std::make_unique<Session>();
                     sess->id = sessionId;
                     sess->wire = std::move(wire);
@@ -265,22 +283,6 @@ void run(Factory factory, const SessionHostConfig& config) {
                     sess->config = factory(ctx);
                     sess->ready = true;
                     SPDLOG_INFO("Session '{}': ready ({}x{})", id, w, h);
-
-                    // Send SessionConfig if the game declared requirements.
-                    if (sess->config.sensors || sess->config.orientation) {
-                        wire::MessageHeader cfgHdr{};
-                        cfgHdr.magic = wire::kSessionConfigMagic;
-                        cfgHdr.length = sizeof(wire::SessionConfig);
-                        wire::SessionConfig cfg{};
-                        cfg.sensors = sess->config.sensors;
-                        cfg.orientation = sess->config.orientation;
-                        std::vector<uint8_t> cfgMsg(sizeof(cfgHdr) + sizeof(cfg));
-                        std::memcpy(cfgMsg.data(), &cfgHdr, sizeof(cfgHdr));
-                        std::memcpy(cfgMsg.data() + sizeof(cfgHdr), &cfg, sizeof(cfg));
-                        wirePtr->sendBinary(cfgMsg.data(), cfgMsg.size());
-                        SPDLOG_INFO("Session '{}': sent SessionConfig (sensors=0x{:x}, orientation={})",
-                                    id, cfg.sensors, cfg.orientation);
-                    }
 
                 } else if (magic == wire::kSdlEventMagic && sess->ready &&
                            data.size() >= sizeof(wire::MessageHeader) + sizeof(SDL_Event)) {

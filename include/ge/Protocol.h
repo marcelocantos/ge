@@ -1,5 +1,7 @@
 #pragma once
 
+#include <SDL3/SDL_video.h>
+
 #include <bit>
 #include <cstdint>
 #include <cstddef>
@@ -65,12 +67,18 @@ struct AspectLock {
 // Sent once after session setup; player applies immediately.
 struct SessionConfig {
     uint32_t magic = kSessionConfigMagic;
-    uint8_t  sensors;       // Bitmask: 1 = accelerometer
-    uint8_t  orientation;   // SDL_ORIENTATION_* value to lock, 0 = no lock
+    uint8_t  sensors;       // Bitmask: kSensorAccelerometer
+    uint8_t  orientation;   // kOrientation* value to lock, 0 = no lock
     uint8_t  _pad[2] = {};
 };
 
 constexpr uint8_t kSensorAccelerometer = 1;
+
+// Orientation constants — assigned from SDL_DisplayOrientation.
+constexpr uint8_t kOrientationLandscape        = SDL_ORIENTATION_LANDSCAPE;
+constexpr uint8_t kOrientationLandscapeFlipped = SDL_ORIENTATION_LANDSCAPE_FLIPPED;
+constexpr uint8_t kOrientationPortrait         = SDL_ORIENTATION_PORTRAIT;
+constexpr uint8_t kOrientationPortraitFlipped  = SDL_ORIENTATION_PORTRAIT_FLIPPED;
 
 // Header for binary wire messages.
 struct MessageHeader {
