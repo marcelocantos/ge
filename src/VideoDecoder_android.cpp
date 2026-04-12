@@ -22,7 +22,8 @@ static constexpr int kColorFormatNV12 = 0x00000015; // 21
 static constexpr int kColorFormatBGRA = 0x7F00A000;
 
 // Timeout in microseconds for input/output buffer operations.
-static constexpr int64_t kBufferTimeoutUs = 0; // non-blocking poll
+static constexpr int64_t kInputTimeoutUs = 10000;  // 10ms — wait for input buffer
+static constexpr int64_t kOutputTimeoutUs = 0;     // non-blocking output drain
 
 // Convert NV12 (YUV 4:2:0 semi-planar) to BGRA.
 // Y plane: w*h bytes.
@@ -123,8 +124,10 @@ bool VideoDecoder::M::createCodec() {
     AMediaFormat_setBuffer(fmt, "csd-1",
         const_cast<uint8_t*>(ppsData.data()), ppsData.size());
 
-    // Request BGRA directly; fall back to NV12 if the hardware doesn't support it.
-    AMediaFormat_setInt32(fmt, AMEDIAFORMAT_KEY_COLOR_FORMAT, kColorFormatBGRA);
+    // Always use NV12 — universally supported. BGRA is accepted by some
+    // codecs at configure time but silently produces no output (emulator).
+    colorFormat = kColorFormatNV12;
+    AMediaFormat_setInt32(fmt, AMEDIAFORMAT_KEY_COLOR_FORMAT, kColorFormatNV12);
 
     media_status_t status = AMediaCodec_configure(
         codec, fmt, /*surface=*/nullptr, /*crypto=*/nullptr, /*flags=*/0);
@@ -158,9 +161,8 @@ bool VideoDecoder::M::createCodec() {
             codec = nullptr;
             return false;
         }
-    } else {
-        colorFormat = kColorFormatBGRA;
     }
+    // colorFormat already set to kColorFormatNV12 above.
 
     status = AMediaCodec_start(codec);
     if (status != AMEDIA_OK) {
@@ -196,7 +198,17 @@ const uint8_t* VideoDecoder::M::stripStartCode(const uint8_t* data, size_t size,
 bool VideoDecoder::M::queueNal(const uint8_t* body, size_t bodySize) {
     if (!codec || bodySize == 0) return false;
 
-    ssize_t idx = AMediaCodec_dequeueInputBuffer(codec, kBufferTimeoutUs);
+    // Log first few NALs for debugging
+    { static int n = 0; if (n++ < 10) {
+        // Find NAL type (first byte after start code, if present)
+        int off = 0;
+        if (bodySize >= 4 && body[0]==0 && body[1]==0 && body[2]==0 && body[3]==1) off = 4;
+        else if (bodySize >= 3 && body[0]==0 && body[1]==0 && body[2]==1) off = 3;
+        int nalType = (off < (int)bodySize) ? (body[off] & 0x1F) : -1;
+        SPDLOG_INFO("queueNal: size={} nalType={} off={}", bodySize, nalType, off);
+    }}
+
+    ssize_t idx = AMediaCodec_dequeueInputBuffer(codec, kInputTimeoutUs);
     if (idx < 0) {
         // No input buffer available right now; the frame will be dropped.
         SPDLOG_WARN("VideoDecoder: no input buffer available (idx={})", idx);
@@ -283,7 +295,7 @@ void VideoDecoder::M::drainOutput() {
 
     for (;;) {
         AMediaCodecBufferInfo info{};
-        ssize_t idx = AMediaCodec_dequeueOutputBuffer(codec, &info, kBufferTimeoutUs);
+        ssize_t idx = AMediaCodec_dequeueOutputBuffer(codec, &info, kOutputTimeoutUs);
 
         if (idx == AMEDIACODEC_INFO_OUTPUT_FORMAT_CHANGED) {
             // The output format changed; re-read width/height/colorFormat.
@@ -310,9 +322,10 @@ void VideoDecoder::M::drainOutput() {
         }
 
         if (idx == AMEDIACODEC_INFO_TRY_AGAIN_LATER || idx < 0) {
-            // No more output available right now.
             break;
         }
+
+        SPDLOG_INFO("VideoDecoder: output buffer idx={} size={}", idx, info.size);
 
         // idx >= 0: valid output buffer.
         size_t bufSize = 0;
@@ -346,14 +359,21 @@ VideoDecoder::~VideoDecoder() = default;
 
 void VideoDecoder::setParameterSets(const uint8_t* sps, size_t spsSize,
                                      const uint8_t* pps, size_t ppsSize) {
-    // Strip start codes from SPS/PPS before storing — MediaCodec expects raw
-    // NAL body bytes in csd-0 / csd-1 without Annex B start codes.
-    size_t spsBodySize = 0, ppsBodySize = 0;
-    const uint8_t* spsBody = M::stripStartCode(sps, spsSize, spsBodySize);
-    const uint8_t* ppsBody = M::stripStartCode(pps, ppsSize, ppsBodySize);
+    // MediaCodec csd-0 / csd-1 require Annex B start codes (00 00 00 01).
+    // The caller may provide raw NAL body or Annex B — ensure start code.
+    static const uint8_t kStartCode[] = {0x00, 0x00, 0x00, 0x01};
+    auto ensureStartCode = [](const uint8_t* data, size_t size) {
+        std::vector<uint8_t> out;
+        bool hasStart = (size >= 4 && data[0]==0 && data[1]==0 && data[2]==0 && data[3]==1);
+        if (!hasStart) {
+            out.insert(out.end(), kStartCode, kStartCode + 4);
+        }
+        out.insert(out.end(), data, data + size);
+        return out;
+    };
 
-    m->spsData.assign(spsBody, spsBody + spsBodySize);
-    m->ppsData.assign(ppsBody, ppsBody + ppsBodySize);
+    m->spsData = ensureStartCode(sps, spsSize);
+    m->ppsData = ensureStartCode(pps, ppsSize);
 
     // Extract width and height from the SPS NAL unit.
     // The SPS contains the sequence parameter set RBSP. The dimensions are
@@ -369,7 +389,7 @@ void VideoDecoder::setParameterSets(const uint8_t* sps, size_t spsSize,
     if (m->height == 0) m->height = 720;
 
     SPDLOG_INFO("VideoDecoder: setParameterSets sps={} pps={} bytes",
-                spsBodySize, ppsBodySize);
+                m->spsData.size(), m->ppsData.size());
 
     m->createCodec();
 }
@@ -377,13 +397,15 @@ void VideoDecoder::setParameterSets(const uint8_t* sps, size_t spsSize,
 void VideoDecoder::decode(const uint8_t* nalData, size_t nalSize) {
     if (!m->codec) return;
 
-    size_t bodySize = 0;
-    const uint8_t* body = M::stripStartCode(nalData, nalSize, bodySize);
-    if (bodySize == 0) return;
+    // Feed Annex B data (with start codes) directly to MediaCodec.
+    if (nalSize == 0) return;
 
-    m->queueNal(body, bodySize);
+    // Drain output first — frees internal buffers so queueNal can succeed.
+    m->drainOutput();
 
-    // Immediately poll for any output frames produced by this or earlier input.
+    m->queueNal(nalData, nalSize);
+
+    // Drain again — the NAL we just queued might produce immediate output.
     m->drainOutput();
 }
 

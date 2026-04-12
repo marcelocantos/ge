@@ -25,3 +25,6 @@
 [submodule "vendor/github.com/bkaradzic/bimg"]
 	path = vendor/github.com/bkaradzic/bimg
 	url = https://github.com/bkaradzic/bimg.git
+[submodule "vendor/github.com/FFmpeg/FFmpeg"]
+	path = vendor/github.com/FFmpeg/FFmpeg
+	url = https://github.com/FFmpeg/FFmpeg.git
