@@ -72,11 +72,10 @@ int playerCore(const std::string& host, int port) {
 
     SPDLOG_INFO("H.264 player starting");
 
-    // Disable touch→finger synthesis so only mouse events arrive.
-    // GlobeController's mouse path uses pixel coordinates (proven working).
-    // Finger events use normalized 0–1 coords which need separate sensitivity tuning.
-    SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "1");   // touch generates mouse (default)
-    SDL_SetHint(SDL_HINT_MOUSE_TOUCH_EVENTS, "0");   // mouse does NOT generate touch
+    // No synthetic events — each input source sends its native event type only.
+    // Desktop: mouse events. iOS/Android: finger events. iPad with trackpad: both (real).
+    SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "0");
+    SDL_SetHint(SDL_HINT_MOUSE_TOUCH_EVENTS, "0");
 
     SPDLOG_INFO("PLAYER sizeof(SDL_Event)={}", sizeof(SDL_Event));
 
@@ -203,12 +202,13 @@ int playerCore(const std::string& host, int port) {
         } else if (e.type == SDL_EVENT_FINGER_DOWN ||
                    e.type == SDL_EVENT_FINGER_UP ||
                    e.type == SDL_EVENT_FINGER_MOTION) {
-            // Finger events use normalized 0-1 coords; convert to pixels,
-            // map, then re-normalize to server dimensions.
+            // Finger events use normalized 0-1 coords; convert to server
+            // pixel coordinates so GlobeController uses the same scale
+            // as mouse events.
             float px = e.tfinger.x * ww;
             float py = e.tfinger.y * wh;
-            e.tfinger.x = (px - offsetX) / scale / float(texW);
-            e.tfinger.y = (py - offsetY) / scale / float(texH);
+            e.tfinger.x = (px - offsetX) / scale;
+            e.tfinger.y = (py - offsetY) / scale;
         }
     };
 
@@ -234,12 +234,9 @@ int playerCore(const std::string& host, int port) {
                 }
             }
 
-            // Forward mouse events only. On iOS, SDL synthesizes mouse
-            // events from touches (SDL_HINT_TOUCH_MOUSE_EVENTS=1), so
-            // touch input arrives as mouse events in pixel coordinates
-            // — matching the server's GlobeController expectations.
             switch (e.type) {
             case SDL_EVENT_MOUSE_MOTION:
+            case SDL_EVENT_FINGER_MOTION:
                 mapEvent(e);
                 lastMotion = e;
                 hasMotion = true;
@@ -247,6 +244,8 @@ int playerCore(const std::string& host, int port) {
             case SDL_EVENT_MOUSE_BUTTON_DOWN:
             case SDL_EVENT_MOUSE_BUTTON_UP:
             case SDL_EVENT_MOUSE_WHEEL:
+            case SDL_EVENT_FINGER_DOWN:
+            case SDL_EVENT_FINGER_UP:
                 mapEvent(e);
                 sendEvent(e);
                 break;
