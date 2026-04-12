@@ -132,6 +132,11 @@ $(BUILD_DIR)/ge/src/%.o: ge/src/%.mm
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) $(SDL_CFLAGS) -MMD -MP -c $< -o $@
 
+# Tools ObjC++ objects (.mm) — e.g. player_capture_apple.mm
+$(BUILD_DIR)/ge/tools/%.o: ge/tools/%.mm
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) $(SDL_CFLAGS) -MMD -MP -c $< -o $@
+
 # Static library
 $(ge/LIB): $(ge/OBJ) $(ge/SQLITE_OBJ) $(ge/LZ4_OBJ) $(ge/LITEPARSER_OBJ) $(ge/VENDOR_CPP_OBJ)
 	@mkdir -p $(dir $@)

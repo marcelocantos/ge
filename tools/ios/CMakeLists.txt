@@ -1,3 +1,4 @@
+# TODO: Port from Dawn to bgfx. Currently broken — see T53.
 cmake_minimum_required(VERSION 3.28)
 project(Player LANGUAGES C CXX OBJCXX)
 set(CMAKE_CXX_STANDARD 23)
@@ -6,11 +7,9 @@ set(CMAKE_XCODE_LINK_BUILD_PHASE_MODE KNOWN_LOCATION)
 set(GE_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../..)
 set(DEPS_BUILD ${CMAKE_CURRENT_SOURCE_DIR}/build)
 
-# Sources — iOS entry point + shared player + wire transport + QR scanner + sqlite3/sqlpipe
+# Sources — iOS entry point + wire transport + QR scanner + sqlite3/sqlpipe
 set(SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/main.mm
-    ${GE_ROOT}/tools/player_core.cpp
-    ${GE_ROOT}/tools/player_platform_apple.cpp
     ${GE_ROOT}/tools/AudioPlayer.cpp
     ${GE_ROOT}/src/WebSocketClient.cpp
     ${GE_ROOT}/vendor/src/sqlite3.c
@@ -25,9 +24,6 @@ set(SOURCES
 
 add_executable(Player MACOSX_BUNDLE ${SOURCES})
 
-# player_platform_apple.cpp uses ObjC (CAMetalLayer) — compile as ObjC++
-set_source_files_properties(${GE_ROOT}/tools/player_platform_apple.cpp PROPERTIES LANGUAGE OBJCXX)
-
 target_compile_definitions(Player PRIVATE
     ASIO_STANDALONE
     GE_IOS
@@ -41,7 +37,6 @@ target_include_directories(Player PRIVATE
     ${GE_ROOT}/include
     ${GE_ROOT}/vendor/include
     ${GE_ROOT}/vendor/github.com/gabime/spdlog/include
-    ${GE_ROOT}/vendor/dawn/include
     ${GE_ROOT}/vendor/github.com/chriskohlhoff/asio/include
     ${GE_ROOT}/vendor/github.com/libsdl-org/SDL/include
     ${GE_ROOT}/tools
@@ -49,7 +44,7 @@ target_include_directories(Player PRIVATE
 )
 
 # Libraries (static archives via SDK-conditional search paths)
-target_link_libraries(Player PRIVATE -ldawn_proc -lwebgpu_dawn -ldawn_wire -lSDL3)
+target_link_libraries(Player PRIVATE -lSDL3)
 
 # iOS frameworks
 target_link_libraries(Player PRIVATE
@@ -77,8 +72,6 @@ target_link_libraries(Player PRIVATE
 )
 
 # SDK-conditional library search paths (device vs simulator)
-set(DAWN_DEVICE_DIR ${GE_ROOT}/vendor/dawn/lib/ios-arm64)
-set(DAWN_SIM_DIR    ${GE_ROOT}/vendor/dawn/lib/ios-arm64-simulator)
 set(SDL_DEVICE_DIR  ${GE_ROOT}/vendor/sdl3/lib/ios-arm64)
 set(SDL_SIM_DIR     ${GE_ROOT}/vendor/sdl3/lib/ios-arm64-simulator)
 
@@ -95,6 +88,6 @@ set_target_properties(Player PROPERTIES
     XCODE_GENERATE_SCHEME TRUE
     XCODE_SCHEME_ENABLE_GPU_API_VALIDATION OFF
     XCODE_ATTRIBUTE_IPHONEOS_DEPLOYMENT_TARGET 16.3
-    "XCODE_ATTRIBUTE_LIBRARY_SEARCH_PATHS[sdk=iphoneos*]" "${DAWN_DEVICE_DIR} ${SDL_DEVICE_DIR}"
-    "XCODE_ATTRIBUTE_LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]" "${DAWN_SIM_DIR} ${SDL_SIM_DIR}"
+    "XCODE_ATTRIBUTE_LIBRARY_SEARCH_PATHS[sdk=iphoneos*]" "${SDL_DEVICE_DIR}"
+    "XCODE_ATTRIBUTE_LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]" "${SDL_SIM_DIR}"
 )

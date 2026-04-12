@@ -2,9 +2,9 @@
 
 **IMPORTANT: When creating any artefact — code, targets, documentation, plans, tests — always consider whether it belongs in `ge/` (general-purpose engine, usable by any app) or in the parent project (game-specific logic). If unsure, ask before creating it.** Anything concerning the player, ged, wire protocol, engine infrastructure, or engine design belongs in `ge/`, not the consuming project.
 
-Reusable rendering and asset engine built on Dawn (WebGPU) + SDL3. Consumed as a git submodule; build integration via `Module.mk`.
+Reusable rendering and streaming engine built on bgfx + SDL3. Consumed as a git submodule; build integration via `Module.mk`.
 
-Apps built on ge use a **server/player architecture**: the app (server) issues WebGPU draw commands through Dawn's wire protocol over TCP, and the platform-native ge player renders them and sends input back. This means the app itself has zero platform-specific code — ge and the player handle all of that.
+Apps built on ge use a **server/player architecture**: the app (server) renders headless via bgfx, encodes H.264 frames (VideoToolbox on Apple), and streams them to the player over a ged-brokered WebSocket. The player decodes the H.264 stream (VideoToolbox/MediaCodec) and displays it via SDL. Input events flow back over the same WebSocket channel. The app itself has zero platform-specific rendering code — ge handles encoding, framing, and the network link.
 
 ## Integrating ge into a New App
 
@@ -16,35 +16,31 @@ A complete ge app needs three things: a `Makefile`, a `main.cpp`, and game logic
 
 ```cpp
 #include <ge/SessionHost.h>
-#include <ge/Session.h>
 
 int main() {
     MyState state;  // Persistent game state (survives reconnects)
 
-    ge::SessionHost host;
-    host.run([&](ge::Session& session) -> ge::Session::RunConfig {
-        auto& ctx = session.gpu();
+    ge::run([&](ge::Context ctx) -> ge::RunConfig {
         auto app = std::make_shared<MyApp>(ctx);
 
         return {
-            .onUpdate = [&, app](float dt) { app->update(dt, state); },
-            .onRender = [&, app](wgpu::TextureView target, int w, int h) {
-                app->render(ctx, state, target);
-            },
-            .onEvent  = [&, app](const SDL_Event& e) { app->event(e, state); },
+            .onUpdate   = [&, app](float dt) { app->update(dt, state); },
+            .onRender   = [&, app](int w, int h) { app->render(state, w, h); },
+            .onEvent    = [&, app](const SDL_Event& e) { app->event(e, state); },
+            .onShutdown = [&, app]() { app->shutdown(); },
         };
     });
 }
 ```
 
 Key points:
-- **`SessionHost`** connects to the ged daemon broker and spawns a session per player
-- **State lives outside the host** so it persists across player reconnects
-- **App/GPU resources are created per session** (each player gets its own wire handles)
-- The factory callback receives a connected `Session&` and returns a `RunConfig`
-- `session.run()` drives the render loop at ~60fps with frame delta timing
-- `RunConfig` uses designated initializers: `onUpdate`, `onRender`, `onEvent`, `onResize`
-- The engine manages frame view acquisition, present, and window resize internally
+- **`ge::run(Factory)`** connects to the ged daemon broker and spawns sessions for attaching players
+- **State lives outside the factory** so it persists across player reconnects
+- **App resources are created per session** (each reconnect gets a fresh `Context`)
+- The factory callback receives a `ge::Context` (dimensions, device class, DB) and returns a `RunConfig`
+- `RunConfig` uses designated initializers: `onUpdate`, `onRender`, `onEvent`, `onShutdown`
+- `onRender(w, h)` is called each frame; bgfx frame submission happens inside
+- `ge::run` blocks until SIGINT or all sessions end
 - Ctrl+C terminates the process gracefully
 
 **Makefile** — minimal integration:
@@ -58,9 +54,10 @@ ge/Module.mk:
 	git submodule update --init --recursive
 
 CXXFLAGS := -std=c++20 -O2 $(ge/INCLUDES)
-SDL_CFLAGS := $(shell sdl3-config --cflags 2>/dev/null)
-SDL_LIBS := $(shell sdl3-config --libs 2>/dev/null)
-FRAMEWORKS := -framework Metal -framework QuartzCore -framework Foundation
+SDL_CFLAGS := $(shell pkg-config --cflags sdl3 2>/dev/null)
+SDL_LIBS := $(shell pkg-config --libs sdl3 2>/dev/null)
+FRAMEWORKS := -framework Metal -framework QuartzCore -framework Foundation \
+              -framework VideoToolbox -framework CoreMedia -framework CoreVideo
 
 SRC := src/main.cpp src/MyApp.cpp
 OBJ := $(SRC:%.cpp=$(BUILD_DIR)/%.o)
@@ -68,9 +65,9 @@ APP := bin/myapp
 
 COMPILE_DB_DEPS += $(SRC) Makefile
 
-$(APP): $(OBJ) $(ge/LIB) $(ge/FRAMEWORK_LIBS)
+$(APP): $(OBJ) $(ge/LIB) $(ge/BGFX_LIBS)
 	@mkdir -p $(@D)
-	$(CXX) $(OBJ) $(ge/LIB) $(ge/DAWN_LIBS) $(FRAMEWORKS) $(SDL_LIBS) -o $@
+	$(CXX) $(OBJ) $(ge/LIB) $(ge/BGFX_LIBS) $(ge/SDL_LIBS) $(FRAMEWORKS) -o $@
 
 player: $(ge/PLAYER)
 
@@ -93,16 +90,15 @@ The ged daemon manages player connections, QR codes, and session routing. Game s
 
 | Concern | ge handles it | You write |
 |---------|--------------|-----------|
-| GPU device setup | WireSession acquires adapter/device/queue via wire | Nothing |
-| Window/surface | Player creates native window + Metal/Vulkan surface | Nothing |
-| Frame loop | `session.run()` with delta timing + signal handling | `onUpdate(dt)` + `onRender(target)` callbacks |
-| Input | Player captures SDL events, sends over TCP | `onEvent(e)` callback |
-| Window resize | Engine calls `GpuContext::resize()` automatically | Optional `onResize(w, h)` callback |
-| Reconnection | SessionHost spawns new session per player | Separate State from App |
+| Rendering backend | bgfx Metal (macOS) / Vulkan (Android) | bgfx draw calls in `onRender` |
+| H.264 encoding | `VideoEncoder_apple.mm` (VideoToolbox) | Nothing |
+| H.264 decoding | `VideoDecoder_apple.mm` (VideoToolbox) | Nothing |
+| Frame loop | `ge::run` with delta timing + signal handling | `onUpdate(dt)` + `onRender(w, h)` callbacks |
+| Input | Player captures SDL events, sends over WebSocket | `onEvent(e)` callback |
+| Reconnection | `ge::run` spawns new session per player | Separate State from App |
 | Session routing | ged daemon manages connections + QR codes | Nothing |
-| Asset loading | `ge::loadManifest<T>()` for meshes + textures | manifest.json + data files |
-| Shaders | WGSL loaded at runtime via `Pipeline` | .wgsl shader files |
-| Mobile builds | iOS/Android player projects in `ge/tools/` | Nothing (shared player) |
+| Asset loading | `ge::loadManifest<T>()` for meshes + metadata | manifest.json + data files |
+| Mobile builds | iOS/Android player projects in `ge/tools/` (TODO: bgfx port) | Nothing (shared player) |
 
 ## Module.mk Integration
 
@@ -143,14 +139,13 @@ Engine-internal variables use the `ge/` prefix. These are read-only — the pare
 
 | Variable | Contents |
 |----------|----------|
-| `ge/INCLUDES` | `-I` flags for engine + vendor headers (includes Dawn) |
+| `ge/INCLUDES` | `-I` flags for engine + vendor headers (bgfx, bx, bimg, SDL3, spdlog, asio, etc.) |
 | `ge/SRC`, `ge/OBJ` | Engine source files and derived objects |
 | `ge/LIB` | Static library path (`$(BUILD_DIR)/libge.a`) |
-| `ge/DAWN_LIBS` | Dawn static libraries (dawn_proc, webgpu_dawn, dawn_wire) |
-| `ge/FRAMEWORK_LIBS` | Alias for `$(ge/DAWN_LIBS)` |
+| `ge/BGFX_LIBS` | bgfx static libraries (`libbgfx.a`, `libbimg.a`, `libbx.a`) |
+| `ge/SDL_LIBS` | SDL3 static libraries (SDL3, SDL3_image, SDL3_ttf, freetype, harfbuzz, etc.) |
 | `ge/TEST_SRC`, `ge/TEST_OBJ` | Unit test sources and objects |
 | `ge/TRIANGLE_OBJ` | Triangle library object (for tools that need triangulation) |
-| `ge/PLAYER_SRC`, `ge/PLAYER_OBJ` | ge player source and object |
 | `ge/PLAYER` | ge player binary path (`bin/player`) |
 
 ### Shared Variables
@@ -160,7 +155,7 @@ Module.mk provides sensible defaults for project-wide variables. The parent exte
 | Variable | Default | Parent extends with |
 |----------|---------|---------------------|
 | `CLEAN` | `bin build` | Additional directories for `make clean` |
-| `COMPILE_DB_DEPS` | `$(ge/SRC) $(ge/TEST_SRC) $(ge/PLAYER_SRC) ge/Module.mk` | App sources and Makefile |
+| `COMPILE_DB_DEPS` | `$(ge/SRC) $(ge/TEST_SRC) ge/Module.mk` | App sources and Makefile |
 
 Example:
 
@@ -177,6 +172,9 @@ Module.mk defines these targets so the parent doesn't need to:
 |--------|--------|
 | `clean` | `rm -rf $(CLEAN)` |
 | `compile_commands.json` | Generate clangd compile database from `$(COMPILE_DB_DEPS)` |
+| `ged` | Build the ged daemon (`bin/ged`), compiling the dashboard first |
+| `ge/ios` | Generate the iOS Xcode project (TODO: needs bgfx port) |
+| `ge/android` | Build the Android debug APK (TODO: needs bgfx port) |
 
 ### Developer Setup
 
@@ -192,12 +190,14 @@ init: ge/init
 
 ### Linking
 
-Link the app against `$(ge/LIB)` and the Dawn libraries:
+Link the app against `$(ge/LIB)`, the bgfx libraries, and SDL:
 
 ```makefile
-$(APP): $(APP_OBJ) $(ge/LIB) $(ge/FRAMEWORK_LIBS)
-	$(CXX) $(APP_OBJ) $(ge/LIB) $(ge/DAWN_LIBS) $(FRAMEWORKS) $(SDL_LIBS) -o $@
+$(APP): $(APP_OBJ) $(ge/LIB) $(ge/BGFX_LIBS)
+	$(CXX) $(APP_OBJ) $(ge/LIB) $(ge/BGFX_LIBS) $(ge/SDL_LIBS) $(FRAMEWORKS) -o $@
 ```
+
+The `FRAMEWORKS` variable should include VideoToolbox, CoreMedia, CoreVideo, Metal, QuartzCore, and Foundation on macOS/iOS.
 
 Link the player:
 
@@ -211,67 +211,73 @@ player: $(ge/PLAYER)
 |-----------|----------|
 | `include/` | Public headers (one per class) |
 | `src/` | Implementation files + test files (`*_test.cpp`) |
-| `tools/` | Player: shared core (`player_core.cpp`), desktop entry (`player.cpp`), platform backends |
-| `tools/ios/` | iOS player: Xcode project, QR scanner, build scripts |
-| `tools/android/` | Android player: Gradle project, QR scanner |
-| `vendor/` | Third-party dependencies: Dawn, spdlog, linalg.h, earcut.hpp, doctest, Triangle, asio, SQLite3 |
+| `tools/` | Player entry point (`player.cpp`), capture backend (`player_capture_apple.mm`) |
+| `tools/ios/` | iOS player: Xcode project, build scripts (TODO: bgfx port) |
+| `tools/android/` | Android player: Gradle project (TODO: bgfx port) |
+| `vendor/github.com/bkaradzic/{bgfx,bx,bimg}/` | bgfx rendering libraries (vendored, compiled from source) |
+| `vendor/` | Other third-party dependencies: spdlog, linalg.h, earcut.hpp, doctest, Triangle, asio, SQLite3 |
 
 **Note:** SQLite3 is compiled into `libge.a` (from the vendored amalgamation `vendor/src/sqlite3.c`). Do not add `-lsqlite3` to link lines — it's already included.
 
-## Wire Protocol
+### ge/SRC (files compiled into libge.a)
 
-The server and player communicate over TCP using a custom framing protocol on top of Dawn's wire serialization.
+| File | Purpose |
+|------|---------|
+| `ge/src/Resource.cpp` | Asset path resolution |
+| `ge/src/FileIO.cpp` | Platform-agnostic file I/O |
+| `ge/src/WebSocketClient.cpp` | WebSocket client (ged connection) |
+| `ge/src/BgfxContext.mm` | bgfx device setup and frame management |
+| `ge/src/Signal.cpp` | SIGINT / graceful shutdown |
+| `ge/src/SessionHost.mm` | `ge::run()` — sideband connect, session lifecycle |
+| `ge/src/VideoEncoder_apple.mm` | H.264 encoding via VideoToolbox |
+| `ge/src/VideoDecoder_apple.mm` | H.264 decoding via VideoToolbox |
+| `ge/tools/player_capture_apple.mm` | Player screen capture backend (Apple) |
 
-### Connection Handshake
+## H.264 Streaming Protocol
+
+The server and player communicate over WebSocket (brokered by ged) using binary-framed messages.
+
+### Connection Flow
 
 ```
-Player → Server:  DeviceInfo   (dimensions, pixel ratio, texture format)
-Server → Player:  SessionInit  (reserved wire handles for instance/adapter/device/queue/surface)
-Player → Server:  SessionReady (resources injected, ready to render)
+Player → ged:    DeviceInfo   (dimensions, pixel ratio, device class, safe area)
+ged → player:    StreamStart  (ged signals player to begin receiving H.264 frames)
+Server → ged:    VideoStream  (encoded H.264 NAL units, each frame as one message)
+ged → player:    VideoStream  (ged forwards frames to the player)
+Player → server: SdlEvent     (input events forwarded back to the server)
+Player → server: SafeAreaUpdate (on orientation change)
+ged → player:    StreamStop / SessionEnd (on server disconnect)
 ```
 
 ### Steady-State Messages
 
 ```
-Server → Player:  MessageHeader{kWireCommandMagic} + Dawn wire commands
-Player → Server:  MessageHeader{kWireResponseMagic} + Dawn wire responses
-Player → Server:  MessageHeader{kSdlEventMagic} + SDL_Event structs (input)
+Server → ged → player:  MessageHeader{kVideoStreamMagic} + H.264 NAL data
+Player → server:        MessageHeader{kSdlEventMagic} + SDL_Event structs (input)
+Player → server:        MessageHeader{kSafeAreaMagic} + SafeAreaUpdate (on resize)
+Server → player:        MessageHeader{kAspectLockMagic} + AspectLock (optional)
 ```
 
 ### Key Constants (`Protocol.h`)
 
 | Constant | Value | Purpose |
 |----------|-------|---------|
-| `kProtocolVersion` | 5 | Protocol version for compatibility checking |
-| `kMaxMessageSize` | 512 MB | Accommodates initial texture uploads over wire |
-| `kDeviceInfoMagic` | `0x47453244` | "GE2D" — player device info |
-| `kSessionInitMagic` | `0x47453253` | "GE2S" — server session init |
-| `kSessionReadyMagic` | `0x47453259` | "GE2Y" — player ready |
-| `kWireCommandMagic` | `0x47453243` | "GE2C" — GPU commands |
-| `kWireResponseMagic` | `0x47453252` | "GE2R" — GPU responses |
-| `kSdlEventMagic` | `0x47453249` | "GE2I" — input events |
-| `kFrameEndMagic` | `0x47453246` | "GE2F" — server → player: frame boundary |
-| `kFrameReadyMagic` | `0x47453247` | "GE2G" — player → server: ready for next |
-| `kDeferredMipMagic` | `0x47453248` | "GE2H" — server → player: deferred mip data |
-| `kMipCacheHitMagic` | `0x4745324A` | "GE2J" — player → server: cached mip found |
-| `kMipCacheMissMagic` | `0x4745324B` | "GE2K" — player → server: cached mip not found |
-| `kSensorConfigMagic` | `0x4745324C` | "GE2L" — server → player: sensor config |
+| `kProtocolVersion` | 6 | Protocol version for compatibility checking |
+| `kMaxMessageSize` | 512 MB | Maximum single message size |
+| `kDeviceInfoMagic` | `0x47453244` | "GE2D" — player → ged: player dimensions/class |
+| `kSdlEventMagic` | `0x47453249` | "GE2I" — player → server: SDL input event |
 | `kSessionEndMagic` | `0x4745324D` | "GE2M" — ged → player: server disconnected |
 | `kServerAssignedMagic` | `0x4745324E` | "GE2N" — ged → player: assigned server name |
-| `kStateRequestMagic` | `0x47453251` | "GE2Q" — server requests player's DB |
-| `kStateDataMagic` | `0x47453250` | "GE2P" — player sends raw DB bytes |
 | `kSqlpipeMsgMagic` | `0x47453254` | "GE2T" — bidirectional sqlpipe messages |
-| `kAudioDataMagic` | `0x47453241` | "GE2A" — server → player: audio asset data |
-| `kAudioCommandMagic` | `0x47453242` | "GE2B" — server → player: audio play/stop/volume |
-| `kSafeAreaMagic` | `0x47453245` | "GE2E" — player → server: safe area update |
-| `kVideoStreamMagic` | `0x47453256` | "GE2V" — player → ged: H.264 NALs |
+| `kVideoStreamMagic` | `0x47453256` | "GE2V" — server → ged: H.264 NAL units |
 | `kStreamStartMagic` | `0x47453257` | "GE2W" — ged → player: start streaming |
 | `kStreamStopMagic` | `0x47453258` | "GE2X" — ged → player: stop streaming |
-| `kAspectLockMagic` | `0x47453260` | "GE2\`" — server → player: lock aspect ratio |
+| `kSafeAreaMagic` | `0x47453245` | "GE2E" — player → server: safe area update |
+| `kAspectLockMagic` | `0x47453260` | "GE2`" — server → player: lock aspect ratio |
 
 ### Address Resolution
 
-Game servers connect to the ged daemon broker. `SessionHost` resolves the daemon address in order:
+Game servers connect to the ged daemon broker. `ge::run` resolves the daemon address in order:
 1. `GE_DAEMON_ADDR` environment variable (format: `"host:port"`)
 2. Default: `localhost:42069`
 
@@ -279,33 +285,13 @@ Players connect via ged, which handles QR codes, WebSocket routing, and session 
 
 ## Player
 
-The ge player is a shared binary that works with any ge app. It has no app-specific code — it just renders whatever wire commands the server sends and forwards input back.
+The ge player is a standalone H.264 video player. It receives encoded frames from the server (via ged), decodes them via VideoToolbox (macOS/iOS) or MediaCodec (Android), and renders to an SDL window. Input is forwarded back to the server over the same WebSocket channel.
 
-### Platform Backends
-
-The player uses a thin platform abstraction (`player_platform.h`):
-
-```cpp
-SDL_WindowFlags windowFlags();              // SDL_WINDOW_METAL on Apple
-WGPUSurface createSurface(instance, window); // Platform-specific surface
-void syncDrawableSize(window, &w, &h);      // iOS: force-resize on rotation
-```
-
-Implementations: `player_platform_apple.cpp` (macOS/iOS Metal), `player_platform_android.cpp` (Android Vulkan).
+The player has no app-specific code — it works with any ge app.
 
 ### Reconnection
 
 The player retries on disconnect with exponential backoff: 10ms initial, doubling to 2000ms cap, reset on success. This means you can restart the server and the player will reconnect automatically.
-
-### Headless Mode
-
-Use `--headless` to run the player with a hidden window (no visible UI). Useful for background debugging sessions where the player window would steal focus:
-
-```bash
-bin/player --headless
-```
-
-The player still connects, processes wire commands, and logs normally — the window is simply not shown.
 
 ### Ged Quiet Mode
 
@@ -327,68 +313,7 @@ The Vite dev server proxies `/api`, `/ws`, and `/mcp` to ged at `localhost:42069
 
 ### Mobile Builds
 
-**iOS:** `ge/tools/ios/build-deps.sh` cross-compiles Dawn + SDL3 for iOS arm64. `CMakeLists.txt` generates an Xcode project. Entry point: `main.mm`.
-
-**Android:** Gradle project in `ge/tools/android/`. Entry point: `main.cpp`.
-
-## Android Player Deployment
-
-### Prerequisites
-
-- Android SDK installed (set `sdk.dir` in `ge/tools/android/local.properties`)
-- Dawn pre-built for Android arm64 (already committed at `ge/vendor/dawn/lib/android-arm64/`)
-- A physical device or emulator connected via `adb`
-
-### Building
-
-```bash
-cd ge/tools/android
-./gradlew assembleDebug
-```
-
-The APK is output to `app/build/outputs/apk/debug/app-debug.apk`.
-
-### Installing
-
-```bash
-adb install -r ge/tools/android/app/build/outputs/apk/debug/app-debug.apk
-```
-
-**Important:** The package name is `com.squz.player`. The main activity is `.GeActivity`.
-
-### Running
-
-1. Start the app server from the project root (the server needs `ge/web/dist/` relative to cwd):
-   ```bash
-   bin/myapp        # Starts wire server, prints QR code
-   ```
-2. Launch the player on the device:
-   ```bash
-   adb shell am start -n com.squz.player/.GeActivity
-   ```
-3. Point the phone camera at the terminal QR code (encodes `ge-remote://<lan-ip>:<port>`).
-4. The phone connects via WebSocket and renders the app.
-
-**Emulator:** Connects automatically to `10.0.2.2:42069` (host localhost alias), so set `GE_WIRE_ADDR=42069` when launching the server.
-
-### Debugging
-
-Spdlog output is routed to Android logcat via the `android_sink`. View logs with:
-
-```bash
-adb logcat -s "GePlayer"
-```
-
-### Adding Source Files to the Android Build
-
-The Android player's native sources are listed in `ge/tools/android/app/src/main/cpp/CMakeLists.txt`. If a new ge source file is referenced by `player_core.cpp`, add it to the `add_library(main SHARED ...)` block. Current sources:
-
-- `main.cpp` — Android entry point (spdlog android sink setup, QR scan, player launch)
-- `QRScanner_android.cpp` — Google ML Kit barcode scanner via JNI
-- `player_platform_android.cpp` — Vulkan surface creation
-- `${GE_ROOT}/tools/player_core.cpp` — Shared player logic
-- `${GE_ROOT}/src/WireTransport.cpp` — Wire transport
-- `${GE_ROOT}/src/WebSocketClient.cpp` — WebSocket client (`connectWebSocket`)
+**iOS and Android player builds are currently broken** — they still reference Dawn/WebGPU and need to be ported to bgfx + H.264 decode. The CMakeLists files and build scripts have been scrubbed of Dawn references and marked TODO.
 
 ## ged Features
 
@@ -408,229 +333,59 @@ When a new game server connects with the same name as an existing one, ged sends
 
 ged can run as a launchd agent for auto-start on login and restart-on-crash.
 
-## GPU Error Propagation
-
-WebGPU validation errors (shader compilation failures, bind group mismatches, invalid pipelines) abort the process via `std::abort()` in both `GpuContext` and `WireSession`. The error message is logged via `SPDLOG_CRITICAL` before abort. This prevents silent invalid pipeline creation over the wire, which would otherwise produce hard-to-debug rendering failures.
-
-## Standalone iOS App (Direct Mode)
-
-Apps can also run directly on iOS without the wire player, rendering natively on-device. This uses `Session` compiled with `SessionDirect.cpp` instead of `SessionWire.cpp` — same API, no networking.
-
-### Prerequisites
-
-Cross-compile Dawn, SDL3, and SDL3_image for iOS:
-
-```bash
-cd ge/tools/ios && bash build-deps.sh --simulator   # iOS Simulator
-cd ge/tools/ios && bash build-deps.sh --device       # Real device (default)
-cd ge/tools/ios && bash build-deps.sh --all          # Both
-```
-
-This produces static libraries under `ge/vendor/dawn/lib/ios-arm64{,-simulator}/` and `ge/vendor/sdl3/lib/ios-arm64{,-simulator}/`. Only needs to run once (or after upgrading Dawn/SDL).
-
-### Project Structure
-
-Create an `ios/` directory at the project root with:
-
-- **`CMakeLists.txt`** — CMake project that generates an Xcode project
-- **`Info.plist`** — iOS app metadata (orientation, fullscreen, etc.)
-
-The CMake project compiles game sources + a subset of ge engine sources (direct mode — no wire, no asio, no QR). It links against the prebuilt Dawn and SDL3 static libraries.
-
-### CMakeLists.txt Essentials
-
-```cmake
-cmake_minimum_required(VERSION 3.22)
-project(MyApp LANGUAGES CXX OBJCXX)
-set(CMAKE_CXX_STANDARD 20)
-
-set(PROJECT_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/..)
-set(GE_ROOT ${PROJECT_ROOT}/ge)
-
-# Game sources
-set(GAME_SOURCES ${PROJECT_ROOT}/src/main.cpp ${PROJECT_ROOT}/src/MyApp.cpp)
-
-# ge engine sources (direct mode subset)
-set(GE_SOURCES
-    ${GE_ROOT}/src/SessionDirect.cpp
-    ${GE_ROOT}/src/GpuContext.cpp
-    ${GE_ROOT}/src/SdlContext.cpp
-    ${GE_ROOT}/src/WireTransport.cpp   # GpuContext references it (no networking deps)
-    ${GE_ROOT}/src/Texture.cpp
-    ${GE_ROOT}/src/Mesh.cpp
-    ${GE_ROOT}/src/Model.cpp
-    ${GE_ROOT}/src/ManifestLoader.cpp
-    ${GE_ROOT}/src/Pipeline.cpp
-    ${GE_ROOT}/src/BindGroup.cpp
-    ${GE_ROOT}/src/Resource.cpp
-)
-
-add_executable(MyApp MACOSX_BUNDLE ${GAME_SOURCES} ${GE_SOURCES})
-
-# ObjC++ for files that use ObjC types (CAMetalLayer, UIApplication)
-set_source_files_properties(${PROJECT_ROOT}/src/main.cpp PROPERTIES LANGUAGE OBJCXX)
-set_source_files_properties(${GE_ROOT}/src/SdlContext.cpp PROPERTIES LANGUAGE OBJCXX)
-set_source_files_properties(${GE_ROOT}/src/GpuContext.cpp PROPERTIES LANGUAGE OBJCXX)
-
-# Headers
-target_include_directories(MyApp PRIVATE
-    ${PROJECT_ROOT}/src
-    ${GE_ROOT}/include
-    ${GE_ROOT}/vendor/include
-    ${GE_ROOT}/vendor/github.com/gabime/spdlog/include
-    ${GE_ROOT}/vendor/dawn/include
-    ${GE_ROOT}/vendor/github.com/libsdl-org/SDL/include
-    ${GE_ROOT}/vendor/sdl3/include
-)
-
-# Libraries
-target_link_libraries(MyApp PRIVATE -ldawn_proc -lwebgpu_dawn -ldawn_wire -lSDL3 -lSDL3_image)
-
-# iOS frameworks (SDL3 requires all of these)
-target_link_libraries(MyApp PRIVATE
-    "-framework Foundation" "-framework UIKit" "-framework Metal"
-    "-framework QuartzCore" "-framework IOKit" "-framework IOSurface"
-    "-framework CoreGraphics" "-framework CoreServices" "-framework CoreFoundation"
-    "-framework CoreBluetooth" "-framework AudioToolbox" "-framework AVFoundation"
-    "-framework CoreMedia" "-framework CoreVideo" "-framework GameController"
-    "-framework CoreHaptics" "-framework CoreMotion" "-framework ImageIO"
-    "-framework OpenGLES" "-lobjc"
-)
-
-# SDK-conditional library search paths (one project works for device + simulator)
-set(DAWN_DEVICE_DIR ${GE_ROOT}/vendor/dawn/lib/ios-arm64)
-set(DAWN_SIM_DIR    ${GE_ROOT}/vendor/dawn/lib/ios-arm64-simulator)
-set(SDL_DEVICE_DIR  ${GE_ROOT}/vendor/sdl3/lib/ios-arm64)
-set(SDL_SIM_DIR     ${GE_ROOT}/vendor/sdl3/lib/ios-arm64-simulator)
-
-set_target_properties(MyApp PROPERTIES
-    MACOSX_BUNDLE_INFO_PLIST ${CMAKE_CURRENT_SOURCE_DIR}/Info.plist
-    "XCODE_ATTRIBUTE_LIBRARY_SEARCH_PATHS[sdk=iphoneos*]" "${DAWN_DEVICE_DIR} ${SDL_DEVICE_DIR}"
-    "XCODE_ATTRIBUTE_LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]" "${DAWN_SIM_DIR} ${SDL_SIM_DIR}"
-    XCODE_GENERATE_SCHEME TRUE
-    XCODE_SCHEME_ENABLE_GPU_API_VALIDATION OFF   # Simulator GPU doesn't support depth clip mode
-)
-```
-
-### Bundle Resources
-
-Data files (manifest, meshes, textures, shaders) must be bundled into the app. Add them as sources and set `MACOSX_PACKAGE_LOCATION` to preserve directory structure:
-
-```cmake
-set(RESOURCE_FILES
-    ${PROJECT_ROOT}/data/manifest.json
-    ${PROJECT_ROOT}/data/meshes.bin
-    ${PROJECT_ROOT}/shaders/atlas.wgsl
-)
-file(GLOB TEXTURE_FILES ${PROJECT_ROOT}/data/textures/*)
-list(APPEND RESOURCE_FILES ${TEXTURE_FILES})
-target_sources(MyApp PRIVATE ${RESOURCE_FILES})
-
-foreach(FILE ${RESOURCE_FILES})
-    file(RELATIVE_PATH REL_PATH ${PROJECT_ROOT} ${FILE})
-    get_filename_component(REL_DIR ${REL_PATH} DIRECTORY)
-    set_source_files_properties(${FILE} PROPERTIES
-        MACOSX_PACKAGE_LOCATION "Resources/${REL_DIR}")
-endforeach()
-```
-
-At runtime, `ge::resource("data/manifest.json")` resolves to the correct bundle path.
-
-### Generating and Building
-
-```bash
-# Generate Xcode project (simulator)
-cd ios && cmake -G Xcode -B build/xcode \
-    -DCMAKE_SYSTEM_NAME=iOS \
-    -DCMAKE_OSX_SYSROOT=iphonesimulator \
-    -DCMAKE_OSX_ARCHITECTURES=arm64 \
-    -DCMAKE_OSX_DEPLOYMENT_TARGET=16.0
-
-# Open in Xcode and build/run
-open build/xcode/MyApp.xcodeproj
-```
-
-For real devices, omit `-DCMAKE_OSX_SYSROOT=iphonesimulator` (defaults to `iphoneos`).
-
-### Key Differences from Wire Mode
-
-| Concern | Wire mode | Direct mode |
-|---------|-----------|-------------|
-| Session | `SessionWire.cpp` (wire via ged) | `SessionDirect.cpp` (SDL window) |
-| Rendering | Player renders on-device | App renders directly via Metal |
-| Dependencies | asio, WebSocket client | None (no networking) |
-| Entry point | `main()` (plain C++) | `main(int, char*[])` with `SDL_main.h` |
-| Asset paths | Relative to working directory | `ge::resource()` resolves to bundle |
-| Texture format | ASTC (if device supports it) | Runtime fallback: ASTC or ETC2 |
-
-### Texture Compression
-
-The iOS Simulator GPU supports ETC2 but not ASTC. Generate both formats during precompute (`.astc.getex` and `.etc2.getex`), and the manifest loader automatically selects the right one at runtime based on `device.HasFeature(wgpu::FeatureName::TextureCompressionASTC)`.
-
-### Input Handling
-
-Use `SDL_EVENT_FINGER_*` events exclusively for touch/drag input. SDL3 synthesizes finger events from mouse input on desktop (`SDL_HINT_MOUSE_TOUCH_EVENTS` defaults on), so the same code path works everywhere. Finger event coordinates are normalized 0-1; convert to point space by multiplying by `width / pixelRatio`.
-
 ## Public API
 
-### Wire Transport
+### Session Host
 
-- **`WireSession`** — Wire session that connects to ged via WebSocket, performs the Dawn wire handshake, acquires adapter/device/queue through wire. Owns the resulting `GpuContext`. `run()` manages the render loop with signal handling and frame timing. pImpl.
-- **`SessionHost`** — Manages the sideband connection to ged and spawns `Session` threads for each player that attaches. `run(Factory)` takes a factory callback that configures each session's render loop. pImpl.
-- **`WireTransport`** — In-process wire transport connecting WireClient to WireServer via memory buffers. Used for testing. pImpl.
-- **`Protocol`** — Wire protocol structs (`DeviceInfo`, `SessionInit`, `SessionReady`, `MessageHeader`) and magic numbers. Header-only.
+- **`ge::run(Factory, SessionHostConfig)`** (`SessionHost.h`) — Blocks until SIGINT or all sessions end. Connects to ged via sideband WebSocket, sets up bgfx rendering (headless H.264 encode by default, or native window when `headless=false`), and calls the factory for each attaching player. The factory receives a `ge::Context` and returns a `RunConfig`. `SessionHostConfig` controls default dimensions, headless mode, and app identity for the persistent database path.
+- **`ge::Context`** — Platform context passed to the factory. Provides `width()`, `height()`, `deviceClass()`, and `db()` (the engine-managed sqlpipe database). Cheaply copyable (shared_ptr internals); safe to capture by value in lambdas.
+- **`ge::RunConfig`** — Render loop callbacks: `onUpdate(dt)`, `onRender(w, h)`, `onEvent(SDL_Event)`, `onShutdown()`.
+- **`ge::Factory`** — `std::function<RunConfig(Context)>`.
 
-### Platform
+### Rendering
 
-- **`GpuContext`** — WebGPU device/queue/surface lifecycle. Supports native init (from `SdlContext`) or wire-mode init (device, queue, surface, format, dimensions). `currentFrameView()` + `present()` for frame rendering. pImpl.
-- **`Session`** — Unified session interface. Compiles as wire mode (`SessionWire.cpp`) or direct native mode (`SessionDirect.cpp`). Same API: `gpu()`, `pixelRatio()`, `run(RunConfig)`. `RunConfig` has `onUpdate`, `onRender`, `onEvent`, `onResize` callbacks. pImpl.
-- **`SdlContext`** — RAII SDL3 window creation with Metal layer for WebGPU surface. pImpl.
-- **`Resource`** — `ge::resource(path)` resolves asset paths. Returns the path unchanged on desktop; prepends the iOS app bundle `Resources/` directory on iOS. Header-only.
+- **`BgfxContext`** (`BgfxContext.h`) — Manages the bgfx device lifecycle: initialization (Metal on macOS, Vulkan on Android), frame begin/end, and headless vs. windowed mode. Used internally by `SessionHost`; apps interact with bgfx directly via its API rather than through this class.
 
-### GPU Resources
+### Protocol
 
-- **`WgpuResource<T>`** — RAII move-only wrapper for WebGPU handles. Type aliases: `BufferHandle`, `TextureHandle`, `SamplerHandle`, etc.
-- **`Pipeline`** — WebGPU render pipeline created from WGSL shader source with bind group layouts. pImpl.
-- **`BindGroupBuilder`** — Builder pattern for constructing bind groups with buffers, textures, and samplers.
-- **`UniformBuffer`** — GPU buffer for uniform data with queue-based writes.
-- **`CaptureTarget`** — Offscreen RGBA8 render target for pixel readback.
-- **`ShaderUtil`** — `ge::loadProgram()` loads compiled shader binaries.
+- **`Protocol`** (`Protocol.h`) — Wire protocol structs (`DeviceInfo`, `SafeAreaUpdate`, `AspectLock`, `MessageHeader`) and magic number constants. Header-only.
 
 ### Assets
 
-- **`Mesh`** — Vertex + index buffer pair. `Mesh::fromStream()` reads binary format. Vertex layout: position (3f) + texcoord (2f).
-- **`Texture`** — GPU texture from image file. `Texture::fromFile()` loads via SDL3_image, converts to RGBA8.
-- **`Model`** — Pairs a `Mesh` with a `const Texture*`.
-- **`ModelFormat`** — `ge::MeshVertex` struct (x, y, z, u, v).
-
-### Manifest System
-
-- **`ManifestSchema`** — JSON-serializable types: `MeshRef`, `ModelDef<Meta>`, `ManifestDoc<Meta>`. Templated on application-specific metadata.
-- **`ManifestLoader`** — `ge::loadManifest<Meta>(path)` loads a JSON manifest + binary mesh pack + textures. Returns `std::unique_ptr<Manifest<Meta>>`.
+- **`ManifestSchema`** (`ManifestSchema.h`) — JSON-serializable types: `MeshRef`, `ModelDef<Meta>`, `ManifestDoc<Meta>`. Templated on application-specific metadata.
+- **`ModelFormat`** (`ModelFormat.h`) — `ge::MeshVertex` struct (x, y, z, u, v).
+- **`Model`** (`Model.h`) — Associates mesh data with metadata.
 
 ### Animation
 
-- **`GlobeController`** — Encapsulates `DampedRotation` + drag state + input source arbitration (mouse vs finger). `event()` handles SDL touch/mouse events, `update(dt)` flushes drag accumulation and applies inertia. Supports two-finger pinch-rotate (log-scale zoom delta via `consumePinchDelta()`, rotation around camera view axis). `setSensitivity()` and `setDamping()` for runtime tuning. `pinching()` getter for pinch state. Velocity decays to zero during stationary drag — no residual momentum on release. Header-only.
-- **`DampedRotation`** — Quaternion orientation + angular velocity with exponential decay. Supports screen-space drag, inertia, framerate-independent damping (`damping^(60*dt)`). `setDamping()` for runtime tuning. `isMoving()` checks if velocity is above threshold. `matrix()` returns the 4x4 rotation matrix for rendering.
-- **`DampedValue`** — 1D value + velocity with exponential decay.
-- **`DeltaTimer`** — Frame delta-time helper.
+- **`GlobeController`** (`GlobeController.h`) — Encapsulates `DampedRotation` + drag state + input source arbitration (mouse vs finger). `event()` handles SDL touch/mouse events, `update(dt)` flushes drag accumulation and applies inertia. Supports two-finger pinch-rotate (log-scale zoom delta via `consumePinchDelta()`, rotation around camera view axis). `setSensitivity()` and `setDamping()` for runtime tuning. `pinching()` getter for pinch state. Velocity decays to zero during stationary drag — no residual momentum on release. Header-only.
+- **`DampedRotation`** (`DampedRotation.h`) — Quaternion orientation + angular velocity with exponential decay. Supports screen-space drag, inertia, framerate-independent damping (`damping^(60*dt)`). `setDamping()` for runtime tuning. `isMoving()` checks if velocity is above threshold. `matrix()` returns the 4x4 rotation matrix for rendering.
+- **`DampedValue`** (`DampedValue.h`) — 1D value + velocity with exponential decay.
+- **`DeltaTimer`** (`DeltaTimer.h`) — Frame delta-time helper.
 
 ### Tweak System
 
 - **`Tweak<T>`** (`Tweak.h`) — Generic runtime-tunable parameter with atomic `shared_ptr` for lock-free reads. Specialized types: `EnumTweak` (int with named labels for dropdown UI), `Vec2Tweak` (float2 with per-axis screen direction via `Dir` enum), `AxisTweak` (float with drag axis vector encoding direction+sensitivity), `Color` (float4 alias). Database: `loadOverrides()` opens SQLite DB and applies saved values, `save()` persists a tweak, `resetOne()`/`resetAll()` restore defaults. JSON API: `allToJson()` emits name, value, default, and type-specific metadata; `parseAndApply()` sets a value from JSON; `parseAndReset()` resets by name or all. Global generation counter (`generation()`) increments on every `set()` for change tracking. Header-only, in `tweak::` namespace.
 
-### Text and Audio
+### Platform
 
-- **`TextRenderer`** (`TextRenderer.h`) — Bitmap font text renderer. Builds an ASCII glyph atlas from a TrueType font via SDL3_ttf at construction time. `drawText()` queues textured quads, `flush()` uploads and draws the batch. `measureText()` for layout. pImpl.
-- **`Audio`** (`Audio.h`) — Audio playback. `load()` loads WAV/MP3 clips (returns a clip ID), `play()`/`stop()`/`setVolume()` for control. Audio data and commands are sent to the player over the wire protocol. pImpl.
+- **`Resource`** (`Resource.h`) — `ge::resource(path)` resolves asset paths. Returns the path unchanged on desktop; prepends the iOS app bundle `Resources/` directory on iOS. Header-only.
+- **`SdlContext`** (`SdlContext.h`) — RAII SDL3 window creation. Used by the player; not typically used by the server. pImpl.
+- **`Signal`** (`Signal.h`) — SIGINT handler registration for graceful shutdown.
 
-### File I/O
+### I/O
 
 - **`FileIO`** (`FileIO.h`) — `ge::openFile(path)` returns a `std::unique_ptr<std::istream>`. Uses `SDL_IOFromFile` internally for platform-agnostic file access (Android APK assets, iOS bundles, normal filesystem).
+- **`WebSocketClient`** (`WebSocketClient.h`) — Async WebSocket client used by `SessionHost` to connect to ged. pImpl.
+
+### Video
+
+- **`VideoEncoder`** (`VideoEncoder.h`) — H.264 encoder interface. Platform implementation: `VideoEncoder_apple.mm` (VideoToolbox). Used internally by `SessionHost` when running headless. pImpl.
+- **`VideoDecoder`** (`VideoDecoder.h`) — H.264 decoder interface. Platform implementation: `VideoDecoder_apple.mm` (VideoToolbox). Used by the player. pImpl.
 
 ### Testing
 
-- **`ImageDiff`** — `imgdiff::compareCPU()` for pixel-level RMS comparison.
+- **`ImageDiff`** (`ImageDiff.h`) — `imgdiff::compareCPU()` for pixel-level RMS comparison.
 
 ## Tests
 
@@ -642,11 +397,11 @@ make unit-test    # Build and run ge unit tests
 
 ## Namespaces
 
-- `ge::` — Engine types (`GpuContext`, `WireSession`, `Pipeline`, `loadManifest`, `loadProgram`, `MeshVertex`)
-- `wire::` — Wire protocol constants and types (`DeviceInfo`, `SessionInit`, `kMaxMessageSize`)
-- `ge::detail::` — Internal helpers (`loadMeshPack`)
+- `ge::` — Engine types and functions (`run`, `Context`, `RunConfig`, `resource`, `MeshVertex`)
+- `wire::` — Protocol constants and structs (`DeviceInfo`, `MessageHeader`, `kVideoStreamMagic`, etc.)
+- `tweak::` — Tweak system (`Tweak<T>`, `EnumTweak`, `Vec2Tweak`, `Color`)
 - `imgdiff::` — Image comparison utilities
-- Top-level — `Mesh`, `Texture`, `Model`, `DampedRotation`, `DampedValue`, `DeltaTimer`, `SdlContext`
+- Top-level — `DampedRotation`, `DampedValue`, `DeltaTimer`, `SdlContext`
 
 ## Working with Claude Code
 
@@ -660,19 +415,19 @@ make && make player
 
 ### Modifying the player
 
-Shared player logic lives in `tools/player_core.cpp`. Platform-specific code is in `tools/player_platform_*.cpp`. Mobile entry points are in `tools/ios/main.mm` and `tools/android/`. The desktop entry point is `tools/player.cpp`.
+The player entry point is `ge/tools/player.cpp`. The Apple capture backend is `ge/tools/player_capture_apple.mm`. Mobile entry points in `ge/tools/ios/` and `ge/tools/android/` are currently broken (need bgfx port).
 
-The player is app-agnostic — it renders whatever wire commands it receives. Avoid adding app-specific logic to the player.
+The player is app-agnostic — it decodes and displays whatever H.264 stream it receives. Avoid adding app-specific logic to the player.
 
-### Modifying the wire protocol
+### Modifying the streaming protocol
 
-Protocol changes require updating both `WireSession` (server side) and `player_core.cpp` (player side) in lockstep. Bump `kProtocolVersion` in `Protocol.h` when making breaking changes.
+Protocol changes require updating both `SessionHost.mm` (server side) and `player.cpp` (player side) in lockstep. Bump `kProtocolVersion` in `Protocol.h` when making breaking changes.
 
 ### Adding a new public API class
 
 1. Header in `include/ge/ClassName.h`
-2. Implementation in `src/ClassName.cpp`
-3. Use pImpl for classes that pull in Dawn/SDL/asio headers (see parent project's CLAUDE.md for pImpl guidelines)
+2. Implementation in `src/ClassName.cpp` (or `.mm` for ObjC++)
+3. Use pImpl for classes that pull in bgfx/SDL/asio headers (see parent project's CLAUDE.md for pImpl guidelines)
 4. Add to `ge/SRC` in `Module.mk` if it's a new source file
 5. Update this CLAUDE.md's Public API section
 
@@ -733,4 +488,3 @@ Each check prints PASS/FAIL/WARN. The script exits non-zero if any check fails. 
 Only after the smoke test passes and the problem is still unclear, ask the user what they see — but state what you already verified: "Smoke test passed (ged connected, player session active, no crash reports) — can you confirm whether the globe is rendering?"
 
 **Device preference**: When the user tells you which device to test on (e.g. "use Pippa"), save it to auto-memory so you remember across sessions. Always pass the preferred device via `--device`. If the smoke test fails because that device isn't found, tell the user which device was expected and list the devices that *are* available (the script prints them), then ask how they'd like to proceed.
-

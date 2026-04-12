@@ -1,7 +1,9 @@
 #!/bin/bash
-# Cross-compile Dawn, SDL3, SDL3_image, and SDL3_ttf for iOS (device and/or simulator).
+# Cross-compile SDL3, SDL3_image, and SDL3_ttf for iOS (device and/or simulator).
 # When both device and simulator are built, creates xcframeworks.
 # Run once (or after updating library versions).
+#
+# Dawn build removed — engine uses bgfx now. This script only builds SDL3.
 #
 # Usage: cd ge/tools/ios && bash build-deps.sh [--device|--simulator|--all]
 #   --device      Build for iOS device only (default)
@@ -27,90 +29,19 @@ esac
 # ── Library versions ─────────────────────────────
 # Keep in sync with macos/build-deps.sh and android/build-deps.sh
 
-DAWN_COMMIT="4764cd21387f41d979d6bdd662d08ec0f8bf267b"
-DAWN_REPO="https://dawn.googlesource.com/dawn"
-
 SDL_IMAGE_TAG="release-3.4.0"
 SDL_IMAGE_REPO="https://github.com/libsdl-org/SDL_image.git"
 
 SDL_TTF_TAG="release-3.2.2"
 SDL_TTF_REPO="https://github.com/libsdl-org/SDL_ttf.git"
 
-# Dawn's bundled jinja2 is incompatible with Python 3.13+.
-# Pin to the system Python which ships a working version.
-PYTHON=$(/usr/bin/python3 -c 'import sys; print(sys.executable)')
-
-# Common Dawn CMake flags
-DAWN_FLAGS=(
-    -DPython3_EXECUTABLE="$PYTHON"
-    -DCMAKE_BUILD_TYPE=Release
-    -DCMAKE_SYSTEM_NAME=iOS
-    -DCMAKE_OSX_ARCHITECTURES=arm64
-    -DCMAKE_OSX_DEPLOYMENT_TARGET=16.0
-    -DDAWN_BUILD_MONOLITHIC_LIBRARY=STATIC
-    -DDAWN_BUILD_SAMPLES=OFF
-    -DDAWN_BUILD_TESTS=OFF
-    -DDAWN_BUILD_PROTOBUF=OFF
-    -DTINT_BUILD_IR_BINARY=OFF
-    -DTINT_BUILD_TESTS=OFF
-    -DDAWN_ENABLE_METAL=ON
-    -DDAWN_ENABLE_NULL=OFF
-    -DDAWN_ENABLE_DESKTOP_GL=OFF
-    -DDAWN_ENABLE_OPENGLES=OFF
-    -DDAWN_ENABLE_D3D11=OFF
-    -DDAWN_ENABLE_D3D12=OFF
-    -DDAWN_ENABLE_VULKAN=OFF
-    -DDAWN_USE_GLFW=OFF
-    -DTINT_BUILD_CMD_TOOLS=OFF
-    -DTINT_BUILD_GLSL_VALIDATOR=OFF
-)
-
-# Common iOS CMake flags (non-Dawn)
+# Common iOS CMake flags
 IOS_FLAGS=(
     -DCMAKE_BUILD_TYPE=Release
     -DCMAKE_SYSTEM_NAME=iOS
     -DCMAKE_OSX_ARCHITECTURES=arm64
     -DCMAKE_OSX_DEPLOYMENT_TARGET=16.0
 )
-
-# ── Dawn source ──────────────────────────────────────
-
-DAWN_SRC="$BUILD/dawn-src"
-
-if [ ! -d "$DAWN_SRC/.git" ]; then
-    echo "==> Cloning Dawn..."
-    git clone "$DAWN_REPO" "$DAWN_SRC"
-fi
-
-echo "==> Checking out Dawn $DAWN_COMMIT..."
-git -C "$DAWN_SRC" fetch --no-recurse-submodules origin
-git -C "$DAWN_SRC" checkout --no-recurse-submodules "$DAWN_COMMIT"
-
-echo "==> Fetching Dawn dependencies..."
-python3 "$DAWN_SRC/tools/fetch_dawn_dependencies.py"
-
-# ── Helper: build Dawn for a given sysroot ───────────
-
-build_dawn() {
-    local SYSROOT="$1"   # iphoneos or iphonesimulator
-    local SUFFIX="$2"    # "" or "-simulator"
-    local DAWN_B="$BUILD/dawn${SUFFIX}"
-    local DEST="$VENDOR/dawn/lib/ios-arm64${SUFFIX}"
-
-    echo "==> Configuring Dawn for iOS arm64 ($SYSROOT)..."
-    cmake -S "$DAWN_SRC" -B "$DAWN_B" \
-        "${DAWN_FLAGS[@]}" \
-        -DCMAKE_OSX_SYSROOT="$SYSROOT"
-
-    echo "==> Building Dawn ($SYSROOT)..."
-    cmake --build "$DAWN_B" -j"$JOBS"
-
-    mkdir -p "$DEST"
-    cp "$DAWN_B/src/dawn/libdawn_proc.a" "$DEST/"
-    cp "$DAWN_B/src/dawn/native/libwebgpu_dawn.a" "$DEST/"
-    cp "$DAWN_B/src/dawn/wire/libdawn_wire.a" "$DEST/"
-    echo "==> Dawn ($SYSROOT) installed to $DEST"
-}
 
 # ── Helper: build SDL3 for a given sysroot ───────────
 
@@ -232,10 +163,10 @@ build_sdl_ttf() {
 # ── Helper: create xcframework from device + simulator .a ──
 
 create_xcframework() {
-    local LIB_NAME="$1"       # e.g. "libdawn_proc.a"
-    local DEVICE_DIR="$2"     # e.g. "$VENDOR/dawn/lib/ios-arm64"
-    local SIM_DIR="$3"        # e.g. "$VENDOR/dawn/lib/ios-arm64-simulator"
-    local OUTPUT_DIR="$4"     # e.g. "$VENDOR/dawn/xcframeworks"
+    local LIB_NAME="$1"       # e.g. "libSDL3.a"
+    local DEVICE_DIR="$2"     # e.g. "$VENDOR/sdl3/lib/ios-arm64"
+    local SIM_DIR="$3"        # e.g. "$VENDOR/sdl3/lib/ios-arm64-simulator"
+    local OUTPUT_DIR="$4"     # e.g. "$VENDOR/sdl3/xcframeworks"
     local FRAMEWORK_NAME="${LIB_NAME%.a}"
     FRAMEWORK_NAME="${FRAMEWORK_NAME#lib}"
 
@@ -253,14 +184,12 @@ create_xcframework() {
 # ── Build ────────────────────────────────────────────
 
 if $BUILD_DEVICE; then
-    build_dawn      "iphoneos" ""
     build_sdl       "iphoneos" ""
     build_sdl_image "iphoneos" ""
     build_sdl_ttf   "iphoneos" ""
 fi
 
 if $BUILD_SIM; then
-    build_dawn      "iphonesimulator" "-simulator"
     build_sdl       "iphonesimulator" "-simulator"
     build_sdl_image "iphonesimulator" "-simulator"
     build_sdl_ttf   "iphonesimulator" "-simulator"
@@ -268,18 +197,12 @@ fi
 
 # ── Create xcframeworks (when both variants are built) ──
 
-DAWN_DEVICE="$VENDOR/dawn/lib/ios-arm64"
-DAWN_SIM="$VENDOR/dawn/lib/ios-arm64-simulator"
 SDL_DEVICE="$VENDOR/sdl3/lib/ios-arm64"
 SDL_SIM="$VENDOR/sdl3/lib/ios-arm64-simulator"
 
-if [ -f "$DAWN_DEVICE/libdawn_proc.a" ] && [ -f "$DAWN_SIM/libdawn_proc.a" ]; then
+if [ -f "$SDL_DEVICE/libSDL3.a" ] && [ -f "$SDL_SIM/libSDL3.a" ]; then
     echo ""
     echo "==> Packaging xcframeworks..."
-
-    create_xcframework "libdawn_proc.a"   "$DAWN_DEVICE" "$DAWN_SIM" "$VENDOR/dawn/xcframeworks"
-    create_xcframework "libwebgpu_dawn.a" "$DAWN_DEVICE" "$DAWN_SIM" "$VENDOR/dawn/xcframeworks"
-    create_xcframework "libdawn_wire.a"   "$DAWN_DEVICE" "$DAWN_SIM" "$VENDOR/dawn/xcframeworks"
 
     create_xcframework "libSDL3.a"        "$SDL_DEVICE" "$SDL_SIM" "$VENDOR/sdl3/xcframeworks"
     create_xcframework "libSDL3_image.a"  "$SDL_DEVICE" "$SDL_SIM" "$VENDOR/sdl3/xcframeworks"
@@ -292,8 +215,8 @@ if [ -f "$DAWN_DEVICE/libdawn_proc.a" ] && [ -f "$DAWN_SIM/libdawn_proc.a" ]; th
         done
     done
 
-    echo "==> xcframeworks created in $VENDOR/dawn/xcframeworks/ and $VENDOR/sdl3/xcframeworks/"
+    echo "==> xcframeworks created in $VENDOR/sdl3/xcframeworks/"
 fi
 
 echo ""
-echo "Done. Libraries are in $VENDOR/dawn/lib/ and $VENDOR/sdl3/lib/"
+echo "Done. Libraries are in $VENDOR/sdl3/lib/"

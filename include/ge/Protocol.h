@@ -6,157 +6,64 @@
 
 static_assert(std::endian::native == std::endian::little, "Little-endian required");
 
+// Wire protocol for the H.264 streaming dev mode.
+// The server renders headless via bgfx, encodes H.264 frames, and streams them
+// to the player over a ged-brokered WebSocket. The player decodes and displays
+// frames, and forwards SDL input back to the server over the same channel.
+//
+// The Dawn wire protocol that previously lived here has been removed along
+// with the rest of the Dawn/WebGPU dependency.
 namespace wire {
 
 // Magic numbers for message type identification (ASCII: "GE2x")
-constexpr uint32_t kDeviceInfoMagic = 0x47453244;   // "GE2D"
-constexpr uint32_t kSessionInitMagic = 0x47453253;  // "GE2S"
-constexpr uint32_t kWireCommandMagic = 0x47453243;  // "GE2C"
-constexpr uint32_t kWireResponseMagic = 0x47453252; // "GE2R"
-constexpr uint32_t kSdlEventMagic = 0x47453249;    // "GE2I"
-constexpr uint32_t kFrameEndMagic = 0x47453246;    // "GE2F" — server → player: frame boundary
-constexpr uint32_t kFrameReadyMagic = 0x47453247;  // "GE2G" — player → server: ready for next
-constexpr uint32_t kDeferredMipMagic = 0x47453248; // "GE2H" — server → player: deferred mip data
-constexpr uint32_t kMipCacheHitMagic = 0x4745324A; // "GE2J" — player → server: cached mip found
-constexpr uint32_t kMipCacheMissMagic = 0x4745324B; // "GE2K" — player → server: cached mip not found
-constexpr uint32_t kSessionEndMagic = 0x4745324D;   // "GE2M" — ged → player: server disconnected
-constexpr uint32_t kSensorConfigMagic = 0x4745324C; // "GE2L" — server → player: sensor config
-constexpr uint32_t kAudioDataMagic = 0x47453241;    // "GE2A" — server → player: audio asset data
-constexpr uint32_t kAudioCommandMagic = 0x47453242;  // "GE2B" — server → player: audio play/stop/volume
-constexpr uint32_t kStateRequestMagic = 0x47453251;  // "GE2Q" — server → player: send your DB
-constexpr uint32_t kStateDataMagic = 0x47453250;      // "GE2P" — player → server: raw DB bytes
-constexpr uint32_t kSqlpipeMsgMagic = 0x47453254;     // "GE2T" — bidirectional sqlpipe messages
+constexpr uint32_t kDeviceInfoMagic     = 0x47453244;  // "GE2D" — player → ged: player dimensions/class
+constexpr uint32_t kSdlEventMagic       = 0x47453249;  // "GE2I" — player → server: SDL input event
+constexpr uint32_t kSessionEndMagic     = 0x4745324D;  // "GE2M" — ged → player: server disconnected
 constexpr uint32_t kServerAssignedMagic = 0x4745324E;  // "GE2N" — ged → player: assigned server name
-constexpr uint32_t kVideoStreamMagic  = 0x47453256;   // "GE2V" — player → ged: H.264 NALs
-constexpr uint32_t kStreamStartMagic  = 0x47453257;   // "GE2W" — ged → player: start streaming
-constexpr uint32_t kStreamStopMagic   = 0x47453258;   // "GE2X" — ged → player: stop streaming
-constexpr uint32_t kSafeAreaMagic     = 0x47453245;   // "GE2E" — player → server: safe area update
-constexpr uint32_t kAspectLockMagic   = 0x47453260;   // "GE2`" — server → player: lock aspect ratio
+constexpr uint32_t kSqlpipeMsgMagic     = 0x47453254;  // "GE2T" — bidirectional sqlpipe messages
+constexpr uint32_t kVideoStreamMagic    = 0x47453256;  // "GE2V" — server → ged: H.264 NALs
+constexpr uint32_t kStreamStartMagic    = 0x47453257;  // "GE2W" — ged → player: start streaming
+constexpr uint32_t kStreamStopMagic     = 0x47453258;  // "GE2X" — ged → player: stop streaming
+constexpr uint32_t kSafeAreaMagic       = 0x47453245;  // "GE2E" — player → server: safe area update
+constexpr uint32_t kAspectLockMagic     = 0x47453260;  // "GE2`" — server → player: lock aspect ratio
 
-// TODO: Consider semver or min/max range for backwards-compatible changes.
-constexpr uint16_t kProtocolVersion = 5;
-constexpr size_t kMaxMessageSize = 512 * 1024 * 1024;  // 512MB (initial resource uploads can be large)
+constexpr uint16_t kProtocolVersion = 6;  // Dawn wire removed
+constexpr size_t   kMaxMessageSize = 512 * 1024 * 1024;  // 512MB (matches ged/bridge.go)
 
-// Sent by player after connecting to game server
+// Sent by player after connecting to the game server (via ged).
 struct DeviceInfo {
     uint32_t magic = kDeviceInfoMagic;
     uint16_t version = kProtocolVersion;
-    uint16_t width;           // Device width in pixels (e.g., 390 for iPhone 14 Pro)
-    uint16_t height;          // Device height in pixels (e.g., 844)
+    uint16_t width;           // Device width in pixels
+    uint16_t height;          // Device height in pixels
     uint16_t pixelRatio;      // Device pixel ratio (e.g., 3 for retina)
-    uint8_t deviceClass = 0;  // 0=unknown, 1=phone, 2=tablet, 3=desktop
-    uint8_t orientation = 0;  // SDL_DisplayOrientation value (0-4)
-    uint32_t preferredFormat; // wgpu::TextureFormat value
-    uint16_t safeX = 0;      // Safe area left edge in pixels (0 = full screen)
-    uint16_t safeY = 0;      // Safe area top edge in pixels
-    uint16_t safeW = 0;      // Safe area width in pixels (0 = use full width)
-    uint16_t safeH = 0;      // Safe area height in pixels (0 = use full height)
+    uint8_t  deviceClass = 0; // 0=unknown, 1=phone, 2=tablet, 3=desktop
+    uint8_t  orientation = 0; // SDL_DisplayOrientation value (0-4)
+    uint16_t safeX = 0;       // Safe area left edge in pixels
+    uint16_t safeY = 0;       // Safe area top edge in pixels
+    uint16_t safeW = 0;       // Safe area width in pixels (0 = use full width)
+    uint16_t safeH = 0;       // Safe area height in pixels (0 = use full height)
 };
 
-// Safe area update (player → server, sent on orientation change)
+// Safe area update (player → server, sent on orientation change).
 struct SafeAreaUpdate {
     uint32_t magic = kSafeAreaMagic;
-    uint16_t safeX;   // Safe area left edge in pixels
-    uint16_t safeY;   // Safe area top edge in pixels
-    uint16_t safeW;   // Safe area width in pixels (0 = use full width)
-    uint16_t safeH;   // Safe area height in pixels (0 = use full height)
+    uint16_t safeX;
+    uint16_t safeY;
+    uint16_t safeW;
+    uint16_t safeH;
 };
 
-// Wire handle (matches dawn::wire::Handle)
-struct Handle {
-    uint32_t id;
-    uint32_t generation;
-};
-
-// SessionInit flags (bitfield, sent from game server to player)
-constexpr uint16_t kSessionFlagInternalOrientation = 0x0001;  // App handles orientation transitions internally (smooth animation)
-
-// Sent by game server after receiving DeviceInfo
-// Contains reserved handles that the player should inject native resources into
-struct SessionInit {
-    uint32_t magic = kSessionInitMagic;
-    uint16_t version = kProtocolVersion;
-    uint16_t flags = 0;
-    // Reserved handles from WireClient that player should inject into
-    Handle instanceHandle;
-    Handle adapterHandle;
-    Handle deviceHandle;
-    Handle queueHandle;
-    Handle surfaceHandle;
-};
-
-// Sent by player after injecting native resources
-constexpr uint32_t kSessionReadyMagic = 0x47453259;  // "GE2Y"
-struct SessionReady {
-    uint32_t magic = kSessionReadyMagic;
-    uint16_t version = kProtocolVersion;
-    uint16_t reserved = 0;
-};
-
-// Server → player: lock window aspect ratio (width/height as floats)
-// Send 0.0 to unlock.
+// Server → player: lock window aspect ratio. Send 0.0 to unlock.
 struct AspectLock {
     uint32_t magic = kAspectLockMagic;
     float ratio;  // width/height (e.g. 0.6948 for 954:1373), 0 = unlock
 };
 
-// Header for wire command/response messages
+// Header for binary wire messages.
 struct MessageHeader {
-    uint32_t magic;   // kWireCommandMagic, kWireResponseMagic, or kSdlEventMagic
+    uint32_t magic;
     uint32_t length;  // Payload length in bytes
-};
-
-// Split boundary: first kMipHeadSize bytes of a WriteTexture wire command contain
-// non-deterministic wire ObjectIds; the remainder is deterministic pixel data.
-constexpr size_t kMipHeadSize = 128;
-
-// Payload header for kDeferredMipMagic messages (follows MessageHeader)
-struct DeferredMipHeader {
-    uint32_t textureId;    // wire ObjectId of the texture
-    uint32_t mipLevel;     // which mip level this delivers
-    uint32_t commandSize;  // bytes following this header (head + tail or head + hash)
-    uint8_t  hashOnly;     // 1 = probe (head[128] + hash[8]), 0 = full (head[128] + tail[])
-    uint8_t  reserved[3] = {};
-};
-
-// Player → server response to a hash probe
-struct MipCacheResponse {
-    uint32_t textureId;
-    uint32_t mipLevel;
-};
-
-// Sensor configuration (server → player)
-struct SensorConfig {
-    uint32_t magic = kSensorConfigMagic;
-    uint8_t sensorType;   // SDL_SensorType value (e.g. SDL_SENSOR_ACCEL = 1)
-    uint8_t enabled;      // 1 = enable, 0 = disable
-    uint16_t reserved = 0;
-};
-
-// FNV-1a 64-bit hash (deterministic, used for mip cache probes)
-inline uint64_t fnv1a64(const char* data, size_t size) {
-    uint64_t hash = 0xcbf29ce484222325ULL;
-    for (size_t i = 0; i < size; ++i) {
-        hash ^= static_cast<uint8_t>(data[i]);
-        hash *= 0x100000001b3ULL;
-    }
-    return hash;
-}
-
-// Audio data header (server → player, followed by raw file bytes)
-struct AudioData {
-    uint32_t audioId;     // 0-based clip index
-    uint32_t format;      // 0 = WAV, 1 = MP3
-    uint32_t flags;       // bit 0 = loop
-    uint32_t dataLength;  // byte count of audio file data following this header
-};
-
-// Audio playback command (server → player)
-struct AudioCommand {
-    uint32_t command;     // 0 = play, 1 = stop, 2 = setVolume
-    uint32_t audioId;
-    float volume;         // 0.0 – 1.0
-    uint32_t reserved = 0;
 };
 
 } // namespace wire
