@@ -43,7 +43,8 @@ struct Session {
     std::string id;
     std::shared_ptr<WsConnection> wire;
     RunConfig config;
-    int width, height;
+    int width = 0, height = 0;
+    bool ready = false;  // true once DeviceInfo arrives and capture is initialized
 
     // Offscreen capture: framebuffer + double-buffered readback.
     bgfx::FrameBufferHandle fb = BGFX_INVALID_HANDLE;
@@ -169,10 +170,11 @@ void run(Factory factory, const SessionHostConfig& config) {
                 auto sessionId = jsonStringValue(msg, "session_id");
 
                 if (type == "player_attached" && !sessionId.empty()) {
-                    if (sessions.count(sessionId)) continue;  // already active
+                    if (sessions.count(sessionId)) continue;
                     SPDLOG_INFO("Player attached: session '{}'", sessionId);
 
-                    // Open per-session wire WebSocket
+                    // Open per-session wire. DeviceInfo will arrive on it
+                    // naturally — the session initializes when it does.
                     std::string wirePath = "/ws/server/wire/" + sessionId;
                     auto wire = connectWebSocket("localhost", 42069, wirePath, 2000);
                     if (!wire || !wire->isOpen()) {
@@ -180,59 +182,9 @@ void run(Factory factory, const SessionHostConfig& config) {
                         continue;
                     }
 
-                    // Read DeviceInfo from the wire (ged bridges from player)
-                    int w = defaultW, h = defaultH;
-                    wire->setRecvTimeout(5000);
-                    {
-                        std::vector<char> devData;
-                        if (wire->recvBinary(devData) && devData.size() >= 8) {
-                            uint32_t magic = 0;
-                            std::memcpy(&magic, devData.data(), 4);
-                            if (magic == wire::kDeviceInfoMagic &&
-                                devData.size() >= sizeof(wire::MessageHeader) + sizeof(wire::DeviceInfo)) {
-                                wire::DeviceInfo info;
-                                std::memcpy(&info, devData.data() + sizeof(wire::MessageHeader), sizeof(info));
-                                w = info.width / 2;
-                                h = info.height / 2;
-                                SPDLOG_INFO("Session '{}': DeviceInfo {}x{} @{}x → render at {}x{}",
-                                            sessionId, info.width, info.height, info.pixelRatio, w, h);
-                            }
-                        }
-                    }
-                    wire->setRecvTimeout(0);
-                    if (w == 0 || h == 0) { w = defaultW; h = defaultH; }
-
-                    // Create session
                     auto sess = std::make_unique<Session>();
                     sess->id = sessionId;
                     sess->wire = std::move(wire);
-                    sess->width = w;
-                    sess->height = h;
-
-                    // Capture pipeline
-                    sess->initCapture();
-
-                    // H.264 encoder — sends on the wire
-                    auto wirePtr = sess->wire;
-                    sess->encoder = std::make_unique<VideoEncoder>(w, h, 30,
-                        [wirePtr](VideoEncoder::Frame frame) {
-                            if (!wirePtr || !wirePtr->isOpen()) return;
-                            wire::MessageHeader hdr{};
-                            hdr.magic = wire::kVideoStreamMagic;
-                            hdr.length = 1 + frame.size;
-                            uint8_t flags = frame.isKeyframe ? 1 : 0;
-                            std::vector<uint8_t> msg(sizeof(hdr) + 1 + frame.size);
-                            std::memcpy(msg.data(), &hdr, sizeof(hdr));
-                            msg[sizeof(hdr)] = flags;
-                            std::memcpy(msg.data() + sizeof(hdr) + 1, frame.data, frame.size);
-                            wirePtr->sendBinary(msg.data(), msg.size());
-                        });
-
-                    // Call factory to create game state
-                    Context ctx{w, h, DeviceClass::Desktop, ":memory:"};
-                    sess->config = factory(ctx);
-
-                    SPDLOG_INFO("Session '{}': ready ({}x{})", sessionId, w, h);
                     sessions[sessionId] = std::move(sess);
 
                 } else if (type == "player_detached" && !sessionId.empty()) {
@@ -266,9 +218,9 @@ void run(Factory factory, const SessionHostConfig& config) {
             if (e.type == SDL_EVENT_QUIT) break;
         }
 
-        // ── 4. Update + render each session ──
+        // ── 4. Drain wires + update + render each session ──
         for (auto& [id, sess] : sessions) {
-            // Drain input from this session's wire
+            // Drain messages from this session's wire
             while (sess->wire && sess->wire->isOpen() && sess->wire->available() > 0) {
                 std::vector<char> data;
                 if (!sess->wire->recvBinary(data)) break;
@@ -277,13 +229,52 @@ void run(Factory factory, const SessionHostConfig& config) {
                 uint32_t magic = 0;
                 std::memcpy(&magic, data.data(), 4);
 
-                if (magic == wire::kSdlEventMagic &&
-                    data.size() >= sizeof(wire::MessageHeader) + sizeof(SDL_Event)) {
+                if (magic == wire::kDeviceInfoMagic && !sess->ready &&
+                    data.size() >= sizeof(wire::MessageHeader) + sizeof(wire::DeviceInfo)) {
+                    // DeviceInfo arrived — initialize the session.
+                    wire::DeviceInfo info;
+                    std::memcpy(&info, data.data() + sizeof(wire::MessageHeader), sizeof(info));
+                    sess->width = info.width / 2;
+                    sess->height = info.height / 2;
+                    if (sess->width == 0 || sess->height == 0) {
+                        sess->width = defaultW; sess->height = defaultH;
+                    }
+                    SPDLOG_INFO("Session '{}': DeviceInfo {}x{} @{}x → render at {}x{}",
+                                id, info.width, info.height, info.pixelRatio,
+                                sess->width, sess->height);
+
+                    sess->initCapture();
+
+                    auto wirePtr = sess->wire;
+                    int w = sess->width, h = sess->height;
+                    sess->encoder = std::make_unique<VideoEncoder>(w, h, 30,
+                        [wirePtr](VideoEncoder::Frame frame) {
+                            if (!wirePtr || !wirePtr->isOpen()) return;
+                            wire::MessageHeader hdr{};
+                            hdr.magic = wire::kVideoStreamMagic;
+                            hdr.length = 1 + frame.size;
+                            uint8_t flags = frame.isKeyframe ? 1 : 0;
+                            std::vector<uint8_t> msg(sizeof(hdr) + 1 + frame.size);
+                            std::memcpy(msg.data(), &hdr, sizeof(hdr));
+                            msg[sizeof(hdr)] = flags;
+                            std::memcpy(msg.data() + sizeof(hdr) + 1, frame.data, frame.size);
+                            wirePtr->sendBinary(msg.data(), msg.size());
+                        });
+
+                    Context ctx{w, h, DeviceClass::Desktop, ":memory:"};
+                    sess->config = factory(ctx);
+                    sess->ready = true;
+                    SPDLOG_INFO("Session '{}': ready ({}x{})", id, w, h);
+
+                } else if (magic == wire::kSdlEventMagic && sess->ready &&
+                           data.size() >= sizeof(wire::MessageHeader) + sizeof(SDL_Event)) {
                     SDL_Event ev;
                     std::memcpy(&ev, data.data() + sizeof(wire::MessageHeader), sizeof(SDL_Event));
                     if (sess->config.onEvent) sess->config.onEvent(ev);
                 }
             }
+
+            if (!sess->ready) continue;  // waiting for DeviceInfo
 
             // Update
             if (sess->config.onUpdate) sess->config.onUpdate(dt);

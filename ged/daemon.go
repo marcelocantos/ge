@@ -420,7 +420,10 @@ func (d *Daemon) UnsetSessionWire(sessionID string, conn *websocket.Conn) {
 // server's sideband connection instead.
 // Must be called with d.mu held.
 func (d *Daemon) tryBridgeSessionLocked(sess *PlayerSession) {
-	if sess.Player == nil || sess.bridged {
+	if sess.Player == nil {
+		return
+	}
+	if sess.Player.DeviceInfo == nil {
 		return
 	}
 	if sess.Player.DeviceInfo == nil {

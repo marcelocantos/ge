@@ -30,6 +30,7 @@ struct VideoDecoder::M {
     AVFrame* frame = nullptr;
     AVPacket* pkt = nullptr;
     SwsContext* sws = nullptr;
+    bool opened = false;
 
     // BGRA output buffer
     uint8_t* bgraData[4] = {};
@@ -43,7 +44,7 @@ struct VideoDecoder::M {
         if (bgraData[0]) av_freep(&bgraData[0]);
         av_frame_free(&frame);
         av_packet_free(&pkt);
-        av_parser_close(parser);
+        if (parser) av_parser_close(parser);
         avcodec_free_context(&ctx);
     }
 
@@ -57,16 +58,23 @@ struct VideoDecoder::M {
         ctx = avcodec_alloc_context3(codec);
         ctx->thread_count = 2;
 
-        if (avcodec_open2(ctx, codec, nullptr) < 0) {
-            SPDLOG_ERROR("VideoDecoder: avcodec_open2 failed");
-            avcodec_free_context(&ctx);
-            return;
-        }
-
+        // Don't open yet — wait for SPS/PPS via setParameterSets.
         parser = av_parser_init(AV_CODEC_ID_H264);
         frame = av_frame_alloc();
         pkt = av_packet_alloc();
-        SPDLOG_INFO("VideoDecoder: FFmpeg H.264 decoder ready");
+        SPDLOG_INFO("VideoDecoder: FFmpeg H.264 decoder allocated (deferred open)");
+    }
+
+    bool open() {
+        if (opened) return true;
+        int ret = avcodec_open2(ctx, codec, nullptr);
+        if (ret < 0) {
+            SPDLOG_ERROR("VideoDecoder: avcodec_open2 failed: {}", ret);
+            return false;
+        }
+        opened = true;
+        SPDLOG_INFO("VideoDecoder: codec opened (extradata={} bytes)", ctx->extradata_size);
+        return true;
     }
 
     void ensureBgraBuffer(int w, int h) {
@@ -88,10 +96,7 @@ struct VideoDecoder::M {
         while (ret >= 0) {
             ret = avcodec_receive_frame(ctx, frame);
             if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) break;
-            if (ret < 0) {
-                SPDLOG_ERROR("VideoDecoder: avcodec_receive_frame error {}", ret);
-                break;
-            }
+            if (ret < 0) break;
 
             int w = frame->width;
             int h = frame->height;
@@ -115,20 +120,38 @@ VideoDecoder::~VideoDecoder() = default;
 
 void VideoDecoder::setParameterSets(const uint8_t* sps, size_t spsSize,
                                      const uint8_t* pps, size_t ppsSize) {
-    // FFmpeg's parser handles SPS/PPS from the bitstream.
-    // No explicit configuration needed — they'll be parsed from the
-    // first keyframe which includes them inline.
-    SPDLOG_INFO("VideoDecoder: SPS/PPS set ({} + {} bytes)", spsSize, ppsSize);
+    if (!m->ctx) return;
+
+    // Set SPS+PPS as extradata BEFORE opening the codec.
+    // Format: [start code][SPS][start code][PPS]
+    static const uint8_t kStartCode[] = {0x00, 0x00, 0x00, 0x01};
+    size_t totalSize = 4 + spsSize + 4 + ppsSize;
+    uint8_t* extra = (uint8_t*)av_malloc(totalSize + AV_INPUT_BUFFER_PADDING_SIZE);
+    std::memset(extra, 0, totalSize + AV_INPUT_BUFFER_PADDING_SIZE);
+    std::memcpy(extra, kStartCode, 4);
+    std::memcpy(extra + 4, sps, spsSize);
+    std::memcpy(extra + 4 + spsSize, kStartCode, 4);
+    std::memcpy(extra + 4 + spsSize + 4, pps, ppsSize);
+    av_free(m->ctx->extradata);
+    m->ctx->extradata = extra;
+    m->ctx->extradata_size = static_cast<int>(totalSize);
+
+    // Now open the codec with the extradata set.
+    m->open();
+
+    SPDLOG_INFO("VideoDecoder: SPS/PPS set ({} + {} bytes), codec opened", spsSize, ppsSize);
 }
 
 void VideoDecoder::decode(const uint8_t* nalData, size_t nalSize) {
-    if (!m->ctx || !m->parser || nalSize == 0) return;
+    if (!m->ctx || !m->opened || !m->parser || nalSize == 0) return;
 
     std::lock_guard<std::mutex> lock(m->decodeMutex);
 
-    // Feed data to the parser. It assembles complete access units
-    // and calls avcodec_send_packet when ready.
-    const uint8_t* data = nalData;
+    // FFmpeg requires AV_INPUT_BUFFER_PADDING_SIZE bytes of zero padding.
+    std::vector<uint8_t> padded(nalSize + AV_INPUT_BUFFER_PADDING_SIZE, 0);
+    std::memcpy(padded.data(), nalData, nalSize);
+
+    const uint8_t* data = padded.data();
     int remaining = static_cast<int>(nalSize);
 
     while (remaining > 0) {
@@ -150,7 +173,9 @@ void VideoDecoder::decode(const uint8_t* nalData, size_t nalSize) {
             m->pkt->size = outSize;
             int ret = avcodec_send_packet(m->ctx, m->pkt);
             if (ret < 0 && ret != AVERROR(EAGAIN)) {
-                SPDLOG_ERROR("VideoDecoder: avcodec_send_packet error {}", ret);
+                static int errCount = 0;
+                if (errCount++ < 5)
+                    SPDLOG_ERROR("VideoDecoder: avcodec_send_packet error {}", ret);
                 continue;
             }
             m->deliverDecodedFrames();
@@ -159,7 +184,7 @@ void VideoDecoder::decode(const uint8_t* nalData, size_t nalSize) {
 }
 
 void VideoDecoder::flush() {
-    if (!m->ctx) return;
+    if (!m->ctx || !m->opened) return;
     std::lock_guard<std::mutex> lock(m->decodeMutex);
     avcodec_send_packet(m->ctx, nullptr);
     m->deliverDecodedFrames();
