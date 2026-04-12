@@ -7,7 +7,6 @@
 #include "player_core.h"
 
 #include <SDL3/SDL.h>
-#include <SDL3/SDL_main.h>
 #include <spdlog/spdlog.h>
 
 #include <ge/Protocol.h>
@@ -72,6 +71,8 @@ int playerCore(const std::string& host, int port) {
     ge::installSignalHandlers();
 
     SPDLOG_INFO("H.264 player starting");
+
+    // Removed touch/mouse hints — using SDL defaults.
 
     if (!SDL_Init(SDL_INIT_VIDEO)) {
         SPDLOG_ERROR("SDL_Init failed: {}", SDL_GetError());
@@ -213,6 +214,14 @@ int playerCore(const std::string& host, int port) {
                 running = false;
                 continue;
             }
+            // Debug: log touch/mouse events (unlimited)
+            if (e.type >= 0x400 && e.type <= 0x900) {
+                static int logCount = 0;
+                if (logCount++ < 20) {
+                    SPDLOG_INFO("Input event type=0x{:x}", e.type);
+                }
+            }
+
             switch (e.type) {
             case SDL_EVENT_MOUSE_MOTION:
             case SDL_EVENT_FINGER_MOTION:

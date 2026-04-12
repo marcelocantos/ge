@@ -52,8 +52,10 @@ struct RunConfig {
 
 // Configuration for the session host.
 struct SessionHostConfig {
-    int width  = 820;
-    int height = 1180;
+    // Render dimensions. In headless mode, 0×0 means "wait for the
+    // player's DeviceInfo and adopt its dimensions (halved)".
+    int width  = 0;
+    int height = 0;
     bool headless = true;  // true = H.264 server, false = native window
 
     // App identity for persistent DB path (via SDL_GetPrefPath).

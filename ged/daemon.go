@@ -19,7 +19,7 @@ import (
 )
 
 // protocolVersion must match wire::kProtocolVersion in Protocol.h.
-const protocolVersion = 5
+const protocolVersion = 6
 
 func contextWithTimeout(d time.Duration) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), d)
@@ -329,6 +329,7 @@ func (d *Daemon) AddPlayer(pc *PlayerConn, name, preference string) string {
 	if target != "" {
 		d.sendServerAssignedLocked(pc.Conn, serverName)
 		d.sendToServerIDLocked(target, fmt.Sprintf(`{"type":"player_attached","session_id":"%s"}`, sessionID))
+		d.tryBridgeSessionLocked(sess)
 	}
 
 	d.broadcastStateLocked()
@@ -415,23 +416,44 @@ func (d *Daemon) UnsetSessionWire(sessionID string, conn *websocket.Conn) {
 
 // tryBridgeSessionLocked attempts to establish a bridge for a specific session.
 // Sends the player's stored DeviceInfo to the server wire to initiate the handshake.
+// In H.264 mode (ServerWire == nil but ServerID set), forwards DeviceInfo to the
+// server's sideband connection instead.
 // Must be called with d.mu held.
 func (d *Daemon) tryBridgeSessionLocked(sess *PlayerSession) {
-	if sess.ServerWire == nil || sess.Player == nil || sess.bridged {
+	if sess.Player == nil || sess.bridged {
 		return
 	}
 	if sess.Player.DeviceInfo == nil {
 		return
 	}
 
-	// Send stored DeviceInfo to server — this initiates the wire handshake.
-	sess.wireMu.Lock()
-	ctx, cancel := contextWithTimeout(5 * time.Second)
-	err := sess.ServerWire.Write(ctx, websocket.MessageBinary, sess.Player.DeviceInfo)
-	cancel()
-	sess.wireMu.Unlock()
-	if err != nil {
-		slog.Error("Failed to send DeviceInfo to server", "session", sess.ID, "err", err)
+	if sess.ServerWire != nil {
+		// Wire mode: send DeviceInfo to the per-session wire connection.
+		sess.wireMu.Lock()
+		ctx, cancel := contextWithTimeout(5 * time.Second)
+		err := sess.ServerWire.Write(ctx, websocket.MessageBinary, sess.Player.DeviceInfo)
+		cancel()
+		sess.wireMu.Unlock()
+		if err != nil {
+			slog.Error("Failed to send DeviceInfo to server wire", "session", sess.ID, "err", err)
+			return
+		}
+	} else if sess.ServerID != "" {
+		// H.264 mode: forward DeviceInfo to the server's sideband connection.
+		sc, ok := d.servers[sess.ServerID]
+		if !ok {
+			return
+		}
+		sc.sendMu.Lock()
+		ctx, cancel := contextWithTimeout(2 * time.Second)
+		err := sc.Conn.Write(ctx, websocket.MessageBinary, sess.Player.DeviceInfo)
+		cancel()
+		sc.sendMu.Unlock()
+		if err != nil {
+			slog.Error("Failed to send DeviceInfo to server sideband", "session", sess.ID, "server", sess.ServerID, "err", err)
+			return
+		}
+	} else {
 		return
 	}
 

@@ -7,19 +7,22 @@ set(CMAKE_XCODE_LINK_BUILD_PHASE_MODE KNOWN_LOCATION)
 set(GE_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../..)
 set(DEPS_BUILD ${CMAKE_CURRENT_SOURCE_DIR}/build)
 
-# Sources — iOS entry point + wire transport + QR scanner + sqlite3/sqlpipe
+# Sources — iOS entry point + shared H.264 player core + support
 set(SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/main.mm
+    ${GE_ROOT}/tools/player_core.cpp
     ${GE_ROOT}/tools/AudioPlayer.cpp
     ${GE_ROOT}/src/WebSocketClient.cpp
+    ${GE_ROOT}/src/VideoDecoder_apple.mm
+    ${GE_ROOT}/src/Signal.cpp
+    ${GE_ROOT}/src/Resource.cpp
+    ${GE_ROOT}/src/FileIO.cpp
     ${GE_ROOT}/vendor/src/sqlite3.c
     ${GE_ROOT}/vendor/src/sqlpipe.cpp
     ${GE_ROOT}/vendor/src/sqlift.cpp
     ${GE_ROOT}/vendor/src/lz4.c
     ${CMAKE_CURRENT_SOURCE_DIR}/QRScanner.mm
     ${CMAKE_CURRENT_SOURCE_DIR}/KeychainStore.mm
-    ${GE_ROOT}/src/VideoEncoder_apple.mm
-    ${GE_ROOT}/tools/player_capture_apple.mm
 )
 
 add_executable(Player MACOSX_BUNDLE ${SOURCES})
@@ -32,19 +35,24 @@ target_compile_definitions(Player PRIVATE
     SQLITE_ENABLE_DESERIALIZE
 )
 
-# Headers (engine + header-only vendors + iOS-specific)
+# Headers
 target_include_directories(Player PRIVATE
     ${GE_ROOT}/include
     ${GE_ROOT}/vendor/include
     ${GE_ROOT}/vendor/github.com/gabime/spdlog/include
     ${GE_ROOT}/vendor/github.com/chriskohlhoff/asio/include
     ${GE_ROOT}/vendor/github.com/libsdl-org/SDL/include
+    ${GE_ROOT}/vendor/sdl3/include
+    ${GE_ROOT}/vendor/github.com/sqliteai/liteparser/src
     ${GE_ROOT}/tools
     ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
-# Libraries (static archives via SDK-conditional search paths)
-target_link_libraries(Player PRIVATE -lSDL3)
+# Libraries
+target_link_libraries(Player PRIVATE
+    -lSDL3 -lSDL3_image -lSDL3_ttf
+    -lfreetype -lharfbuzz -lplutosvg -lplutovg
+)
 
 # iOS frameworks
 target_link_libraries(Player PRIVATE
@@ -68,6 +76,7 @@ target_link_libraries(Player PRIVATE
     "-framework VideoToolbox"
     "-framework Security"
     "-framework OpenGLES"
+    "-framework ImageIO"
     "-lobjc"
 )
 

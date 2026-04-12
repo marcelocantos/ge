@@ -17,13 +17,6 @@
 #include <unistd.h>
 #include <vector>
 
-// ObjC capture — defined in ge/tools/player_capture_apple.mm
-namespace capture {
-    void enableCaptureLayer(void* layer);
-    bool hasDrawable();
-    bool readLastFrame(uint8_t* dst, int width, int height, size_t bytesPerRow);
-}
-
 namespace ge {
 
 struct Context::M {
@@ -44,30 +37,62 @@ DeviceClass Context::deviceClass() const { return m->deviceClass; }
 std::shared_ptr<sqlpipe::Database> Context::db() const { return m->db; }
 
 void run(Factory factory, const SessionHostConfig& config) {
-    int w = config.width, h = config.height;
-
-    // Initialize bgfx (handles signal handlers, vsync, surface creation)
-    BgfxContext ctx({w, h, config.headless});
-
-    if (config.headless) {
-        capture::enableCaptureLayer(ctx.nativeHandle());
-    }
-
     // Connect to ged sideband
     auto wireConn = connectWebSocket("localhost", 42069, "/ws/server?name=yourworld", 2000);
     if (wireConn && wireConn->isOpen()) {
         SPDLOG_INFO("Connected to ged sideband");
         std::string hello = "{\"type\":\"hello\",\"name\":\"yourworld\",\"pid\":"
-            + std::to_string(getpid()) + ",\"version\":5}";
+            + std::to_string(getpid()) + ",\"version\":"
+            + std::to_string(wire::kProtocolVersion) + "}";
         wireConn->sendText(hello);
     } else {
         SPDLOG_WARN("Failed to connect to ged — running standalone");
     }
 
-    // H.264 encoder (headless only)
+    // Resolve render dimensions.
+    int w = config.width, h = config.height;
+    if (config.headless && w == 0 && h == 0 && wireConn && wireConn->isOpen()) {
+        SPDLOG_INFO("Waiting for player DeviceInfo...");
+        wireConn->setRecvTimeout(30000);
+        while (wireConn->isOpen()) {
+            std::vector<char> data;
+            if (!wireConn->recvBinary(data)) {
+                if (!wireConn->isOpen()) break;
+                continue;
+            }
+            if (data.size() < 8) continue;
+
+            uint32_t magic = 0;
+            std::memcpy(&magic, data.data(), 4);
+
+            if (magic == wire::kDeviceInfoMagic &&
+                data.size() >= sizeof(wire::MessageHeader) + sizeof(wire::DeviceInfo)) {
+                wire::DeviceInfo info;
+                std::memcpy(&info, data.data() + sizeof(wire::MessageHeader), sizeof(info));
+                // Render at half the player's pixel dimensions.
+                w = info.width / 2;
+                h = info.height / 2;
+                SPDLOG_INFO("Received DeviceInfo: {}x{} @{}x → render at {}x{}",
+                            info.width, info.height, info.pixelRatio, w, h);
+                break;
+            }
+        }
+        wireConn->setRecvTimeout(0);
+    }
+    if (w == 0 || h == 0) {
+        w = 820;
+        h = 1180;
+        SPDLOG_WARN("No DeviceInfo received, using fallback {}x{}", w, h);
+    }
+
+    // Initialize bgfx
+    BgfxContext ctx({w, h, config.headless});
+
+    // H.264 encoder + pixel buffer (headless only).
     std::unique_ptr<VideoEncoder> encoder;
     std::vector<uint8_t> pixelBuf;
     if (config.headless) {
+        pixelBuf.resize(w * h * 4);
         encoder = std::make_unique<VideoEncoder>(w, h, 30,
             [&](VideoEncoder::Frame frame) {
                 if (!wireConn || !wireConn->isOpen()) return;
@@ -81,7 +106,6 @@ void run(Factory factory, const SessionHostConfig& config) {
                 std::memcpy(msg.data() + sizeof(hdr) + 1, frame.data, frame.size);
                 wireConn->sendBinary(msg.data(), msg.size());
             });
-        pixelBuf.resize(w * 4 * h);
     }
 
     // Render loop
@@ -89,8 +113,6 @@ void run(Factory factory, const SessionHostConfig& config) {
     uint64_t freq = SDL_GetPerformanceFrequency();
     bool quit = false;
 
-    // Determine game database path — persistent file for bundled, :memory: for server.
-    // In server mode, the player owns persistence; sqlpipe syncs state in.
     std::string dbPath;
     if (!config.headless && config.orgName && config.appName) {
         char* prefPath = SDL_GetPrefPath(config.orgName, config.appName);
@@ -106,7 +128,6 @@ void run(Factory factory, const SessionHostConfig& config) {
     }
     SPDLOG_INFO("Game DB: {}", dbPath);
 
-    // Create per-session state via factory
     Context ctx_info{w, h, DeviceClass::Desktop, dbPath};
     auto runConfig = factory(ctx_info);
 
@@ -142,12 +163,31 @@ void run(Factory factory, const SessionHostConfig& config) {
         if (dt > 0.1f) dt = 0.1f;
 
         if (runConfig.onUpdate) runConfig.onUpdate(dt);
-        if (runConfig.onRender) runConfig.onRender(w, h);
-        bgfx::frame();
 
-        // Capture + encode (headless only)
-        if (encoder && capture::hasDrawable()) {
-            if (capture::readLastFrame(pixelBuf.data(), w, h, w * 4)) {
+        // Headless mode: pace to ~60fps.
+        if (config.headless && dt < 1.0f/60.0f) {
+            SDL_Delay(uint32_t((1.0f/60.0f - dt) * 1000.0f));
+        }
+
+        // Direct all views to the offscreen framebuffer.
+        if (ctx.isCaptureEnabled()) {
+            bgfx::FrameBufferHandle fb = { ctx.captureFrameBuffer() };
+            for (bgfx::ViewId v = 0; v < 16; ++v) {
+                bgfx::setViewFrameBuffer(v, fb);
+            }
+        }
+
+        if (runConfig.onRender) runConfig.onRender(w, h);
+
+        if (ctx.isCaptureEnabled()) {
+            ctx.submitCaptureBlit();
+        }
+
+        uint32_t frameNum = bgfx::frame();
+
+        // Read async readback and encode.
+        if (encoder && ctx.isCaptureEnabled()) {
+            if (ctx.readCapturedFrame(frameNum, pixelBuf.data(), pixelBuf.size())) {
                 encoder->encode(pixelBuf.data(), w * 4);
             }
         }

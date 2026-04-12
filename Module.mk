@@ -68,8 +68,7 @@ ge/SRC = \
 	ge/src/Signal.cpp \
 	ge/src/SessionHost.mm \
 	ge/src/VideoEncoder_apple.mm \
-	ge/src/VideoDecoder_apple.mm \
-	ge/tools/player_capture_apple.mm
+	ge/src/VideoDecoder_apple.mm
 
 ge/OBJ = $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(filter %.cpp,$(ge/SRC))) \
          $(patsubst %.mm,$(BUILD_DIR)/%.o,$(filter %.mm,$(ge/SRC)))
