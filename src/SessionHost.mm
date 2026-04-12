@@ -145,6 +145,20 @@ void run(Factory factory, const SessionHostConfig& config) {
                 data.size() >= sizeof(wire::MessageHeader) + sizeof(SDL_Event)) {
                 SDL_Event ev;
                 std::memcpy(&ev, data.data() + sizeof(wire::MessageHeader), sizeof(SDL_Event));
+                {
+                    static bool once = true;
+                    if (once) {
+                        once = false;
+                        SPDLOG_INFO("SERVER sizeof(SDL_Event)={} got {} bytes", sizeof(SDL_Event), data.size() - sizeof(wire::MessageHeader));
+                    }
+                }
+                if (ev.type == 0x400) {
+                    static int n = 0;
+                    if (n++ < 3) SPDLOG_INFO("MOTION x={} y={}", ev.motion.x, ev.motion.y);
+                } else if (ev.type == 0x700 || ev.type == 0x702) {
+                    static int n = 0;
+                    if (n++ < 3) SPDLOG_INFO("FINGER x={} y={}", ev.tfinger.x, ev.tfinger.y);
+                }
                 if (runConfig.onEvent) runConfig.onEvent(ev);
             }
         }

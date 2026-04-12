@@ -10,28 +10,41 @@
 #include <SDL3/SDL_main.h>
 #include <spdlog/spdlog.h>
 #include <spdlog/sinks/base_sink.h>
-#import <os/log.h>
+
+#import <Foundation/Foundation.h>
 
 #include <cstdlib>
 #include <string>
+#include <thread>
 
+// HTTP PUT sink — sends each log line to a logging server on the host.
+// Hardcoded to localhost:9999 (reachable from iOS simulator).
 template<typename Mutex>
-class os_log_sink : public spdlog::sinks::base_sink<Mutex> {
+class http_sink : public spdlog::sinks::base_sink<Mutex> {
 protected:
     void sink_it_(const spdlog::details::log_msg& msg) override {
         spdlog::memory_buf_t formatted;
         spdlog::sinks::base_sink<Mutex>::formatter_->format(msg, formatted);
-        std::string log_str = fmt::to_string(formatted);
-        os_log_type_t type = OS_LOG_TYPE_DEFAULT;
-        switch (msg.level) {
-            case spdlog::level::trace:
-            case spdlog::level::debug: type = OS_LOG_TYPE_DEBUG; break;
-            case spdlog::level::info:  type = OS_LOG_TYPE_INFO; break;
-            case spdlog::level::warn:  type = OS_LOG_TYPE_ERROR; break;
-            case spdlog::level::err:   type = OS_LOG_TYPE_FAULT; break;
-            default: break;
-        }
-        os_log_with_type(OS_LOG_DEFAULT, type, "%{public}s", log_str.c_str());
+        std::string body = fmt::to_string(formatted);
+
+        // Fire-and-forget on a detached thread to avoid blocking.
+        std::thread([body = std::move(body)] {
+            @autoreleasepool {
+                NSString* urlStr = @"http://localhost:9999/log";
+                NSURL* url = [NSURL URLWithString:urlStr];
+                NSMutableURLRequest* req = [NSMutableURLRequest requestWithURL:url];
+                req.HTTPMethod = @"PUT";
+                req.HTTPBody = [NSData dataWithBytes:body.c_str() length:body.size()];
+                req.timeoutInterval = 1.0;
+
+                dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+                [[NSURLSession.sharedSession dataTaskWithRequest:req
+                    completionHandler:^(NSData*, NSURLResponse*, NSError*) {
+                        dispatch_semaphore_signal(sem);
+                    }] resume];
+                dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC));
+            }
+        }).detach();
     }
     void flush_() override {}
 };
@@ -39,7 +52,7 @@ protected:
 static constexpr uint16_t kDefaultPort = 42069;
 
 int main(int argc, char* argv[]) {
-    auto sink = std::make_shared<os_log_sink<std::mutex>>();
+    auto sink = std::make_shared<http_sink<std::mutex>>();
     auto logger = std::make_shared<spdlog::logger>("player", sink);
     logger->set_level(spdlog::level::info);
     spdlog::set_default_logger(logger);
