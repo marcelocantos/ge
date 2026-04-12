@@ -101,25 +101,30 @@ int playerCore(const std::string& host, int port) {
     SPDLOG_INFO("Connected to ged");
 
     // Send DeviceInfo with display dimensions. ged needs this to bridge
-    // the player to the server wire.
+    // the player to the server wire. Always send portrait dimensions
+    // (min x max) so the server renders portrait regardless of how the
+    // device is currently held.
+    int displayW, displayH, displayPR;
     {
         const SDL_DisplayMode* dm = SDL_GetCurrentDisplayMode(SDL_GetPrimaryDisplay());
-        int w = dm ? dm->w : 1080;
-        int h = dm ? dm->h : 2400;
-        int pr = (dm && dm->pixel_density > 0) ? int(dm->pixel_density) : 1;
+        displayW = dm ? dm->w : 1080;
+        displayH = dm ? dm->h : 2400;
+        displayPR = (dm && dm->pixel_density > 0) ? int(dm->pixel_density) : 1;
+        int sendW = std::min(displayW, displayH);  // portrait width
+        int sendH = std::max(displayW, displayH);  // portrait height
         wire::MessageHeader hdr{};
         hdr.magic = wire::kDeviceInfoMagic;
         hdr.length = sizeof(wire::DeviceInfo);
         wire::DeviceInfo devInfo{};
-        devInfo.width = w;
-        devInfo.height = h;
-        devInfo.pixelRatio = pr;
+        devInfo.width = sendW;
+        devInfo.height = sendH;
+        devInfo.pixelRatio = displayPR;
         devInfo.deviceClass = 3;
         std::vector<uint8_t> msg(sizeof(hdr) + sizeof(devInfo));
         std::memcpy(msg.data(), &hdr, sizeof(hdr));
         std::memcpy(msg.data() + sizeof(hdr), &devInfo, sizeof(devInfo));
         conn->sendBinary(msg.data(), msg.size());
-        SPDLOG_INFO("DeviceInfo sent ({}x{} @{}x)", w, h, pr);
+        SPDLOG_INFO("DeviceInfo sent ({}x{} @{}x, portrait-normalized)", sendW, sendH, displayPR);
     }
 
     // Wait for SessionConfig — the server's signal that it's ready.
@@ -243,34 +248,61 @@ int playerCore(const std::string& host, int port) {
         if (sent++ < 3) SPDLOG_INFO("sendEvent: sent 0x{:x} ({} bytes)", e.type, msg.size());
     };
 
-    // Coordinate mapping: player window → server render space
+    // Coordinate mapping: player window → server render space.
+    // When the window is landscape but the server renders portrait,
+    // we rotate coordinates: landscape (x,y) → portrait (y, W-x)
+    // where W is the visible width of the rotated video.
     auto mapEvent = [&](SDL_Event& e) {
         if (!videoTex) return;
         int ww, wh;
         SDL_GetWindowSizeInPixels(window, &ww, &wh);
-        float scaleX = float(ww) / float(texW);
-        float scaleY = float(wh) / float(texH);
-        float scale = std::min(scaleX, scaleY);
-        float offsetX = (ww - texW * scale) / 2.0f;
-        float offsetY = (wh - texH * scale) / 2.0f;
+        bool rotated = (ww > wh) && (texH > texW);
+
+        // Compute the visible rect of the video on screen.
+        float visW, visH;
+        if (rotated) {
+            // Rotated: portrait video displayed as landscape.
+            float scaleX = float(ww) / float(texH);
+            float scaleY = float(wh) / float(texW);
+            float scale = std::min(scaleX, scaleY);
+            visW = texH * scale;
+            visH = texW * scale;
+        } else {
+            float scaleX = float(ww) / float(texW);
+            float scaleY = float(wh) / float(texH);
+            float scale = std::min(scaleX, scaleY);
+            visW = texW * scale;
+            visH = texH * scale;
+        }
+        float offsetX = (ww - visW) / 2.0f;
+        float offsetY = (wh - visH) / 2.0f;
+
+        // Helper: map screen pixel coord to server coord.
+        auto mapCoord = [&](float sx, float sy, float& ox, float& oy) {
+            // Screen → normalized video space (0..1)
+            float nx = (sx - offsetX) / visW;
+            float ny = (sy - offsetY) / visH;
+            if (rotated) {
+                // 90° CW rotation: landscape (nx,ny) → portrait
+                ox = ny * texW;
+                oy = (1.0f - nx) * texH;
+            } else {
+                ox = nx * texW;
+                oy = ny * texH;
+            }
+        };
 
         if (e.type == SDL_EVENT_MOUSE_MOTION) {
-            e.motion.x = (e.motion.x - offsetX) / scale;
-            e.motion.y = (e.motion.y - offsetY) / scale;
+            mapCoord(e.motion.x, e.motion.y, e.motion.x, e.motion.y);
         } else if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN ||
                    e.type == SDL_EVENT_MOUSE_BUTTON_UP) {
-            e.button.x = (e.button.x - offsetX) / scale;
-            e.button.y = (e.button.y - offsetY) / scale;
+            mapCoord(e.button.x, e.button.y, e.button.x, e.button.y);
         } else if (e.type == SDL_EVENT_FINGER_DOWN ||
                    e.type == SDL_EVENT_FINGER_UP ||
                    e.type == SDL_EVENT_FINGER_MOTION) {
-            // Finger events use normalized 0-1 coords; convert to server
-            // pixel coordinates so GlobeController uses the same scale
-            // as mouse events.
             float px = e.tfinger.x * ww;
             float py = e.tfinger.y * wh;
-            e.tfinger.x = (px - offsetX) / scale;
-            e.tfinger.y = (py - offsetY) / scale;
+            mapCoord(px, py, e.tfinger.x, e.tfinger.y);
         }
     };
 
@@ -399,20 +431,42 @@ int playerCore(const std::string& host, int port) {
         SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
         SDL_RenderClear(renderer);
         if (videoTex) {
-            // Scale to fit window while preserving aspect ratio
             int ww, wh;
             SDL_GetWindowSizeInPixels(window, &ww, &wh);
-            float scaleX = float(ww) / float(texW);
-            float scaleY = float(wh) / float(texH);
-            float scale = std::min(scaleX, scaleY);
-            float dstW = texW * scale;
-            float dstH = texH * scale;
-            SDL_FRect dst = {
-                (ww - dstW) / 2.0f,
-                (wh - dstH) / 2.0f,
-                dstW, dstH
-            };
-            SDL_RenderTexture(renderer, videoTex, nullptr, &dst);
+
+            // The video is always portrait. If the window is landscape,
+            // rotate the video 90° CW to fill the landscape display.
+            bool needsRotation = (ww > wh) && (texH > texW);
+
+            if (needsRotation) {
+                // Fit the rotated portrait video into the landscape window.
+                // After 90° CW rotation, the portrait video's visual width
+                // is texH and visual height is texW.
+                float scaleX = float(ww) / float(texH);
+                float scaleY = float(wh) / float(texW);
+                float scale = std::min(scaleX, scaleY);
+                float dstW = texH * scale;
+                float dstH = texW * scale;
+                SDL_FRect dst = {
+                    (ww - dstW) / 2.0f,
+                    (wh - dstH) / 2.0f,
+                    dstW, dstH
+                };
+                SDL_RenderTextureRotated(renderer, videoTex, nullptr, &dst,
+                                         90.0, nullptr, SDL_FLIP_NONE);
+            } else {
+                float scaleX = float(ww) / float(texW);
+                float scaleY = float(wh) / float(texH);
+                float scale = std::min(scaleX, scaleY);
+                float dstW = texW * scale;
+                float dstH = texH * scale;
+                SDL_FRect dst = {
+                    (ww - dstW) / 2.0f,
+                    (wh - dstH) / 2.0f,
+                    dstW, dstH
+                };
+                SDL_RenderTexture(renderer, videoTex, nullptr, &dst);
+            }
         }
         SDL_RenderPresent(renderer);
     }
