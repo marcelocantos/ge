@@ -181,7 +181,11 @@ int playerCore(const std::string& host, int port) {
 
     SDL_Window* window = SDL_CreateWindow(
         "GE Player", 820, 1180,
-        SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY | SDL_WINDOW_BORDERLESS);
+        SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY
+#ifndef GE_DESKTOP
+        | SDL_WINDOW_BORDERLESS
+#endif
+        );
     if (!window) {
         SPDLOG_ERROR("SDL_CreateWindow failed: {}", SDL_GetError());
         SDL_Quit();

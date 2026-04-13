@@ -36,6 +36,7 @@ add_library(main SHARED
 )
 
 target_compile_definitions(main PRIVATE
+    GE_ANDROID
     ASIO_STANDALONE
     SQLITE_ENABLE_SESSION
     SQLITE_ENABLE_PREUPDATE_HOOK

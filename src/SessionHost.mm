@@ -252,8 +252,8 @@ void run(Factory factory, const SessionHostConfig& config) {
                     // DeviceInfo arrived — initialize the session.
                     wire::DeviceInfo info;
                     std::memcpy(&info, data.data() + sizeof(wire::MessageHeader), sizeof(info));
-                    sess->width = info.width / 2;
-                    sess->height = info.height / 2;
+                    sess->width = info.width;
+                    sess->height = info.height;
                     if (sess->width == 0 || sess->height == 0) {
                         sess->width = defaultW; sess->height = defaultH;
                     }
@@ -265,7 +265,7 @@ void run(Factory factory, const SessionHostConfig& config) {
 
                     auto wirePtr = sess->wire;
                     int w = sess->width, h = sess->height;
-                    sess->encoder = std::make_unique<VideoEncoder>(w, h, 30,
+                    sess->encoder = std::make_unique<VideoEncoder>(w, h, 60,
                         [wirePtr](VideoEncoder::Frame frame) {
                             if (!wirePtr || !wirePtr->isOpen()) return;
                             wire::MessageHeader hdr{};
