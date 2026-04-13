@@ -311,7 +311,16 @@ void run(Factory factory, const SessionHostConfig& config) {
                             wirePtr->sendBinary(w.data(), w.size());
                         });
 
-                    Context ctx{w, h, DeviceClass::Desktop, ":memory:"};
+                    std::string dbPath = ":memory:";
+                    if (config.orgName && config.appName) {
+                        char* pref = SDL_GetPrefPath(config.orgName, config.appName);
+                        if (pref) {
+                            dbPath = std::string(pref) + "game.db";
+                            SDL_free(pref);
+                            SPDLOG_INFO("Session '{}': persistent DB at {}", id, dbPath);
+                        }
+                    }
+                    Context ctx{w, h, DeviceClass::Desktop, dbPath};
                     sess->config = factory(ctx);
                     sess->ready = true;
                     SPDLOG_INFO("Session '{}': ready ({}x{})", id, w, h);
