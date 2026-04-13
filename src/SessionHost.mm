@@ -7,12 +7,34 @@
 #include <ge/Protocol.h>
 #include <ge/VideoEncoder.h>
 #include <ge/WebSocketClient.h>
+#include <ge/FrameLog.h>
 
 #include <bgfx/bgfx.h>
 #include <SDL3/SDL.h>
 #include <spdlog/spdlog.h>
 
 #include <cstring>
+
+// Lightweight write buffer for building wire messages without manual offsets.
+struct WireWriter {
+    std::vector<uint8_t> buf;
+
+    explicit WireWriter(size_t capacity = 0) { buf.reserve(capacity); }
+
+    template <typename T>
+    void put(const T& val) {
+        auto p = reinterpret_cast<const uint8_t*>(&val);
+        buf.insert(buf.end(), p, p + sizeof(T));
+    }
+
+    void append(const void* data, size_t size) {
+        auto p = static_cast<const uint8_t*>(data);
+        buf.insert(buf.end(), p, p + size);
+    }
+
+    const uint8_t* data() const { return buf.data(); }
+    size_t size() const { return buf.size(); }
+};
 #include <string>
 #include <unistd.h>
 #include <unordered_map>
@@ -50,7 +72,7 @@ struct Session {
     bgfx::FrameBufferHandle fb = BGFX_INVALID_HANDLE;
     bgfx::TextureHandle renderTex = BGFX_INVALID_HANDLE;
 
-    static constexpr int kNumReadback = 2;
+    static constexpr int kNumReadback = 3;
     struct ReadbackSlot {
         bgfx::TextureHandle tex = BGFX_INVALID_HANDLE;
         std::vector<uint8_t> buf;
@@ -152,8 +174,10 @@ void run(Factory factory, const SessionHostConfig& config) {
     std::unordered_map<std::string, std::unique_ptr<Session>> sessions;
 
     // Frame timing
-    uint64_t lastTime = SDL_GetPerformanceCounter();
     uint64_t freq = SDL_GetPerformanceFrequency();
+    uint64_t startTime = SDL_GetPerformanceCounter();
+    uint64_t lastTime = startTime;
+    uint64_t frameIndex = 0;
 
     SPDLOG_INFO("SessionHost: waiting for players...");
 
@@ -219,16 +243,23 @@ void run(Factory factory, const SessionHostConfig& config) {
 
         if (!sideband->isOpen()) break;
 
-        // ── 2. Delta time ──
+        // ── 2. Frame pacing: absolute timestamps, no drift ──
+        uint64_t targetTime = startTime + (uint64_t)frameIndex * freq / 60;
         uint64_t now = SDL_GetPerformanceCounter();
+        if (now < targetTime) {
+            // Sleep for most of the wait, busy-wait the remainder.
+            int64_t remaining = targetTime - now;
+            int64_t sleepTicks = remaining - freq / 1000;  // wake 1ms early
+            if (sleepTicks > 0) {
+                SDL_Delay((uint32_t)(sleepTicks * 1000 / freq));
+            }
+            while (SDL_GetPerformanceCounter() < targetTime) {}
+            now = SDL_GetPerformanceCounter();
+        }
+        frameIndex++;
         float dt = float(now - lastTime) / float(freq);
         lastTime = now;
         if (dt > 0.1f) dt = 0.1f;
-
-        // ── 3. Frame pacing (60fps total, shared across sessions) ──
-        if (config.headless && dt < 1.0f/60.0f) {
-            SDL_Delay(uint32_t((1.0f/60.0f - dt) * 1000.0f));
-        }
 
         // Local SDL events
         SDL_Event e;
@@ -252,8 +283,8 @@ void run(Factory factory, const SessionHostConfig& config) {
                     // DeviceInfo arrived — initialize the session.
                     wire::DeviceInfo info;
                     std::memcpy(&info, data.data() + sizeof(wire::MessageHeader), sizeof(info));
-                    sess->width = info.width;
-                    sess->height = info.height;
+                    sess->width = info.width / 2;
+                    sess->height = info.height / 2;
                     if (sess->width == 0 || sess->height == 0) {
                         sess->width = defaultW; sess->height = defaultH;
                     }
@@ -265,18 +296,19 @@ void run(Factory factory, const SessionHostConfig& config) {
 
                     auto wirePtr = sess->wire;
                     int w = sess->width, h = sess->height;
+                    auto encodeSeq = std::make_shared<uint32_t>(0);
                     sess->encoder = std::make_unique<VideoEncoder>(w, h, 60,
-                        [wirePtr](VideoEncoder::Frame frame) {
+                        [wirePtr, encodeSeq](VideoEncoder::Frame frame) {
                             if (!wirePtr || !wirePtr->isOpen()) return;
-                            wire::MessageHeader hdr{};
-                            hdr.magic = wire::kVideoStreamMagic;
-                            hdr.length = 1 + frame.size;
+                            uint32_t seq = (*encodeSeq)++;
                             uint8_t flags = frame.isKeyframe ? 1 : 0;
-                            std::vector<uint8_t> msg(sizeof(hdr) + 1 + frame.size);
-                            std::memcpy(msg.data(), &hdr, sizeof(hdr));
-                            msg[sizeof(hdr)] = flags;
-                            std::memcpy(msg.data() + sizeof(hdr) + 1, frame.data, frame.size);
-                            wirePtr->sendBinary(msg.data(), msg.size());
+                            uint32_t payloadSize = sizeof(flags) + sizeof(seq) + frame.size;
+                            WireWriter w(sizeof(wire::MessageHeader) + payloadSize);
+                            w.put(wire::MessageHeader{wire::kVideoStreamMagic, payloadSize});
+                            w.put(flags);
+                            w.put(seq);
+                            w.append(frame.data, frame.size);
+                            wirePtr->sendBinary(w.data(), w.size());
                         });
 
                     Context ctx{w, h, DeviceClass::Desktop, ":memory:"};
@@ -294,8 +326,12 @@ void run(Factory factory, const SessionHostConfig& config) {
 
             if (!sess->ready) continue;  // waiting for DeviceInfo
 
+            uint64_t t0 = SDL_GetPerformanceCounter();
+
             // Update
             if (sess->config.onUpdate) sess->config.onUpdate(dt);
+
+            uint64_t t1 = SDL_GetPerformanceCounter();
 
             // Set all views to this session's framebuffer
             for (bgfx::ViewId v = 0; v < 16; ++v) {
@@ -305,16 +341,46 @@ void run(Factory factory, const SessionHostConfig& config) {
             // Render
             if (sess->config.onRender) sess->config.onRender(sess->width, sess->height);
 
+            uint64_t t2 = SDL_GetPerformanceCounter();
+
             // Capture blit
             sess->submitCaptureBlit();
 
             // Submit this session's frame
             uint32_t frameNum = bgfx::frame();
 
+            uint64_t t3 = SDL_GetPerformanceCounter();
+
             // Read back + encode
             if (sess->readCapturedFrame(frameNum)) {
                 sess->encoder->encode(sess->pixelBuf.data(), sess->width * 4);
             }
+
+            uint64_t t4 = SDL_GetPerformanceCounter();
+
+            struct ServerFrame { uint64_t t0, t1, t2, t3, t4; };
+            static FrameLog<ServerFrame> serverLog([](const std::vector<ServerFrame>& frames, uint64_t freq) {
+                auto ms = [freq](uint64_t a, uint64_t b) { return float(b - a) * 1000.0f / float(freq); };
+                float maxTotal = 0, maxUpdate = 0, maxRender = 0, maxSubmit = 0, maxEncode = 0, maxGap = 0;
+                for (size_t i = 0; i < frames.size(); i++) {
+                    auto& f = frames[i];
+                    float total = ms(f.t0, f.t4);
+                    if (total > maxTotal) maxTotal = total;
+                    if (ms(f.t0, f.t1) > maxUpdate) maxUpdate = ms(f.t0, f.t1);
+                    if (ms(f.t1, f.t2) > maxRender) maxRender = ms(f.t1, f.t2);
+                    if (ms(f.t2, f.t3) > maxSubmit) maxSubmit = ms(f.t2, f.t3);
+                    if (ms(f.t3, f.t4) > maxEncode) maxEncode = ms(f.t3, f.t4);
+                    if (i > 0) {
+                        float gap = ms(frames[i-1].t0, f.t0);
+                        if (gap > maxGap) maxGap = gap;
+                    }
+                }
+                SPDLOG_INFO("ServerLog: {} frames, maxTotal={:.1f}ms maxGap={:.1f}ms | "
+                            "update={:.1f} render={:.1f} submit={:.1f} encode={:.1f}",
+                            frames.size(), maxTotal, maxGap,
+                            maxUpdate, maxRender, maxSubmit, maxEncode);
+            });
+            serverLog.record({t0, t1, t2, t3, t4});
         }
 
         // If no sessions, still call bgfx::frame to keep the context alive

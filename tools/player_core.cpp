@@ -6,6 +6,7 @@
 
 #include "player_core.h"
 #include "player_orientation.h"
+#include <ge/FrameLog.h>
 
 #include <SDL3/SDL.h>
 #include <spdlog/spdlog.h>
@@ -429,10 +430,10 @@ int playerCore(const std::string& host, int port) {
         }
         if (hasMotion) sendEvent(lastMotion);
 
-        // Drain ALL available messages. Decode every H.264 frame (P-frames
-        // are delta-coded so skipping any corrupts the reference chain).
-        // The decoder callback overwrites the decoded pixel buffer each time,
-        // so the render loop always gets the latest result.
+        // Drain ALL available messages. Decode every H.264 frame.
+        int framesThisTick = 0;
+        uint32_t lastSeq = 0;
+        uint64_t pRecvStart = SDL_GetPerformanceCounter();
         while (conn->isOpen() && conn->available() > 0) {
             std::vector<char> data;
             if (!conn->recvBinary(data) || data.size() < 8) break;
@@ -445,8 +446,11 @@ int playerCore(const std::string& host, int port) {
                 std::memcpy(&length, data.data() + 4, 4);
                 if (data.size() < 8 + length) continue;
 
-                const uint8_t* avccData = reinterpret_cast<const uint8_t*>(data.data()) + 9;
-                size_t avccSize = length - 1;
+                // [flags:1][seq:4][NAL data]
+                uint32_t seq = 0;
+                std::memcpy(&seq, data.data() + 9, 4);
+                const uint8_t* avccData = reinterpret_cast<const uint8_t*>(data.data()) + 13;
+                size_t avccSize = length - 5;  // minus flags(1) + seq(4)
 
                 auto frameNals = avccParser.parse(avccData, avccSize);
 
@@ -469,9 +473,8 @@ int playerCore(const std::string& host, int port) {
                 }
 
                 frameCount++;
-                if (frameCount % 300 == 0) {
-                    SPDLOG_INFO("Decoded {} frames", frameCount);
-                }
+                framesThisTick++;
+                lastSeq = seq;
             } else if (magic == wire::kSessionConfigMagic) {
                 // Already handled during pre-window setup; ignore late arrivals.
             } else if (magic == wire::kServerAssignedMagic) {
@@ -550,7 +553,43 @@ int playerCore(const std::string& host, int port) {
                 SDL_RenderTexture(renderer, videoTex, nullptr, &dst);
             }
         }
+        uint64_t pRenderStart = SDL_GetPerformanceCounter();
         SDL_RenderPresent(renderer);
+        uint64_t pEnd = SDL_GetPerformanceCounter();
+        uint64_t pFreq = SDL_GetPerformanceFrequency();
+
+        struct PlayerFrame { uint64_t timestamp; int decoded; uint32_t lastSeq; float drainMs; float renderMs; };
+        static FrameLog<PlayerFrame> playerLog([](const std::vector<PlayerFrame>& frames, uint64_t freq) {
+            int totalDecoded = 0, zeroTicks = 0, seqGaps = 0;
+            uint32_t prevSeq = 0, minSeq = UINT32_MAX, maxSeq = 0;
+            float maxDrain = 0, maxRender = 0, maxGap = 0;
+            for (size_t i = 0; i < frames.size(); i++) {
+                auto& f = frames[i];
+                totalDecoded += f.decoded;
+                if (f.decoded == 0) zeroTicks++;
+                if (f.drainMs > maxDrain) maxDrain = f.drainMs;
+                if (f.renderMs > maxRender) maxRender = f.renderMs;
+                if (i > 0) {
+                    float gap = float(frames[i].timestamp - frames[i-1].timestamp) * 1000.0f / float(freq);
+                    if (gap > maxGap) maxGap = gap;
+                }
+                if (f.decoded > 0) {
+                    if (prevSeq && f.lastSeq > prevSeq + 1)
+                        seqGaps += f.lastSeq - prevSeq - 1;
+                    prevSeq = f.lastSeq;
+                    if (f.lastSeq < minSeq) minSeq = f.lastSeq;
+                    if (f.lastSeq > maxSeq) maxSeq = f.lastSeq;
+                }
+            }
+            SPDLOG_INFO("PlayerLog: {} ticks, {} decoded ({} empty), seq {}-{} ({} gaps), "
+                        "maxDrain={:.1f}ms maxRender={:.1f}ms maxGap={:.1f}ms",
+                        frames.size(), totalDecoded, zeroTicks,
+                        minSeq, maxSeq, seqGaps,
+                        maxDrain, maxRender, maxGap);
+        });
+        float drainMs = float(pRenderStart - pRecvStart) * 1000.0f / float(pFreq);
+        float renderMs = float(pEnd - pRenderStart) * 1000.0f / float(pFreq);
+        playerLog.record({pEnd, framesThisTick, lastSeq, drainMs, renderMs});
     }
 
     decoder.flush();
