@@ -149,9 +149,9 @@ void run(Factory factory, const SessionHostConfig& config) {
         + std::to_string(wire::kProtocolVersion) + "}";
     sideband->sendText(hello);
 
-    // bgfx init (one global context, sessions share it via separate FBs)
-    int defaultW = 820, defaultH = 1180;
-    BgfxContext bgfxCtx({defaultW, defaultH, config.headless});
+    // bgfx context — deferred until the first DeviceInfo arrives,
+    // so the context is sized to an actual player's dimensions.
+    std::unique_ptr<BgfxContext> bgfxCtx;
 
     // Active sessions
     std::unordered_map<std::string, std::unique_ptr<Session>> sessions;
@@ -164,7 +164,7 @@ void run(Factory factory, const SessionHostConfig& config) {
 
     SPDLOG_INFO("SessionHost: waiting for players...");
 
-    while (!bgfxCtx.shouldQuit()) {
+    while (!ge::shouldQuit()) {
         // ── 1. Poll sideband for control messages ──
         while (sideband->isOpen() && sideband->available() > 0) {
             std::vector<char> data;
@@ -244,10 +244,12 @@ void run(Factory factory, const SessionHostConfig& config) {
         lastTime = now;
         if (dt > 0.1f) dt = 0.1f;
 
-        // Local SDL events
-        SDL_Event e;
-        while (SDL_PollEvent(&e)) {
-            if (e.type == SDL_EVENT_QUIT) break;
+        // Local SDL events (only after bgfx/SDL init)
+        if (bgfxCtx) {
+            SDL_Event e;
+            while (SDL_PollEvent(&e)) {
+                if (e.type == SDL_EVENT_QUIT) break;
+            }
         }
 
         // ── 4. Drain wires + update + render each session ──
@@ -269,7 +271,16 @@ void run(Factory factory, const SessionHostConfig& config) {
                     sess->width = info.width / 2;
                     sess->height = info.height / 2;
                     if (sess->width == 0 || sess->height == 0) {
-                        sess->width = defaultW; sess->height = defaultH;
+                        SPDLOG_WARN("Session '{}': invalid DeviceInfo {}x{}, skipping",
+                                    id, info.width, info.height);
+                        continue;
+                    }
+
+                    // Lazily init bgfx on first session.
+                    if (!bgfxCtx) {
+                        bgfxCtx = std::make_unique<BgfxContext>(
+                            BgfxConfig{sess->width, sess->height, config.headless});
+                        SPDLOG_INFO("bgfx initialized at {}x{}", sess->width, sess->height);
                     }
                     SPDLOG_INFO("Session '{}': DeviceInfo {}x{} @{}x → render at {}x{}",
                                 id, info.width, info.height, info.pixelRatio,
@@ -375,8 +386,9 @@ void run(Factory factory, const SessionHostConfig& config) {
             serverLog.record({t0, t1, t2, t3, t4});
         }
 
-        // If no sessions, still call bgfx::frame to keep the context alive
-        if (sessions.empty()) {
+        // If bgfx is up but no sessions are rendering, still call frame
+        // to keep the context alive.
+        if (bgfxCtx && sessions.empty()) {
             bgfx::frame();
         }
 
