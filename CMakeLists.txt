@@ -126,6 +126,7 @@ set_target_properties(lz4_ge PROPERTIES C_STANDARD 11)
 # ── ge core sources ───────────────────────────────────
 
 set(GE_CORE_SOURCES
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/Context.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/Resource.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/FileIO.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/Signal.cpp
@@ -170,6 +171,7 @@ target_include_directories(ge PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${GE_VENDOR}/include
     ${GE_VENDOR}/github.com/gabime/spdlog/include
+    ${GE_VENDOR}/github.com/libsdl-org/SDL/include
     ${GE_VENDOR}/sdl3/include
     ${GE_VENDOR}/github.com/erincatto/box2d/include
     ${LITEPARSER_DIR}
@@ -246,9 +248,11 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "iOS")
         "-framework MetalKit"
         "-framework QuartzCore"
         "-framework IOSurface"
+        "-framework OpenGLES"
         "-framework CoreGraphics"
         "-framework CoreFoundation"
         "-framework CoreBluetooth"
+        "-framework CoreServices"
         "-framework AudioToolbox"
         "-framework AVFoundation"
         "-framework CoreMedia"
@@ -257,6 +261,7 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "iOS")
         "-framework CoreHaptics"
         "-framework CoreMotion"
         "-framework ImageIO"
+        "-framework UniformTypeIdentifiers"
         "-lobjc"
     )
 endif()
