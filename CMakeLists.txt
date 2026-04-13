@@ -24,10 +24,13 @@ set(LITEPARSER_DIR ${GE_VENDOR}/github.com/sqliteai/liteparser/src)
 
 # ── bgfx/bx/bimg static libraries ────────────────────
 
-set(BGFX_COMPILE_FLAGS
-    -DBX_CONFIG_DEBUG=0
-    -DBGFX_CONFIG_RENDERER_METAL=1
-)
+set(BGFX_COMPILE_FLAGS -DBX_CONFIG_DEBUG=0)
+if(APPLE)
+    list(APPEND BGFX_COMPILE_FLAGS -DBGFX_CONFIG_RENDERER_METAL=1)
+endif()
+if(CMAKE_SYSTEM_NAME STREQUAL "Android")
+    list(APPEND BGFX_COMPILE_FLAGS -DBGFX_CONFIG_MULTITHREADED=0)
+endif()
 
 # bx
 add_library(bx STATIC ${BX_DIR}/src/amalgamated.cpp)
@@ -130,15 +133,17 @@ set(GE_CORE_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/Resource.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/FileIO.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/Signal.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/BgfxContext.mm
     ${CMAKE_CURRENT_SOURCE_DIR}/vendor/src/sqlift.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/vendor/src/sqlpipe.cpp
 )
 
 if(GE_DIRECT)
+    # Direct mode: app initializes bgfx itself; ge provides utilities only
     set(GE_SOURCES ${GE_CORE_SOURCES})
 else()
+    # Wire mode: includes bgfx init, networking, and H.264 encode/decode
     set(GE_SOURCES ${GE_CORE_SOURCES}
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/BgfxContext.mm
         ${CMAKE_CURRENT_SOURCE_DIR}/src/WebSocketClient.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/SessionHost.mm
         ${CMAKE_CURRENT_SOURCE_DIR}/src/VideoEncoder_apple.mm
@@ -150,19 +155,14 @@ add_library(ge STATIC ${GE_SOURCES})
 
 # ── ObjC++ for .mm files (Apple only) ─────────────────
 
-if(NOT CMAKE_SYSTEM_NAME STREQUAL "Android")
+if(NOT GE_DIRECT AND NOT CMAKE_SYSTEM_NAME STREQUAL "Android")
     set_source_files_properties(
         ${CMAKE_CURRENT_SOURCE_DIR}/src/BgfxContext.mm
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/SessionHost.mm
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/VideoEncoder_apple.mm
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/VideoDecoder_apple.mm
         PROPERTIES LANGUAGE OBJCXX
     )
-    if(NOT GE_DIRECT)
-        set_source_files_properties(
-            ${CMAKE_CURRENT_SOURCE_DIR}/src/SessionHost.mm
-            ${CMAKE_CURRENT_SOURCE_DIR}/src/VideoEncoder_apple.mm
-            ${CMAKE_CURRENT_SOURCE_DIR}/src/VideoDecoder_apple.mm
-            PROPERTIES LANGUAGE OBJCXX
-        )
-    endif()
 endif()
 
 # ── Public include directories ────────────────────────
@@ -226,7 +226,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Android")
     target_link_libraries(ge PUBLIC SDL3_image::SDL3_image)
 
     # Android system libs
-    target_link_libraries(ge INTERFACE android log)
+    target_link_libraries(ge INTERFACE android log EGL GLESv2)
 
 elseif(CMAKE_SYSTEM_NAME STREQUAL "iOS")
     # SDL3 and friends — pre-built xcframeworks
