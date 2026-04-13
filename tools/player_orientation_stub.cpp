@@ -7,3 +7,5 @@
 #include "player_orientation.h"
 
 void playerForceOrientation(uint8_t) {}
+
+int playerGetPhysicalOrientation() { return 3; } // SDL_ORIENTATION_PORTRAIT

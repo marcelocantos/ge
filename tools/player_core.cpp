@@ -342,6 +342,82 @@ int playerCore(const std::string& host, int port) {
                 break;
             case SDL_EVENT_KEY_DOWN:
             case SDL_EVENT_KEY_UP:
+                // Synthesize accelerometer from ⌥WASD when no real sensor.
+                // WASD maps to physical device directions (how the user
+                // holds it). The sensor axes are device-fixed (portrait):
+                //   data[0] = X (positive = device tilts right)
+                //   data[1] = Y (positive = device tilts toward user)
+                // When the window is landscape, the physical device axes
+                // are rotated relative to the keyboard.
+                if (!accelSensor && (e.key.mod & SDL_KMOD_ALT)) {
+                    constexpr float kG = 9.81f;
+                    constexpr float kTilt = 0.25f * kG;
+                    // Physical directions: W=away, S=toward, A=left, D=right
+                    // relative to how the user holds the device.
+                    float pw = 0, pa = 0;  // physical W/S and A/D axes
+                    bool isTilt = true;
+                    if (e.type == SDL_EVENT_KEY_DOWN) {
+                        switch (e.key.scancode) {
+                        case SDL_SCANCODE_W: pw = -1; break;  // away
+                        case SDL_SCANCODE_S: pw =  1; break;  // toward
+                        case SDL_SCANCODE_A: pa = -1; break;  // left
+                        case SDL_SCANCODE_D: pa =  1; break;  // right
+                        default: isTilt = false;
+                        }
+                    } else {
+                        switch (e.key.scancode) {
+                        case SDL_SCANCODE_W: case SDL_SCANCODE_S:
+                        case SDL_SCANCODE_A: case SDL_SCANCODE_D:
+                            break;
+                        default: isTilt = false;
+                        }
+                    }
+                    if (isTilt) {
+                        // Portrait sensor values.
+                        float ax = -pa * kTilt;
+                        float ay =  pw * kTilt;
+
+                        // Apply rotation matrix based on device orientation.
+                        // Each orientation is a multiple of 90°, so the
+                        // matrix is just 0, 1, -1 entries.
+                        //
+                        //   Portrait:         [ 1  0]   (identity)
+                        //                     [ 0  1]
+                        //   Landscape (CW):   [ 0  1]   (90° CW)
+                        //                     [-1  0]
+                        //   Upside-down:      [-1  0]   (180°)
+                        //                     [ 0 -1]
+                        //   Landscape (CCW):  [ 0 -1]   (270° CW)
+                        //                     [ 1  0]
+                        float rx = ax, ry = ay;
+                        int physOrient = playerGetPhysicalOrientation();
+                        switch (physOrient) {
+                        default: // portrait — identity
+                            break;
+                        case SDL_ORIENTATION_LANDSCAPE: // 90° CW
+                            rx =  ay;
+                            ry = -ax;
+                            break;
+                        case SDL_ORIENTATION_PORTRAIT_FLIPPED: // 180°
+                            rx = -ax;
+                            ry = -ay;
+                            break;
+                        case SDL_ORIENTATION_LANDSCAPE_FLIPPED: // 270° CW
+                            rx = -ay;
+                            ry =  ax;
+                            break;
+                        }
+
+                        SDL_Event se{};
+                        se.type = SDL_EVENT_SENSOR_UPDATE;
+                        se.sensor.data[0] = rx;
+                        se.sensor.data[1] = ry;
+                        sendEvent(se);
+                        break;
+                    }
+                }
+                sendEvent(e);
+                break;
             case SDL_EVENT_SENSOR_UPDATE:
                 sendEvent(e);
                 break;

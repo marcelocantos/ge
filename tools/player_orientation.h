@@ -13,6 +13,11 @@ extern "C" {
 // On platforms without native orientation control, this is a no-op.
 void playerForceOrientation(uint8_t orientation);
 
+// Returns the physical device orientation as SDL_DisplayOrientation.
+// On iOS, reads UIDevice.current.orientation (independent of interface lock).
+// On other platforms, returns SDL_ORIENTATION_PORTRAIT.
+int playerGetPhysicalOrientation();
+
 #ifdef __cplusplus
 }
 #endif

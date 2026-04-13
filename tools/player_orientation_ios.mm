@@ -10,6 +10,7 @@
 
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
+#include <SDL3/SDL_video.h>
 
 // Global flag — set by playerForceOrientation, read by the swizzled property.
 static BOOL g_orientationLocked = NO;
@@ -32,8 +33,35 @@ static BOOL g_orientationLocked = NO;
 
 @end
 
+static bool g_deviceOrientationActive = false;
+
+int playerGetPhysicalOrientation() {
+    if (!g_deviceOrientationActive) {
+        [[UIDevice currentDevice] beginGeneratingDeviceOrientationNotifications];
+        g_deviceOrientationActive = true;
+    }
+    // Real devices report physical orientation. Simulator returns Unknown
+    // (no accelerometer), which falls through to portrait default.
+    UIDeviceOrientation dev = [UIDevice currentDevice].orientation;
+    switch (dev) {
+    case UIDeviceOrientationPortrait:           return SDL_ORIENTATION_PORTRAIT;
+    case UIDeviceOrientationPortraitUpsideDown: return SDL_ORIENTATION_PORTRAIT_FLIPPED;
+    case UIDeviceOrientationLandscapeLeft:      return SDL_ORIENTATION_LANDSCAPE;
+    case UIDeviceOrientationLandscapeRight:     return SDL_ORIENTATION_LANDSCAPE_FLIPPED;
+    default:                                    return SDL_ORIENTATION_PORTRAIT;
+    }
+}
+
 void playerForceOrientation(uint8_t orientation) {
     if (orientation == 0) return;
+
+    // Start generating device orientation notifications early so that
+    // UIDevice.current.orientation is populated by the time the first
+    // keyboard tilt event arrives.
+    if (!g_deviceOrientationActive) {
+        [[UIDevice currentDevice] beginGeneratingDeviceOrientationNotifications];
+        g_deviceOrientationActive = true;
+    }
 
     g_orientationLocked = YES;
 
