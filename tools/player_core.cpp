@@ -78,14 +78,10 @@ int playerCore(const std::string& host, int port) {
     SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "0");
     SDL_SetHint(SDL_HINT_MOUSE_TOUCH_EVENTS, "0");
 
-    fprintf(stderr, "MM2: player_core entry (pre-init)\n");
-    SDL_Log("MM2: player_core entry");
-
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_SENSOR)) {
         SPDLOG_ERROR("SDL_Init failed: {}", SDL_GetError());
         return 1;
     }
-    SDL_Log("MM2: SDL_Init OK");
 
     // ── Connect to ged BEFORE creating the window ──────────────────────
     // This lets us receive SessionConfig (orientation lock, sensor needs)
@@ -103,18 +99,15 @@ int playerCore(const std::string& host, int port) {
     // Wait for SessionConfig — the server's signal that it's ready.
     // DeviceInfo is sent AFTER SessionConfig so the player can apply
     // orientation hints and report the correct dimensions.
-    SDL_Log("MM2: waiting for SessionConfig...");
     SDL_Sensor* accelSensor = nullptr;
     uint8_t requestedOrientation = 0;
     while (conn->isOpen()) {
         std::vector<char> msg;
         if (!conn->recvBinary(msg) || msg.size() < 8) {
-            SDL_Log("MM2: recvBinary failed or short (%zu bytes)", msg.size());
             break;
         }
         uint32_t magic = 0;
         std::memcpy(&magic, msg.data(), 4);
-        SDL_Log("MM2: pre-window msg: magic=0x%08x size=%zu", magic, msg.size());
 
         if (magic == wire::kSessionConfigMagic &&
             msg.size() >= sizeof(wire::MessageHeader) + sizeof(wire::SessionConfig)) {
@@ -147,7 +140,6 @@ int playerCore(const std::string& host, int port) {
                 if (hint) {
                     SDL_SetHint(SDL_HINT_ORIENTATIONS, hint);
                     SDL_SetHint("SDL_IOS_SUPPRESS_ROTATION_ANIMATION", "1");
-                    SDL_Log("MM2: orientation hint set to: %s", hint);
                 }
             }
             break;
@@ -184,13 +176,9 @@ int playerCore(const std::string& host, int port) {
         std::memcpy(msg.data(), &hdr, sizeof(hdr));
         std::memcpy(msg.data() + sizeof(hdr), &devInfo, sizeof(devInfo));
         conn->sendBinary(msg.data(), msg.size());
-        SDL_Log("MM2: DeviceInfo sent (%dx%d @%dx)", w, h, pr);
     }
 
     // ── Create window (orientation hint already applied) ───────────────
-
-    const char* appliedHint = SDL_GetHint(SDL_HINT_ORIENTATIONS);
-    SDL_Log("MM2: creating window (SDL_HINT_ORIENTATIONS=%s)", appliedHint ? appliedHint : "(null)");
 
     SDL_Window* window = SDL_CreateWindow(
         "GE Player", 820, 1180,
