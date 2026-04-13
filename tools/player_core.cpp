@@ -146,6 +146,7 @@ int playerCore(const std::string& host, int port) {
                 }
                 if (hint) {
                     SDL_SetHint(SDL_HINT_ORIENTATIONS, hint);
+                    SDL_SetHint("SDL_IOS_SUPPRESS_ROTATION_ANIMATION", "1");
                     SDL_Log("MM2: orientation hint set to: %s", hint);
                 }
             }
