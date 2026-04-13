@@ -13,10 +13,15 @@ std::string resource(const std::string& relativePath) {
     }
 
     static const std::string base = [] {
+#if defined(__ANDROID__)
+        // On Android, assets live inside the APK. SDL_IOFromFile handles
+        // them via AssetManager when given a relative path — no prefix needed.
+        return std::string();
+#endif
         auto p = SDL_GetBasePath();
         if (!p) return std::string();
         std::string dir(p);
-#if (defined(__APPLE__) && TARGET_OS_IOS) || defined(__ANDROID__)
+#if (defined(__APPLE__) && TARGET_OS_IOS)
         // SDL_GetBasePath() returns the app bundle Resources/ directory.
         return dir;
 #else
