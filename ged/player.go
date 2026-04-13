@@ -9,6 +9,8 @@ import (
 )
 
 // handlePlayer handles a player WebSocket connection at /ws/wire.
+// Ged is a pure bridge — it registers the player, then forwards all
+// binary frames bidirectionally between the player and server wire.
 func (d *Daemon) handlePlayer(w http.ResponseWriter, r *http.Request) {
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 		InsecureSkipVerify: true,
@@ -21,42 +23,17 @@ func (d *Daemon) handlePlayer(w http.ResponseWriter, r *http.Request) {
 
 	conn.SetReadLimit(maxFrameSize)
 
-	// Read DeviceInfo (first binary frame from player).
-	// The daemon stores this and replays it to the server when the
-	// bridge is established, so the server always gets DeviceInfo
-	// regardless of connect ordering.
 	ctx := r.Context()
-	mt, deviceInfo, err := conn.Read(ctx)
-	if err != nil {
-		slog.Error("Player DeviceInfo read failed", "err", err)
-		return
-	}
-	if mt != websocket.MessageBinary {
-		slog.Error("Player DeviceInfo: expected binary frame")
-		return
-	}
-
-	// Extract server preference from extended DeviceInfo frame.
-	// Frame layout: [8-byte MessageHeader][28-byte DeviceInfo struct][optional preference]
-	// The DeviceInfo struct is 28 bytes: magic(4) + version(2) + width(2) + height(2) +
-	// pixelRatio(2) + deviceClass(1) + orientation(1) + padding(2) + preferredFormat(4) +
-	// safeX(2) + safeY(2) + safeW(2) + safeH(2).
-	const deviceInfoFrameSize = 8 + 28 // MessageHeader + DeviceInfo
-	var preference string
-	if len(deviceInfo) > deviceInfoFrameSize {
-		preference = string(deviceInfo[deviceInfoFrameSize:])
-		deviceInfo = deviceInfo[:deviceInfoFrameSize] // strip preference before storing
-	}
-
 	cancelPing := startPing(ctx, conn)
 	defer cancelPing()
 
 	name := r.URL.Query().Get("name")
-	pc := &PlayerConn{Conn: conn, DeviceInfo: deviceInfo}
+	preference := r.URL.Query().Get("preference")
+	pc := &PlayerConn{Conn: conn}
 	sessionID := d.AddPlayer(pc, name, preference)
 	defer d.RemovePlayer(sessionID)
 
-	// Forward remaining frames to the server's wire connection for this session.
+	// Forward all frames to the server wire for this session.
 	for {
 		mt, data, err := conn.Read(ctx)
 		if err != nil {
@@ -77,8 +54,6 @@ func (d *Daemon) handlePlayer(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		// Try session wire first (Dawn wire protocol), fall back to server
-		// sideband (H.264 architecture where server has no per-session wire).
 		if !d.ForwardToServerWire(sessionID, mt, data) {
 			d.ForwardToServerSideband(sessionID, mt, data)
 		}

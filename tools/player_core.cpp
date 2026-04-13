@@ -100,34 +100,9 @@ int playerCore(const std::string& host, int port) {
     }
     SPDLOG_INFO("Connected to ged");
 
-    // Send DeviceInfo with display dimensions. ged needs this to bridge
-    // the player to the server wire. Always send portrait dimensions
-    // (min x max) so the server renders portrait regardless of how the
-    // device is currently held.
-    int displayW, displayH, displayPR;
-    {
-        const SDL_DisplayMode* dm = SDL_GetCurrentDisplayMode(SDL_GetPrimaryDisplay());
-        displayW = dm ? dm->w : 1080;
-        displayH = dm ? dm->h : 2400;
-        displayPR = (dm && dm->pixel_density > 0) ? int(dm->pixel_density) : 1;
-        int sendW = std::min(displayW, displayH);  // portrait width
-        int sendH = std::max(displayW, displayH);  // portrait height
-        wire::MessageHeader hdr{};
-        hdr.magic = wire::kDeviceInfoMagic;
-        hdr.length = sizeof(wire::DeviceInfo);
-        wire::DeviceInfo devInfo{};
-        devInfo.width = sendW;
-        devInfo.height = sendH;
-        devInfo.pixelRatio = displayPR;
-        devInfo.deviceClass = 3;
-        std::vector<uint8_t> msg(sizeof(hdr) + sizeof(devInfo));
-        std::memcpy(msg.data(), &hdr, sizeof(hdr));
-        std::memcpy(msg.data() + sizeof(hdr), &devInfo, sizeof(devInfo));
-        conn->sendBinary(msg.data(), msg.size());
-        SPDLOG_INFO("DeviceInfo sent ({}x{} @{}x, portrait-normalized)", sendW, sendH, displayPR);
-    }
-
     // Wait for SessionConfig — the server's signal that it's ready.
+    // DeviceInfo is sent AFTER SessionConfig so the player can apply
+    // orientation hints and report the correct dimensions.
     SDL_Log("MM2: waiting for SessionConfig...");
     SDL_Sensor* accelSensor = nullptr;
     uint8_t requestedOrientation = 0;
@@ -180,6 +155,37 @@ int playerCore(const std::string& host, int port) {
         continue;
     }
 
+    // ── Send DeviceInfo (after SessionConfig, so dimensions are correct) ─
+
+    {
+        const SDL_DisplayMode* dm = SDL_GetCurrentDisplayMode(SDL_GetPrimaryDisplay());
+        int w = dm ? dm->w : 1080;
+        int h = dm ? dm->h : 2400;
+        int pr = (dm && dm->pixel_density > 0) ? int(dm->pixel_density) : 1;
+
+        // Normalize to requested orientation.
+        bool wantPortrait = (requestedOrientation == SDL_ORIENTATION_PORTRAIT ||
+                             requestedOrientation == SDL_ORIENTATION_PORTRAIT_FLIPPED);
+        bool wantLandscape = (requestedOrientation == SDL_ORIENTATION_LANDSCAPE ||
+                              requestedOrientation == SDL_ORIENTATION_LANDSCAPE_FLIPPED);
+        if (wantPortrait && w > h) std::swap(w, h);
+        if (wantLandscape && h > w) std::swap(w, h);
+
+        wire::MessageHeader hdr{};
+        hdr.magic = wire::kDeviceInfoMagic;
+        hdr.length = sizeof(wire::DeviceInfo);
+        wire::DeviceInfo devInfo{};
+        devInfo.width = w;
+        devInfo.height = h;
+        devInfo.pixelRatio = pr;
+        devInfo.deviceClass = 3;
+        std::vector<uint8_t> msg(sizeof(hdr) + sizeof(devInfo));
+        std::memcpy(msg.data(), &hdr, sizeof(hdr));
+        std::memcpy(msg.data() + sizeof(hdr), &devInfo, sizeof(devInfo));
+        conn->sendBinary(msg.data(), msg.size());
+        SDL_Log("MM2: DeviceInfo sent (%dx%d @%dx)", w, h, pr);
+    }
+
     // ── Create window (orientation hint already applied) ───────────────
 
     const char* appliedHint = SDL_GetHint(SDL_HINT_ORIENTATIONS);
@@ -187,7 +193,7 @@ int playerCore(const std::string& host, int port) {
 
     SDL_Window* window = SDL_CreateWindow(
         "GE Player", 820, 1180,
-        SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
+        SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY | SDL_WINDOW_BORDERLESS);
     if (!window) {
         SPDLOG_ERROR("SDL_CreateWindow failed: {}", SDL_GetError());
         SDL_Quit();
@@ -261,12 +267,15 @@ int playerCore(const std::string& host, int port) {
         // Compute the visible rect of the video on screen.
         float visW, visH;
         if (rotated) {
-            // Rotated: portrait video displayed as landscape.
+            // Rotated: portrait video displayed in landscape window.
+            // Visual (post-rotation) size is texH x texW.
             float scaleX = float(ww) / float(texH);
             float scaleY = float(wh) / float(texW);
             float scale = std::min(scaleX, scaleY);
-            visW = texH * scale;
-            visH = texW * scale;
+            // visW/visH are the on-screen dimensions of the dest rect
+            // (pre-rotation, as SDL sees it).
+            visW = texW * scale;
+            visH = texH * scale;
         } else {
             float scaleX = float(ww) / float(texW);
             float scaleY = float(wh) / float(texH);
@@ -283,9 +292,9 @@ int playerCore(const std::string& host, int port) {
             float nx = (sx - offsetX) / visW;
             float ny = (sy - offsetY) / visH;
             if (rotated) {
-                // 90° CW rotation: landscape (nx,ny) → portrait
-                ox = ny * texW;
-                oy = (1.0f - nx) * texH;
+                // 90° CCW rotation: landscape (nx,ny) → portrait
+                ox = (1.0f - ny) * texW;
+                oy = nx * texH;
             } else {
                 ox = nx * texW;
                 oy = ny * texH;
@@ -439,21 +448,26 @@ int playerCore(const std::string& host, int port) {
             bool needsRotation = (ww > wh) && (texH > texW);
 
             if (needsRotation) {
-                // Fit the rotated portrait video into the landscape window.
-                // After 90° CW rotation, the portrait video's visual width
-                // is texH and visual height is texW.
-                float scaleX = float(ww) / float(texH);
-                float scaleY = float(wh) / float(texW);
+                // SDL_RenderTextureRotated rotates the texture within the
+                // dest rect. The dest rect is the pre-rotation bounding box.
+                // For a portrait texture (texW x texH) rotated -90°, the
+                // visual output is (texH x texW). We scale to fit the
+                // landscape window using the visual (post-rotation) size,
+                // then set the dest rect to the pre-rotation size at that
+                // same scale so SDL's rotation produces the correct result.
+                float scaleX = float(ww) / float(texH);  // visual width
+                float scaleY = float(wh) / float(texW);  // visual height
                 float scale = std::min(scaleX, scaleY);
-                float dstW = texH * scale;
-                float dstH = texW * scale;
+                // Dest rect uses pre-rotation dimensions (portrait).
+                float dstW = texW * scale;
+                float dstH = texH * scale;
                 SDL_FRect dst = {
                     (ww - dstW) / 2.0f,
                     (wh - dstH) / 2.0f,
                     dstW, dstH
                 };
                 SDL_RenderTextureRotated(renderer, videoTex, nullptr, &dst,
-                                         90.0, nullptr, SDL_FLIP_NONE);
+                                         -90.0, nullptr, SDL_FLIP_NONE);
             } else {
                 float scaleX = float(ww) / float(texW);
                 float scaleY = float(wh) / float(texH);

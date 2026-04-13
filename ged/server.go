@@ -131,9 +131,9 @@ func (d *Daemon) handleServerSessionWire(w http.ResponseWriter, r *http.Request)
 
 	slog.Info("Server session wire connected", "session", sessionID)
 
-	// Bridge asynchronously: wait for the read loop to start before sending
-	// DeviceInfo. This avoids a race where ged writes DeviceInfo before the
-	// server's C++ side has started reading the WebSocket.
+	// Bridge asynchronously: wait for the read loop to start before marking
+	// the session as bridged. This ensures server→player forwarding is active
+	// before any frames flow.
 	ready := make(chan struct{})
 	go func() {
 		<-ready
