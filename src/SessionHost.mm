@@ -137,14 +137,17 @@ static std::string jsonStringValue(const std::string& json, const std::string& k
 // ── ge::run — multi-session server ─────────────────────────────────
 
 void run(Factory factory, const SessionHostConfig& config) {
+    const char* name = (config.appName && *config.appName) ? config.appName : "server";
+
     // Connect to ged sideband (control channel)
-    auto sideband = connectWebSocket("localhost", 42069, "/ws/server?name=yourworld", 2000);
+    auto sideband = connectWebSocket("localhost", 42069,
+        std::string("/ws/server?name=") + name, 2000);
     if (!sideband || !sideband->isOpen()) {
         SPDLOG_WARN("Failed to connect to ged — running standalone");
         return;
     }
     SPDLOG_INFO("Connected to ged sideband");
-    std::string hello = "{\"type\":\"hello\",\"name\":\"yourworld\",\"pid\":"
+    std::string hello = std::string("{\"type\":\"hello\",\"name\":\"") + name + "\",\"pid\":"
         + std::to_string(getpid()) + ",\"version\":"
         + std::to_string(wire::kProtocolVersion) + "}";
     sideband->sendText(hello);
