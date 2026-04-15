@@ -2,120 +2,232 @@ schema_version: 1
 targets:
   T1:
     name: Game servers can run inside the player via WebAssembly
-    kind: work
     status: identified
     value: 3.0
     cost: 8.0
     acceptance:
-    - A ge game server (C++ app using the ge API) can be compiled to WebAssembly and loaded directly into
-      the player process. In this mode, the server's Dawn wire commands are routed in-process rather than
-      over TCP, eliminating network latency and the need for a separate server process in single-player
-      scenarios.
-    context: "The current architecture requires three processes (ged, game server, player) connected via\
-      \ TCP/WebSocket. This is ideal for multi-player and remote rendering, but adds unnecessary complexity\
-      \ for single-player use on a single device. If the game server can be compiled to Wasm and embedded\
-      \ in the player, a single app binary can run the full experience — particularly valuable for mobile\
-      \ deployment where running a background TCP server is impractical or forbidden.\n\nKey considerations:\n\
-      - ge already has `SessionDirect.cpp` for in-process rendering (no wire).\n  Wasm deployment is a\
-      \ middle ground: the server runs in-process but\n  still uses the wire protocol (since the server\
-      \ targets the Dawn wire\n  client, not native Dawn).\n- The in-process wire transport (`WireTransport.cpp`)\
-      \ already exists\n  for testing — could serve as the Wasm transport layer.\n- Emscripten (`emcc`)\
-      \ is available for C++ → Wasm compilation.\n- Platform-specific code in game servers (file I/O,\
-      \ threading) would\n  need Wasm-compatible alternatives or abstractions.\n- Asset loading strategy:\
-      \ bundle in Wasm module vs fetch from network.\n- Threading model: Wasm threads (SharedArrayBuffer)\
-      \ vs single-threaded\n  event loop."
+    - A ge game server (C++ app using the ge API) can be compiled to WebAssembly and loaded directly into the player process. In this mode, the server's Dawn wire commands are routed in-process rather than over TCP, eliminating network latency and the need for a separate server process in single-player scenarios.
+    context: |-
+      The current architecture requires three processes (ged, game server, player) connected via TCP/WebSocket. This is ideal for multi-player and remote rendering, but adds unnecessary complexity for single-player use on a single device. If the game server can be compiled to Wasm and embedded in the player, a single app binary can run the full experience — particularly valuable for mobile deployment where running a background TCP server is impractical or forbidden.
+
+      Key considerations:
+      - ge already has `SessionDirect.cpp` for in-process rendering (no wire).
+        Wasm deployment is a middle ground: the server runs in-process but
+        still uses the wire protocol (since the server targets the Dawn wire
+        client, not native Dawn).
+      - The in-process wire transport (`WireTransport.cpp`) already exists
+        for testing — could serve as the Wasm transport layer.
+      - Emscripten (`emcc`) is available for C++ → Wasm compilation.
+      - Platform-specific code in game servers (file I/O, threading) would
+        need Wasm-compatible alternatives or abstractions.
+      - Asset loading strategy: bundle in Wasm module vs fetch from network.
+      - Threading model: Wasm threads (SharedArrayBuffer) vs single-threaded
+        event loop.
     origin: migrated from docs/targets.md
-    discovered: '2026-04-12'
+    discovered: 2026-04-12
   T2:
     name: Smoke test validates network connectivity between laptop and device
-    kind: work
     status: identified
     value: 1.0
     cost: 2.0
     acceptance:
-    - '`smoke-test.sh` detects when the device cannot reach ged over the network, before any player launch
-      or code debugging begins. Reports the specific failure (no WiFi IP, firewall blocking, device unreachable,
-      or device→laptop path broken) with actionable remediation.'
-    context: 'Lost 2+ hours debugging code when the actual problem was laptop WiFi silently stopped accepting
-      incoming connections. All local checks passed (ged listening, device registered via USB). The device→laptop
-      network path was broken but nothing detected it. Need two layers: local network sanity checks (WiFi
-      IP, firewall, ping device) and a `ge-probe` iOS app for definitive device→laptop HTTP connectivity
-      testing.'
+    - '`smoke-test.sh` detects when the device cannot reach ged over the network, before any player launch or code debugging begins. Reports the specific failure (no WiFi IP, firewall blocking, device unreachable, or device→laptop path broken) with actionable remediation.'
+    context: 'Lost 2+ hours debugging code when the actual problem was laptop WiFi silently stopped accepting incoming connections. All local checks passed (ged listening, device registered via USB). The device→laptop network path was broken but nothing detected it. Need two layers: local network sanity checks (WiFi IP, firewall, ping device) and a `ge-probe` iOS app for definitive device→laptop HTTP connectivity testing.'
     origin: discovered while using smoke-test.sh during yourworld 🎯T8 debugging
-    discovered: '2026-04-12'
+    discovered: 2026-04-12
   T3:
     name: Player sends mip cache manifest before rendering begins
-    kind: work
     status: identified
     value: 8.0
     cost: 5.0
     acceptance:
-    - On connect, player sends all cached mip hash values to the server (via ge) before the first wire
-      command. Server skips texture upload commands for any mip already cached on the device. Rendering
-      pipeline is only mutated for uncached textures. Reconnection with a fully-cached device produces
-      no texture upload wire commands.
-    context: Currently the server sends all texture data and the player reactively checks its local mip
-      cache (hit/miss). This still mutates the rendering pipeline with large WriteTexture commands even
-      when the player already has the data. For ~270MB of initial textures, this dominates reconnection
-      time. A preemptive cache manifest exchange would let the server skip cached uploads entirely.
+    - On connect, player sends all cached mip hash values to the server (via ge) before the first wire command. Server skips texture upload commands for any mip already cached on the device. Rendering pipeline is only mutated for uncached textures. Reconnection with a fully-cached device produces no texture upload wire commands.
+    context: Currently the server sends all texture data and the player reactively checks its local mip cache (hit/miss). This still mutates the rendering pipeline with large WriteTexture commands even when the player already has the data. For ~270MB of initial textures, this dominates reconnection time. A preemptive cache manifest exchange would let the server skip cached uploads entirely.
     origin: migrated from docs/targets.md
-    discovered: '2026-04-12'
+    discovered: 2026-04-12
   T4:
     name: playerLoop takes a config struct with named fields
-    kind: work
     status: identified
     value: 3.0
     cost: 2.0
     acceptance:
-    - '`playerLoop()` accepts a single `PlayerLoopConfig` struct (or similar) instead of positional parameters.
-      Call sites use designated initializers (`.checkOverride = ...`, `.discover = ...`, `.name = ...`).
-      The `Player` constructor may also be refactored to a config struct if touched.'
-    context: '`playerLoop` accumulated parameters across iterations (discover → checkOverride + discover
-      + name). Positional args are opaque at call sites. Named fields via a config struct make the API
-      self-documenting and easier to extend.'
+    - '`playerLoop()` accepts a single `PlayerLoopConfig` struct (or similar) instead of positional parameters. Call sites use designated initializers (`.checkOverride = ...`, `.discover = ...`, `.name = ...`). The `Player` constructor may also be refactored to a config struct if touched.'
+    context: '`playerLoop` accumulated parameters across iterations (discover → checkOverride + discover + name). Positional args are opaque at call sites. Named fields via a config struct make the API self-documenting and easier to extend.'
     origin: migrated from docs/targets.md
-    discovered: '2026-04-12'
+    discovered: 2026-04-12
   T5:
     name: Player has a connection management screen
-    kind: work
     status: identified
     value: 3.0
     cost: 3.0
     acceptance:
-    - Player has a gesture-accessible screen to scan a new QR code, manually enter a server address, or
-      forget the saved address. Accessible from the connected state (not just on startup).
-    context: The persistence mechanism works (player remembers server address), but there's no UI for
-      the user to manage saved connections.
+    - Player has a gesture-accessible screen to scan a new QR code, manually enter a server address, or forget the saved address. Accessible from the connected state (not just on startup).
+    context: The persistence mechanism works (player remembers server address), but there's no UI for the user to manage saved connections.
     origin: migrated from docs/targets.md
-    discovered: '2026-04-12'
+    discovered: 2026-04-12
   T6:
     name: Player can switch between active servers without QR
-    kind: work
     status: identified
     value: 2.0
     cost: 2.0
     acceptance:
-    - Dashboard has a "move player to server" control. Player switches seamlessly via `kServerAssignedMagic`.
-      No disconnect/reconnect visible to user.
-    context: With persistent address, player auto-connects to saved server. If two servers are on the
-      same network, player has no reason to fall back to QR. Dashboard is the natural control plane.
+    - Dashboard has a "move player to server" control. Player switches seamlessly via `kServerAssignedMagic`. No disconnect/reconnect visible to user.
+    context: With persistent address, player auto-connects to saved server. If two servers are on the same network, player has no reason to fall back to QR. Dashboard is the natural control plane.
     origin: migrated from docs/targets.md
-    discovered: '2026-04-12'
+    discovered: 2026-04-12
   T7:
     name: Audio pauses when the app is backgrounded
-    kind: work
     status: identified
     value: 5.0
     cost: 2.0
     acceptance:
-    - On iOS and Android, backgrounding the app silences all ge audio. Foregrounding resumes it. Works
-      in both wire mode (player) and direct mode (standalone app). No game code changes required. Desktop
-      platforms are unaffected.
-    context: User reported music keeps playing when the iOS app is backgrounded. Currently `ge::Audio`
-      (server-side) sends play/stop/volume commands, and `AudioPlayer` (player-side, wire mode) or equivalent
-      direct-mode playback handles them. Neither layer responds to app lifecycle events. The engine should
-      intercept `SDL_EVENT_DID_ENTER_BACKGROUND` / `SDL_EVENT_DID_ENTER_FOREGROUND` and pause/resume audio
-      automatically. In wire mode this means the player pauses its `AudioPlayer`; in direct mode the session
-      or audio subsystem does it directly.
+    - On iOS and Android, backgrounding the app silences all ge audio. Foregrounding resumes it. Works in both wire mode (player) and direct mode (standalone app). No game code changes required. Desktop platforms are unaffected.
+    context: User reported music keeps playing when the iOS app is backgrounded. Currently `ge::Audio` (server-side) sends play/stop/volume commands, and `AudioPlayer` (player-side, wire mode) or equivalent direct-mode playback handles them. Neither layer responds to app lifecycle events. The engine should intercept `SDL_EVENT_DID_ENTER_BACKGROUND` / `SDL_EVENT_DID_ENTER_FOREGROUND` and pause/resume audio automatically. In wire mode this means the player pauses its `AudioPlayer`; in direct mode the session or audio subsystem does it directly.
     origin: manual (user-reported from yourworld)
-    discovered: '2026-04-12'
+    discovered: 2026-04-12
+  T8:
+    name: Distribution iOS builds support accelerometer simulation in the simulator
+    status: identified
+    value: 3.0
+    cost: 5.0
+    acceptance:
+    - ⌥+WASD tilts the simulated device's accelerometer in distribution/release iOS Simulator builds (not just Debug builds)
+    - Test on a Release-configuration iOS Simulator build of any ge-based app
+    context: iOS Simulator's accelerometer emulation (⌥+WASD keyboard shortcut) only works in Debug-configuration builds by default. Distribution/Release builds disable it, which makes it impossible to test tilt-based input on the simulator without a physical device. Likely caused by an Info.plist key, build flag, or entitlement that's stripped in Release configurations. Investigate and document the fix in ge so all consumer apps benefit.
+    origin: manual
+    discovered: 2026-04-15
+  T9:
+    name: ge exposes device tilt as optional parallax input to games
+    status: identified
+    value: 5.0
+    cost: 5.0
+    acceptance:
+    - RunConfig has a parallaxFactor field (float, default 0)
+    - When parallaxFactor > 0, the player captures Core Motion attitude and sends deltas to the server
+    - Context exposes the current parallax delta (axis-angle or quaternion)
+    - Baseline auto-settles via EMA so sustained tilts become the new neutral
+    - A sample game demonstrates the effect
+    context: |-
+      Reproduce the Apple Spatial Scenes effect: games can tilt their scene in response to device tilt. The player reads Core Motion attitude (quaternion), maintains a baseline via exponential moving average (lerp with α = 1 - exp(-dt/τ), no normalisation needed — tiny steps keep magnitude near unit), and sends the delta between current and baseline to the server.
+
+      Games opt in via RunConfig.parallaxFactor (float, 0 = off, >0 scales the effect). Context exposes the current parallax via ctx.parallax(). The game decides which parts of the scene to adjust — typically camera or world layers, not UI. Gyroscope-derived attitude is used (not gravity alone) so twisting around the vertical axis also works.
+    origin: user request
+    discovered: 2026-04-15
+  T10:
+    name: ge has a sample app that exercises engine features
+    status: identified
+    value: 8.0
+    cost: 5.0
+    acceptance:
+    - Sample app lives in ge/sample/ (or similar) with its own Makefile using ge/Module.mk
+    - Demonstrates ge::run() with onUpdate/onRender/onEvent/onShutdown callbacks
+    - Renders something visibly interactive (responds to input)
+    - Uses at least one tweak parameter
+    - Loads at least one asset via ge::loadManifest or ge::resource
+    - Runs end-to-end through ged with the desktop player
+    - Documented in README/CLAUDE.md as the reference integration
+    context: |-
+      ge currently has no in-tree example of how to build an app on it. New features (parallax, tweaks, input handling, asset loading) need somewhere to be demonstrated and smoke-tested without dragging in a full game. A small sample app lives in the repo, uses the same Module.mk integration pattern documented in CLAUDE.md, and exercises the core API surface: ge::run() lifecycle, bgfx rendering, input events, tweaks, asset loading, and — as features land — parallax, session persistence, and any other engine-level capabilities.
+
+      It also serves as the canonical integration test for the server/player architecture. Early candidate: a TiltBuggy port — tilt-controlled car with Box2D physics. References the 2013 Chipmunk prototype at ~/work/mirrors/marcelo-mbpr/work/TiltBuggy.
+    origin: user request
+    discovered: 2026-04-15
+  T11:
+    name: ged uses pigeon for all networking between server, player, and daemon
+    status: identified
+    value: 13.0
+    cost: 20.0
+    acceptance:
+    - No WebSocket code remains in ged or ge client code (coder/websocket removed from go.mod, Asio WS framing removed from WebSocketClient.cpp)
+    - Server↔ged and player↔ged connections use pigeon streams
+    - H.264 video frames flow over pigeon (streams or datagrams)
+    - Input events flow back from player to server over pigeon
+    - Dashboard sideband (logs, preview, tweaks) works over pigeon
+    - LAN mode works without a relay when server and player are colocated
+    - Existing ge::run() API contract unchanged — apps don't need modification
+    context: Replace ged's hand-rolled WebSocket stack (coder/websocket in Go, Asio TCP+WS framing in C++) with pigeon (github.com/marcelocantos/pigeon). Pigeon provides QUIC/WebTransport relay with E2E encryption, LAN upgrade, and native SDKs for Go, Swift, and Kotlin — eliminating the need for ged to be on the same LAN, enabling mobile players to connect over the internet, and removing the custom WebSocket framing code.
+    origin: user request
+    discovered: 2026-04-12
+  T11.1:
+    name: pigeon is vendored as a Go dependency in ged
+    status: identified
+    value: 3.0
+    cost: 2.0
+    acceptance:
+    - go.mod has pigeon dependency with replace directive pointing to local checkout
+    - go build succeeds
+    context: Add github.com/marcelocantos/pigeon to ged's go.mod. ged lives at ge/ged/ with its own go.mod. Pigeon is at ../../marcelocantos/pigeon — use a replace directive for local dev.
+    origin: decomposed from T11
+    discovered: 2026-04-12
+  T11.2:
+    name: ged registers as a pigeon backend and accepts client connections
+    status: identified
+    value: 8.0
+    cost: 5.0
+    acceptance:
+    - ged starts a pigeon LANServer and logs its instance ID
+    - A pigeon client can connect to ged's instance ID
+    - ged distinguishes game vs player connections via initial message
+    context: ged calls pigeon.Register() on startup (LAN mode, no relay). Games and players connect via pigeon.Connect(). ged accepts connections and identifies them as game or player based on the initial handshake message. This replaces the WebSocket Accept on /ws/server and /ws/wire. The HTTP server (dashboard, REST API, MCP) stays on the existing port unchanged.
+    depends_on:
+    - T11.1
+    origin: decomposed from T11
+    discovered: 2026-04-12
+  T11.3:
+    name: Game server sideband uses pigeon channel instead of WebSocket
+    status: identified
+    value: 5.0
+    cost: 5.0
+    acceptance:
+    - Game server connects to ged via pigeon and opens a sideband channel
+    - JSON control messages flow over the pigeon channel
+    - No /ws/server WebSocket endpoint remains
+    context: 'Replace the game server''s /ws/server WebSocket connection with a pigeon channel. The sideband carries JSON control messages: hello, log, preview, accel, tweaks, player_attached, player_detached. Game connects to ged via pigeon.Connect(), opens a sideband channel. ged side: replace handleServerSideband WebSocket handler with pigeon channel accept. C++ side: replace WebSocketClient.cpp Asio+TCP WS framing with pigeon (needs a C/C++ wrapper or cgo bridge).'
+    depends_on:
+    - T11.2
+    origin: decomposed from T11
+    discovered: 2026-04-12
+  T11.4:
+    name: Per-session wire uses pigeon channel instead of WebSocket
+    status: identified
+    value: 8.0
+    cost: 5.0
+    acceptance:
+    - H.264 frames flow over pigeon channel from game to ged
+    - Input events flow over pigeon channel from ged to game
+    - No /ws/server/wire/{sessionID} endpoint remains
+    context: Replace /ws/server/wire/{sessionID} with a pigeon channel per session. When ged tells a game server "player attached", the game opens a new pigeon channel for that session's wire traffic (H.264 frames server→ged, input events ged→server). ged bridges this to the player's pigeon channel.
+    depends_on:
+    - T11.3
+    origin: decomposed from T11
+    discovered: 2026-04-12
+  T11.5:
+    name: Player connects to ged via pigeon instead of WebSocket
+    status: identified
+    value: 8.0
+    cost: 5.0
+    acceptance:
+    - Desktop player connects to ged via pigeon
+    - H.264 frames arrive at player over pigeon
+    - Input events flow from player to ged over pigeon
+    - No /ws/wire WebSocket endpoint remains
+    context: Replace /ws/wire player WebSocket with pigeon. Player connects via pigeon's C API (pigeon_connect), sends DeviceInfo, receives H.264 stream, sends input events back. Desktop player (tools/player.cpp) links libpigeon. ged bridges the player's pigeon channel to the game's wire channel. Same C API available for game server side (SessionHost.mm), eliminating WebSocketClient.cpp entirely.
+    depends_on:
+    - T11.4
+    origin: decomposed from T11
+    discovered: 2026-04-12
+  T11.6:
+    name: WebSocket code removed from ged and ge client
+    status: identified
+    value: 3.0
+    cost: 3.0
+    acceptance:
+    - coder/websocket removed from go.mod
+    - WebSocketClient.cpp deleted or gutted
+    - No /ws/server or /ws/wire routes in ged
+    - Dashboard /ws/logs, /ws/preview, /ws/stream still work
+    context: 'Final cleanup: remove coder/websocket from go.mod, remove WebSocketClient.cpp and Asio WS framing, remove all /ws/* route registrations (except dashboard WS endpoints which stay as-is). Dashboard WebSocket endpoints (/ws/logs, /ws/preview, /ws/stream) remain — they serve the browser and don''t need pigeon.'
+    depends_on:
+    - T11.5
+    origin: decomposed from T11
+    discovered: 2026-04-12
