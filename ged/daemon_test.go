@@ -60,12 +60,6 @@ func makeMessage(magic uint32, payload []byte) []byte {
 	return buf
 }
 
-// makeDeviceInfoWithPref constructs a wire DeviceInfo frame with a server preference appended.
-func makeDeviceInfoWithPref(width, height, pixelRatio uint16, format uint32, pref string) []byte {
-	base := makeDeviceInfo(width, height, pixelRatio, format)
-	return append(base, []byte(pref)...)
-}
-
 // readPayload extracts the payload (after the 8-byte header) from a wire message.
 func readPayload(data []byte) string {
 	if len(data) <= 8 {
@@ -171,8 +165,8 @@ type fakeServer struct {
 	sideband *websocket.Conn
 }
 
-// connectFakeServerSideband connects a fake game server's sideband to the daemon.
-func connectFakeServerSideband(t *testing.T, ts *httptest.Server, name string) *fakeServer {
+// connectTestServer connects a fake game server's sideband to the daemon.
+func connectTestServer(t *testing.T, ts *httptest.Server, name string) *fakeServer {
 	t.Helper()
 	ctx := context.Background()
 
@@ -230,30 +224,28 @@ func connectSessionWire(t *testing.T, ts *httptest.Server, sessionID string) *we
 	return wire
 }
 
-// connectFakePlayer connects a fake player to the daemon and sends DeviceInfo.
-func connectFakePlayer(t *testing.T, ts *httptest.Server) *websocket.Conn {
+// connectTestPlayer connects a fake player to the daemon with an optional
+// server preference. Pass "" for no preference.
+func connectTestPlayer(t *testing.T, ts *httptest.Server, preference string) *websocket.Conn {
 	t.Helper()
-	conn := dial(t, wsURL(ts, "/ws/wire"))
+	path := "/ws/wire"
+	if preference != "" {
+		path += "?preference=" + preference
+	}
+	conn := dial(t, wsURL(ts, path))
+	time.Sleep(50 * time.Millisecond)
+	return conn
+}
+
+// sendDeviceInfo sends a DeviceInfo frame from the player to the daemon.
+// Call this after the bridge is established (after connectSessionWire).
+func sendDeviceInfo(t *testing.T, conn *websocket.Conn) {
+	t.Helper()
 	deviceInfo := makeDeviceInfo(1080, 2400, 1, 22)
 	ctx := context.Background()
 	if err := conn.Write(ctx, websocket.MessageBinary, deviceInfo); err != nil {
 		t.Fatalf("Player DeviceInfo write failed: %v", err)
 	}
-	time.Sleep(50 * time.Millisecond)
-	return conn
-}
-
-// connectFakePlayerWithPref connects a fake player with a server preference.
-func connectFakePlayerWithPref(t *testing.T, ts *httptest.Server, pref string) *websocket.Conn {
-	t.Helper()
-	conn := dial(t, wsURL(ts, "/ws/wire"))
-	deviceInfo := makeDeviceInfoWithPref(1080, 2400, 1, 22, pref)
-	ctx := context.Background()
-	if err := conn.Write(ctx, websocket.MessageBinary, deviceInfo); err != nil {
-		t.Fatalf("Player DeviceInfo write failed: %v", err)
-	}
-	time.Sleep(50 * time.Millisecond)
-	return conn
 }
 
 // readServerAssigned reads a ServerAssigned binary frame and returns the server name.
@@ -272,21 +264,24 @@ func readServerAssigned(t *testing.T, conn *websocket.Conn) string {
 func TestBridgeEstablishment(t *testing.T) {
 	_, ts := startTestDaemon(t)
 
-	// Player connects first, sends DeviceInfo
-	player := connectFakePlayer(t, ts)
+	// Player connects first (no DeviceInfo yet)
+	player := connectTestPlayer(t, ts, "")
 	defer player.CloseNow()
 
 	// Server connects sideband
-	server := connectFakeServerSideband(t, ts, "test-game")
+	server := connectTestServer(t, ts, "test-game")
 	defer server.sideband.CloseNow()
 
 	// Server reads player_attached notification
 	sessionID := readPlayerAttached(t, server)
 	t.Logf("Got player_attached: session=%s", sessionID)
 
-	// Server connects per-session wire
+	// Server connects per-session wire — bridge is now established
 	wire := connectSessionWire(t, ts, sessionID)
 	defer wire.CloseNow()
+
+	// Player sends DeviceInfo through the bridge
+	sendDeviceInfo(t, player)
 
 	// Server should receive the player's DeviceInfo on its wire WS
 	data := readBinary(t, wire, 2*time.Second)
@@ -302,19 +297,22 @@ func TestBridgeServerFirst(t *testing.T) {
 	_, ts := startTestDaemon(t)
 
 	// Server connects first (no player yet)
-	server := connectFakeServerSideband(t, ts, "test-game")
+	server := connectTestServer(t, ts, "test-game")
 	defer server.sideband.CloseNow()
 
 	// Player connects after server, sends DeviceInfo
-	player := connectFakePlayer(t, ts)
+	player := connectTestPlayer(t, ts, "")
 	defer player.CloseNow()
 
 	// Server reads player_attached
 	sessionID := readPlayerAttached(t, server)
 
-	// Server connects per-session wire
+	// Server connects per-session wire — bridge is now established
 	wire := connectSessionWire(t, ts, sessionID)
 	defer wire.CloseNow()
+
+	// Player sends DeviceInfo through the bridge
+	sendDeviceInfo(t, player)
 
 	// Server should receive DeviceInfo
 	data := readBinary(t, wire, 2*time.Second)
@@ -329,10 +327,10 @@ func TestBridgeServerFirst(t *testing.T) {
 func TestSessionEndOnServerDisconnect(t *testing.T) {
 	_, ts := startTestDaemon(t)
 
-	player := connectFakePlayer(t, ts)
+	player := connectTestPlayer(t, ts, "")
 	defer player.CloseNow()
 
-	server := connectFakeServerSideband(t, ts, "test-game")
+	server := connectTestServer(t, ts, "test-game")
 
 	// Player receives ServerAssigned when server registers and claims unattached session
 	assigned := readServerAssigned(t, player)
@@ -343,7 +341,8 @@ func TestSessionEndOnServerDisconnect(t *testing.T) {
 	sessionID := readPlayerAttached(t, server)
 	wire := connectSessionWire(t, ts, sessionID)
 
-	// Verify bridge is up: server gets DeviceInfo
+	// Verify bridge is up: player sends DeviceInfo, server receives it
+	sendDeviceInfo(t, player)
 	data := readBinary(t, wire, 2*time.Second)
 	if readMagic(data) != kDeviceInfoMagic {
 		t.Fatal("Bridge not established")
@@ -366,10 +365,10 @@ func TestSessionEndOnServerDisconnect(t *testing.T) {
 func TestWireFrameForwarding(t *testing.T) {
 	_, ts := startTestDaemon(t)
 
-	player := connectFakePlayer(t, ts)
+	player := connectTestPlayer(t, ts, "")
 	defer player.CloseNow()
 
-	server := connectFakeServerSideband(t, ts, "test-game")
+	server := connectTestServer(t, ts, "test-game")
 	defer server.sideband.CloseNow()
 
 	// Drain ServerAssigned from player
@@ -379,7 +378,8 @@ func TestWireFrameForwarding(t *testing.T) {
 	wire := connectSessionWire(t, ts, sessionID)
 	defer wire.CloseNow()
 
-	// Wait for bridge
+	// Establish bridge: player sends DeviceInfo, server receives it
+	sendDeviceInfo(t, player)
 	data := readBinary(t, wire, 2*time.Second)
 	if readMagic(data) != kDeviceInfoMagic {
 		t.Fatal("Bridge not established")
@@ -419,14 +419,15 @@ func TestWireFrameForwarding(t *testing.T) {
 func TestPlayerDisconnectClosesServerWire(t *testing.T) {
 	_, ts := startTestDaemon(t)
 
-	player := connectFakePlayer(t, ts)
-	server := connectFakeServerSideband(t, ts, "test-game")
+	player := connectTestPlayer(t, ts, "")
+	server := connectTestServer(t, ts, "test-game")
 	defer server.sideband.CloseNow()
 	sessionID := readPlayerAttached(t, server)
 	wire := connectSessionWire(t, ts, sessionID)
 	defer wire.CloseNow()
 
-	// Wait for bridge
+	// Establish bridge: player sends DeviceInfo, server receives it
+	sendDeviceInfo(t, player)
 	data := readBinary(t, wire, 2*time.Second)
 	if readMagic(data) != kDeviceInfoMagic {
 		t.Fatal("Bridge not established")
@@ -450,18 +451,18 @@ func TestMultiplePlayers(t *testing.T) {
 	_, ts := startTestDaemon(t)
 
 	// Connect server sideband
-	server := connectFakeServerSideband(t, ts, "test-game")
+	server := connectTestServer(t, ts, "test-game")
 	defer server.sideband.CloseNow()
 
 	// Connect two players — each gets ServerAssigned during AddPlayer
-	player1 := connectFakePlayer(t, ts)
+	player1 := connectTestPlayer(t, ts, "")
 	defer player1.CloseNow()
 	readServerAssigned(t, player1)
 	session1 := readPlayerAttached(t, server)
 	wire1 := connectSessionWire(t, ts, session1)
 	defer wire1.CloseNow()
 
-	player2 := connectFakePlayer(t, ts)
+	player2 := connectTestPlayer(t, ts, "")
 	defer player2.CloseNow()
 	readServerAssigned(t, player2)
 	session2 := readPlayerAttached(t, server)
@@ -472,7 +473,9 @@ func TestMultiplePlayers(t *testing.T) {
 		t.Fatal("Expected different session IDs for different players")
 	}
 
-	// Both should receive DeviceInfo
+	// Both players send DeviceInfo; both servers should receive it
+	sendDeviceInfo(t, player1)
+	sendDeviceInfo(t, player2)
 	data1 := readBinary(t, wire1, 2*time.Second)
 	if readMagic(data1) != kDeviceInfoMagic {
 		t.Fatal("Bridge 1 not established")
@@ -507,17 +510,18 @@ func TestMultiplePlayers(t *testing.T) {
 func TestServerRestart(t *testing.T) {
 	_, ts := startTestDaemon(t)
 
-	player := connectFakePlayer(t, ts)
+	player := connectTestPlayer(t, ts, "")
 	defer player.CloseNow()
 
 	// First server
-	server1 := connectFakeServerSideband(t, ts, "game-v1")
+	server1 := connectTestServer(t, ts, "game-v1")
 
 	// Player receives ServerAssigned when server registers
 	readServerAssigned(t, player)
 
 	session1 := readPlayerAttached(t, server1)
 	wire1 := connectSessionWire(t, ts, session1)
+	sendDeviceInfo(t, player)
 	data := readBinary(t, wire1, 2*time.Second)
 	if readMagic(data) != kDeviceInfoMagic {
 		t.Fatal("First bridge not established")
@@ -538,11 +542,11 @@ func TestServerRestart(t *testing.T) {
 
 	// Player reconnects (new WebSocket)
 	player.CloseNow()
-	player = connectFakePlayer(t, ts)
+	player = connectTestPlayer(t, ts, "")
 	defer player.CloseNow()
 
 	// Second server connects — claims unattached player session
-	server2 := connectFakeServerSideband(t, ts, "game-v2")
+	server2 := connectTestServer(t, ts, "game-v2")
 	defer server2.sideband.CloseNow()
 
 	// Player receives ServerAssigned
@@ -551,6 +555,9 @@ func TestServerRestart(t *testing.T) {
 	session2 := readPlayerAttached(t, server2)
 	wire2 := connectSessionWire(t, ts, session2)
 	defer wire2.CloseNow()
+
+	// Player sends DeviceInfo through the new bridge
+	sendDeviceInfo(t, player)
 
 	// Second server should receive DeviceInfo
 	data = readBinary(t, wire2, 2*time.Second)
@@ -568,10 +575,10 @@ func TestMultiServerRegistration(t *testing.T) {
 	d, ts := startTestDaemon(t)
 
 	// Connect two servers
-	server1 := connectFakeServerSideband(t, ts, "game-alpha")
+	server1 := connectTestServer(t, ts, "game-alpha")
 	defer server1.sideband.CloseNow()
 
-	server2 := connectFakeServerSideband(t, ts, "game-beta")
+	server2 := connectTestServer(t, ts, "game-beta")
 	defer server2.sideband.CloseNow()
 
 	d.mu.Lock()
@@ -589,10 +596,10 @@ func TestPlayerRoutesToServer(t *testing.T) {
 	_, ts := startTestDaemon(t)
 
 	// Connect server first, then player
-	server := connectFakeServerSideband(t, ts, "game-alpha")
+	server := connectTestServer(t, ts, "game-alpha")
 	defer server.sideband.CloseNow()
 
-	player := connectFakePlayer(t, ts)
+	player := connectTestPlayer(t, ts, "")
 	defer player.CloseNow()
 
 	// Player should receive ServerAssigned
@@ -606,6 +613,7 @@ func TestPlayerRoutesToServer(t *testing.T) {
 	wire := connectSessionWire(t, ts, sessionID)
 	defer wire.CloseNow()
 
+	sendDeviceInfo(t, player)
 	data := readBinary(t, wire, 2*time.Second)
 	if readMagic(data) != kDeviceInfoMagic {
 		t.Fatal("Bridge not established")
@@ -618,13 +626,13 @@ func TestPreferenceRouting(t *testing.T) {
 	_, ts := startTestDaemon(t)
 
 	// Connect two servers
-	server1 := connectFakeServerSideband(t, ts, "game-alpha")
+	server1 := connectTestServer(t, ts, "game-alpha")
 	defer server1.sideband.CloseNow()
-	server2 := connectFakeServerSideband(t, ts, "game-beta")
+	server2 := connectTestServer(t, ts, "game-beta")
 	defer server2.sideband.CloseNow()
 
 	// Connect player with preference for game-beta
-	player := connectFakePlayerWithPref(t, ts, "game-beta")
+	player := connectTestPlayer(t, ts, "game-beta")
 	defer player.CloseNow()
 
 	// Player should receive ServerAssigned for game-beta
@@ -639,6 +647,7 @@ func TestPreferenceRouting(t *testing.T) {
 	wire := connectSessionWire(t, ts, sessionID)
 	defer wire.CloseNow()
 
+	sendDeviceInfo(t, player)
 	data := readBinary(t, wire, 2*time.Second)
 	if readMagic(data) != kDeviceInfoMagic {
 		t.Fatal("Bridge not established on preferred server")
@@ -651,11 +660,11 @@ func TestPreferenceFallback(t *testing.T) {
 	_, ts := startTestDaemon(t)
 
 	// Connect one server
-	server := connectFakeServerSideband(t, ts, "game-alpha")
+	server := connectTestServer(t, ts, "game-alpha")
 	defer server.sideband.CloseNow()
 
 	// Connect player with preference for non-existent server
-	player := connectFakePlayerWithPref(t, ts, "game-nonexistent")
+	player := connectTestPlayer(t, ts, "game-nonexistent")
 	defer player.CloseNow()
 
 	// Player should fall back to game-alpha
@@ -672,10 +681,10 @@ func TestSwitchServer(t *testing.T) {
 	_, ts := startTestDaemon(t)
 
 	// Connect server1, then player (assigned to server1)
-	server1 := connectFakeServerSideband(t, ts, "game-alpha")
+	server1 := connectTestServer(t, ts, "game-alpha")
 	defer server1.sideband.CloseNow()
 
-	player := connectFakePlayer(t, ts)
+	player := connectTestPlayer(t, ts, "")
 	defer player.CloseNow()
 
 	// Drain ServerAssigned
@@ -685,13 +694,14 @@ func TestSwitchServer(t *testing.T) {
 	wire1 := connectSessionWire(t, ts, sessionID)
 	defer wire1.CloseNow()
 
+	sendDeviceInfo(t, player)
 	data := readBinary(t, wire1, 2*time.Second)
 	if readMagic(data) != kDeviceInfoMagic {
 		t.Fatal("Bridge not established on server1")
 	}
 
 	// Now connect server2
-	server2 := connectFakeServerSideband(t, ts, "game-beta")
+	server2 := connectTestServer(t, ts, "game-beta")
 	defer server2.sideband.CloseNow()
 
 	// Switch all to server2 via API
@@ -721,9 +731,9 @@ func TestServerDisconnectReassignment(t *testing.T) {
 	_, ts := startTestDaemon(t)
 
 	// Connect server1, then player
-	server1 := connectFakeServerSideband(t, ts, "game-alpha")
+	server1 := connectTestServer(t, ts, "game-alpha")
 
-	player := connectFakePlayer(t, ts)
+	player := connectTestPlayer(t, ts, "")
 	defer player.CloseNow()
 
 	// Drain ServerAssigned from initial assignment
@@ -732,13 +742,14 @@ func TestServerDisconnectReassignment(t *testing.T) {
 	sessionID := readPlayerAttached(t, server1)
 	wire1 := connectSessionWire(t, ts, sessionID)
 
+	sendDeviceInfo(t, player)
 	data := readBinary(t, wire1, 2*time.Second)
 	if readMagic(data) != kDeviceInfoMagic {
 		t.Fatal("Bridge not established")
 	}
 
 	// Connect server2 as alternative
-	server2 := connectFakeServerSideband(t, ts, "game-beta")
+	server2 := connectTestServer(t, ts, "game-beta")
 	defer server2.sideband.CloseNow()
 
 	// Disconnect server1 — sessions should be reassigned to server2
@@ -774,9 +785,9 @@ func TestServerInfoMultiServer(t *testing.T) {
 	_ = ts
 
 	// Connect two servers
-	server1 := connectFakeServerSideband(t, ts, "game-alpha")
+	server1 := connectTestServer(t, ts, "game-alpha")
 	defer server1.sideband.CloseNow()
-	server2 := connectFakeServerSideband(t, ts, "game-beta")
+	server2 := connectTestServer(t, ts, "game-beta")
 	defer server2.sideband.CloseNow()
 
 	info := d.ServerInfo()
@@ -807,33 +818,35 @@ func TestSwitchSingleSession(t *testing.T) {
 	_, ts := startTestDaemon(t)
 
 	// Connect server1, then two players (both get server1)
-	server1 := connectFakeServerSideband(t, ts, "game-alpha")
+	server1 := connectTestServer(t, ts, "game-alpha")
 	defer server1.sideband.CloseNow()
 
-	player1 := connectFakePlayer(t, ts)
+	player1 := connectTestPlayer(t, ts, "")
 	defer player1.CloseNow()
 	readServerAssigned(t, player1)
 	session1 := readPlayerAttached(t, server1)
 	wire1 := connectSessionWire(t, ts, session1)
 	defer wire1.CloseNow()
+	sendDeviceInfo(t, player1)
 	data := readBinary(t, wire1, 2*time.Second)
 	if readMagic(data) != kDeviceInfoMagic {
 		t.Fatal("Bridge 1 not established")
 	}
 
-	player2 := connectFakePlayer(t, ts)
+	player2 := connectTestPlayer(t, ts, "")
 	defer player2.CloseNow()
 	readServerAssigned(t, player2)
 	session2 := readPlayerAttached(t, server1)
 	wire2 := connectSessionWire(t, ts, session2)
 	defer wire2.CloseNow()
+	sendDeviceInfo(t, player2)
 	data = readBinary(t, wire2, 2*time.Second)
 	if readMagic(data) != kDeviceInfoMagic {
 		t.Fatal("Bridge 2 not established")
 	}
 
 	// Connect server2
-	server2 := connectFakeServerSideband(t, ts, "game-beta")
+	server2 := connectTestServer(t, ts, "game-beta")
 	defer server2.sideband.CloseNow()
 
 	// Switch only session1 to server2 via per-session API
@@ -875,10 +888,10 @@ func TestSingleServerBackwardCompat(t *testing.T) {
 	_, ts := startTestDaemon(t)
 
 	// Single server scenario — should work exactly as before
-	server := connectFakeServerSideband(t, ts, "test-game")
+	server := connectTestServer(t, ts, "test-game")
 	defer server.sideband.CloseNow()
 
-	player := connectFakePlayer(t, ts)
+	player := connectTestPlayer(t, ts, "")
 	defer player.CloseNow()
 
 	// Drain ServerAssigned
@@ -888,6 +901,7 @@ func TestSingleServerBackwardCompat(t *testing.T) {
 	wire := connectSessionWire(t, ts, sessionID)
 	defer wire.CloseNow()
 
+	sendDeviceInfo(t, player)
 	data := readBinary(t, wire, 2*time.Second)
 	if readMagic(data) != kDeviceInfoMagic {
 		t.Fatal("Bridge not established in single-server mode")

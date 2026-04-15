@@ -41,8 +41,7 @@ type ServerConn struct {
 
 // PlayerConn represents a connected player.
 type PlayerConn struct {
-	Conn       *websocket.Conn
-	DeviceInfo []byte // first binary frame (wire protocol DeviceInfo)
+	Conn *websocket.Conn
 }
 
 // PlayerSession represents an active session between a player and the game server.
@@ -52,7 +51,7 @@ type PlayerSession struct {
 	Player     *PlayerConn
 	ServerID   string // which server this session is currently bridged to
 	Name       string // platform name from player (e.g. "mac", "ios", "android")
-	Preference string // server name preference from the player's DeviceInfo
+	Preference string // server name preference from the player's query string
 
 	// Per-session wire connection to the game server.
 	ServerWire *websocket.Conn
@@ -144,14 +143,14 @@ func (d *Daemon) AddServer(sc *ServerConn) {
 
 	slog.Info("Server registered", "id", sc.ID, "name", sc.Name, "pid", sc.PID)
 
-	// Only auto-assign sessions whose preference matches this server's name.
-	// Unattached sessions with no preference stay unattached — the player
-	// decides which server to connect to, not ged.
+	// Auto-assign unattached sessions to this server if their preference
+	// matches, or if this is the only server (unambiguous).
+	singleServer := len(d.servers) == 1
 	for _, sess := range d.sessions {
 		if sess.ServerID != "" {
 			continue
 		}
-		if sess.Preference == sc.Name {
+		if sess.Preference == sc.Name || (sess.Preference == "" && singleServer) {
 			sess.ServerID = sc.ID
 			d.sendServerAssignedLocked(sess.Player.Conn, sc.Name)
 			d.sendToServerIDLocked(sc.ID, fmt.Sprintf(`{"type":"player_attached","session_id":"%s"}`, sess.ID))
@@ -199,15 +198,15 @@ func (d *Daemon) RemoveServer(sc *ServerConn) {
 
 	delete(d.servers, sc.ID)
 
-	// Only reassign to a server with the same name (supersede case).
-	// If no same-name server exists, sessions stay unattached (black screen)
-	// until the dashboard manually reassigns them.
+	// Reassign unattached sessions: prefer a server with the same name
+	// (supersede case), otherwise auto-assign if only one server remains.
+	singleServer := len(d.servers) == 1
 	for _, sess := range d.sessions {
 		if sess.ServerID != "" {
 			continue
 		}
 		for _, candidate := range d.servers {
-			if candidate.Name == sc.Name {
+			if candidate.Name == sc.Name || singleServer {
 				sess.ServerID = candidate.ID
 				d.sendServerAssignedLocked(sess.Player.Conn, candidate.Name)
 				d.sendToServerIDLocked(candidate.ID, fmt.Sprintf(`{"type":"player_attached","session_id":"%s"}`, sess.ID))
@@ -384,7 +383,7 @@ func (d *Daemon) SetSessionWire(sessionID string, wireConn *websocket.Conn) bool
 	return true
 }
 
-// TryBridgeSession attempts to bridge a session (send DeviceInfo to server wire).
+// TryBridgeSession marks a session as bridged after the read loop is ready.
 func (d *Daemon) TryBridgeSession(sessionID string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -414,54 +413,16 @@ func (d *Daemon) UnsetSessionWire(sessionID string, conn *websocket.Conn) {
 	sess.ServerWire = nil
 }
 
-// tryBridgeSessionLocked attempts to establish a bridge for a specific session.
-// Sends the player's stored DeviceInfo to the server wire to initiate the handshake.
-// In H.264 mode (ServerWire == nil but ServerID set), forwards DeviceInfo to the
-// server's sideband connection instead.
+// tryBridgeSessionLocked marks a session as bridged so that frames
+// flow between the player and the server wire. Ged is a pure bridge —
+// it does not interpret or store any application-level messages.
 // Must be called with d.mu held.
 func (d *Daemon) tryBridgeSessionLocked(sess *PlayerSession) {
-	if sess.Player == nil {
+	if sess.Player == nil || sess.ServerID == "" {
 		return
 	}
-	if sess.Player.DeviceInfo == nil {
-		return
-	}
-	if sess.Player.DeviceInfo == nil {
-		return
-	}
-
-	if sess.ServerWire != nil {
-		// Wire mode: send DeviceInfo to the per-session wire connection.
-		sess.wireMu.Lock()
-		ctx, cancel := contextWithTimeout(5 * time.Second)
-		err := sess.ServerWire.Write(ctx, websocket.MessageBinary, sess.Player.DeviceInfo)
-		cancel()
-		sess.wireMu.Unlock()
-		if err != nil {
-			slog.Error("Failed to send DeviceInfo to server wire", "session", sess.ID, "err", err)
-			return
-		}
-	} else if sess.ServerID != "" {
-		// H.264 mode: forward DeviceInfo to the server's sideband connection.
-		sc, ok := d.servers[sess.ServerID]
-		if !ok {
-			return
-		}
-		sc.sendMu.Lock()
-		ctx, cancel := contextWithTimeout(2 * time.Second)
-		err := sc.Conn.Write(ctx, websocket.MessageBinary, sess.Player.DeviceInfo)
-		cancel()
-		sc.sendMu.Unlock()
-		if err != nil {
-			slog.Error("Failed to send DeviceInfo to server sideband", "session", sess.ID, "server", sess.ServerID, "err", err)
-			return
-		}
-	} else {
-		return
-	}
-
 	sess.bridged = true
-	slog.Info("Bridge established", "session", sess.ID)
+	slog.Info("Session bridged", "session", sess.ID)
 }
 
 // ForwardToPlayer sends a binary frame to the player for a specific session.

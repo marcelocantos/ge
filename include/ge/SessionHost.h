@@ -28,7 +28,8 @@ enum class DeviceClass : uint8_t {
 class Context {
 public:
     Context(int width, int height, DeviceClass deviceClass,
-            const std::string& dbPath);
+            const std::string& dbPath,
+            const std::string& schemaDdl = {});
 
     int width() const;
     int height() const;
@@ -64,6 +65,17 @@ struct SessionHostConfig {
     // the player and synced via sqlpipe.
     const char* orgName = nullptr;
     const char* appName = nullptr;
+
+    // Schema DDL for the engine-provided database.
+    // Passed to sqlpipe::Database; sqlift diffs against existing
+    // schema and auto-migrates. Leave empty to skip schema setup.
+    std::string schemaDdl;
+
+    // Session requirements — sent to the player on attachment, BEFORE
+    // DeviceInfo, so the player can apply orientation/sensor hints before
+    // creating its window. Game-wide, not per-session.
+    uint8_t sensors = 0;      // Bitmask: wire::kSensorAccelerometer
+    uint8_t orientation = 0;  // wire::kOrientation* value, 0 = no lock
 };
 
 // Factory receives platform context and returns render loop callbacks.

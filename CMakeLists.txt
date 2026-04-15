@@ -6,105 +6,218 @@
 
 cmake_minimum_required(VERSION 3.28...4.2)
 if(CMAKE_SYSTEM_NAME STREQUAL "Android")
-    project(ge LANGUAGES CXX)
+    project(ge LANGUAGES C CXX)
 else()
-    project(ge LANGUAGES CXX OBJCXX)
+    project(ge LANGUAGES C CXX OBJCXX)
 endif()
 set(CMAKE_CXX_STANDARD 23)
 
 option(GE_DIRECT "Direct rendering mode (no wire/networking)" OFF)
 
-# ── Sources ──────────────────────────────────────────
+# ── Vendor paths ──────────────────────────────────────
+set(GE_VENDOR     ${CMAKE_CURRENT_SOURCE_DIR}/vendor)
+set(BX_DIR        ${GE_VENDOR}/github.com/bkaradzic/bx)
+set(BIMG_DIR      ${GE_VENDOR}/github.com/bkaradzic/bimg)
+set(BGFX_DIR      ${GE_VENDOR}/github.com/bkaradzic/bgfx)
+set(BOX2D_DIR     ${GE_VENDOR}/github.com/erincatto/box2d)
+set(LITEPARSER_DIR ${GE_VENDOR}/github.com/sqliteai/liteparser/src)
 
-set(GE_CORE_SOURCES
-    src/GpuContext.cpp
-    src/Texture.cpp
-    src/Mesh.cpp
-    src/Model.cpp
-    src/ManifestLoader.cpp
-    src/Pipeline.cpp
-    src/BindGroup.cpp
-    src/Resource.cpp
-    src/FileIO.cpp
+# ── bgfx/bx/bimg static libraries ────────────────────
+
+set(BGFX_COMPILE_FLAGS -DBX_CONFIG_DEBUG=0)
+if(APPLE)
+    list(APPEND BGFX_COMPILE_FLAGS -DBGFX_CONFIG_RENDERER_METAL=1)
+endif()
+if(CMAKE_SYSTEM_NAME STREQUAL "Android")
+    list(APPEND BGFX_COMPILE_FLAGS -DBGFX_CONFIG_MULTITHREADED=0)
+endif()
+
+# bx
+add_library(bx STATIC ${BX_DIR}/src/amalgamated.cpp)
+target_include_directories(bx PUBLIC
+    ${BX_DIR}/include
+    ${BX_DIR}/3rdparty
+)
+# Apple platforms need the osx compat header
+if(APPLE)
+    target_include_directories(bx PUBLIC ${BX_DIR}/include/compat/osx)
+endif()
+target_include_directories(bx PRIVATE
+    ${BIMG_DIR}/include
+    ${BGFX_DIR}/include
+)
+target_compile_options(bx PRIVATE ${BGFX_COMPILE_FLAGS})
+set_target_properties(bx PROPERTIES CXX_STANDARD 20)
+
+# bimg (image.cpp + image_gnf.cpp — decode/encode not needed for bgfx runtime)
+add_library(bimg STATIC
+    ${BIMG_DIR}/src/image.cpp
+    ${BIMG_DIR}/src/image_gnf.cpp
+)
+target_include_directories(bimg PUBLIC ${BIMG_DIR}/include)
+target_include_directories(bimg PRIVATE
+    ${BX_DIR}/include
+    ${BGFX_DIR}/include
+    ${BIMG_DIR}/3rdparty
+    ${BIMG_DIR}/3rdparty/astc-encoder/include
+)
+if(APPLE)
+    target_include_directories(bimg PRIVATE ${BX_DIR}/include/compat/osx)
+endif()
+target_compile_options(bimg PRIVATE
+    ${BGFX_COMPILE_FLAGS}
+    -DBIMG_CONFIG_DECODE_ENABLE=0
+)
+set_target_properties(bimg PROPERTIES CXX_STANDARD 20)
+
+# bgfx (amalgamated; Metal backend requires ObjC++ on Apple)
+add_library(bgfx STATIC ${BGFX_DIR}/src/amalgamated.cpp)
+target_include_directories(bgfx PUBLIC ${BGFX_DIR}/include)
+target_include_directories(bgfx PRIVATE
+    ${BX_DIR}/include
+    ${BIMG_DIR}/include
+    ${BGFX_DIR}/3rdparty
+    ${BGFX_DIR}/3rdparty/khronos
+    ${BGFX_DIR}/src
+)
+if(APPLE)
+    target_include_directories(bgfx PRIVATE ${BX_DIR}/include/compat/osx)
+    # Metal backend needs ObjC++ compilation
+    set_source_files_properties(${BGFX_DIR}/src/amalgamated.cpp
+        PROPERTIES LANGUAGE OBJCXX)
+endif()
+target_compile_options(bgfx PRIVATE ${BGFX_COMPILE_FLAGS})
+set_target_properties(bgfx PROPERTIES CXX_STANDARD 20)
+
+# ── Box2D (uses its own CMakeLists.txt) ───────────────
+
+set(BOX2D_SAMPLES   OFF CACHE BOOL "" FORCE)
+set(BOX2D_UNIT_TESTS OFF CACHE BOOL "" FORCE)
+set(BOX2D_BENCHMARKS OFF CACHE BOOL "" FORCE)
+set(BOX2D_DOCS      OFF CACHE BOOL "" FORCE)
+add_subdirectory(${BOX2D_DIR} ${CMAKE_BINARY_DIR}/box2d)
+
+# ── SQLite3 ───────────────────────────────────────────
+
+add_library(sqlite3_ge STATIC ${GE_VENDOR}/src/sqlite3.c)
+set_target_properties(sqlite3_ge PROPERTIES C_STANDARD 11)
+target_include_directories(sqlite3_ge PUBLIC ${GE_VENDOR}/include)
+target_compile_options(sqlite3_ge PRIVATE
+    -DSQLITE_ENABLE_SESSION
+    -DSQLITE_ENABLE_PREUPDATE_HOOK
+    -DSQLITE_ENABLE_DESERIALIZE
 )
 
-# Platform-specific sources
-if(CMAKE_SYSTEM_NAME STREQUAL "Android")
-    list(APPEND GE_CORE_SOURCES src/SdlContext_android.cpp src/NativeSurface_android.cpp)
-else()
-    list(APPEND GE_CORE_SOURCES src/SdlContext.cpp src/NativeSurface_apple.cpp)
+# ── liteparser (C code, used by sqlpipe) ─────────────
+
+add_library(liteparser STATIC
+    ${LITEPARSER_DIR}/arena.c
+    ${LITEPARSER_DIR}/liteparser.c
+    ${LITEPARSER_DIR}/lp_tokenize.c
+    ${LITEPARSER_DIR}/lp_unparse.c
+    ${LITEPARSER_DIR}/parse.c
+)
+target_include_directories(liteparser PUBLIC ${LITEPARSER_DIR})
+set_target_properties(liteparser PROPERTIES C_STANDARD 11)
+
+# ── lz4 ──────────────────────────────────────────────
+
+add_library(lz4_ge STATIC ${GE_VENDOR}/src/lz4.c)
+target_include_directories(lz4_ge PUBLIC ${GE_VENDOR}/include)
+set_target_properties(lz4_ge PROPERTIES C_STANDARD 11)
+
+# ── ge core sources ───────────────────────────────────
+
+set(GE_CORE_SOURCES
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/Context.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/Resource.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/FileIO.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/Signal.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/vendor/src/sqlift.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/vendor/src/sqlpipe.cpp
+)
+
+if(APPLE)
+    list(APPEND GE_CORE_SOURCES
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/FontLoader_apple.mm)
 endif()
 
 if(GE_DIRECT)
-    set(GE_SOURCES ${GE_CORE_SOURCES} src/SessionDirect.cpp)
+    # Direct mode: app initializes bgfx itself; ge provides utilities only
+    set(GE_SOURCES ${GE_CORE_SOURCES})
 else()
+    # Wire mode: includes bgfx init, networking, and H.264 encode/decode
     set(GE_SOURCES ${GE_CORE_SOURCES}
-        src/CaptureTarget.cpp
-        vendor/github.com/nayuki/QR-Code-generator/cpp/qrcodegen.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/BgfxContext.mm
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/WebSocketClient.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/SessionHost.mm
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/VideoEncoder_apple.mm
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/VideoDecoder_apple.mm
     )
 endif()
 
-# Prepend our directory so paths resolve when included via add_subdirectory
-list(TRANSFORM GE_SOURCES PREPEND "${CMAKE_CURRENT_SOURCE_DIR}/"
-     REGEX "^[^/]")
-
 add_library(ge STATIC ${GE_SOURCES})
 
-# ── ObjC++ for files that use ObjC types (Apple only) ─────────────
+# ── ObjC++ for .mm files (Apple only) ─────────────────
 
-if(NOT CMAKE_SYSTEM_NAME STREQUAL "Android")
+if(NOT GE_DIRECT AND NOT CMAKE_SYSTEM_NAME STREQUAL "Android")
     set_source_files_properties(
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/SdlContext.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/NativeSurface_apple.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/BgfxContext.mm
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/SessionHost.mm
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/VideoEncoder_apple.mm
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/VideoDecoder_apple.mm
         PROPERTIES LANGUAGE OBJCXX
     )
 endif()
 
-# ── Public include directories (inherited by consumers) ──
+# ── Public include directories ────────────────────────
 
 target_include_directories(ge PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/vendor/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/vendor/github.com/gabime/spdlog/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/vendor/dawn/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/vendor/github.com/libsdl-org/SDL/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/vendor/sdl3/include
+    ${GE_VENDOR}/include
+    ${GE_VENDOR}/github.com/gabime/spdlog/include
+    ${GE_VENDOR}/github.com/libsdl-org/SDL/include
+    ${GE_VENDOR}/sdl3/include
+    ${GE_VENDOR}/github.com/erincatto/box2d/include
+    ${LITEPARSER_DIR}
+    ${BGFX_DIR}/include
+    ${BX_DIR}/include
+    ${BIMG_DIR}/include
+)
+if(APPLE)
+    target_include_directories(ge PUBLIC ${BX_DIR}/include/compat/osx)
+endif()
+
+# SQLite defines must be visible to ge consumers (Tweak.h uses SQLite)
+target_compile_definitions(ge PUBLIC
+    SQLITE_ENABLE_SESSION
+    SQLITE_ENABLE_PREUPDATE_HOOK
+    SQLITE_ENABLE_DESERIALIZE
 )
 
 if(GE_DIRECT)
     target_compile_definitions(ge PUBLIC GE_DIRECT)
-
-    # astcenc (decompress-only) for ASTC→RGBA decoding at runtime
-    set(ASTCENC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/vendor/github.com/ARM-software/astc-encoder/Source)
-    file(GLOB ASTCENC_SOURCES ${ASTCENC_DIR}/astcenc_*.cpp)
-    add_library(astcenc STATIC ${ASTCENC_SOURCES})
-    target_include_directories(astcenc PUBLIC ${ASTCENC_DIR})
-    target_compile_definitions(astcenc PUBLIC ASTCENC_DECOMPRESS_ONLY)
-    target_compile_definitions(astcenc PRIVATE ASTCENC_SSE=0 ASTCENC_AVX=0 ASTCENC_POPCNT=0 ASTCENC_NEON=1)
-    set_target_properties(astcenc PROPERTIES CXX_STANDARD 17)
-
-    # etcpak for RGBA→ETC2 compression at runtime
-    set(ETCPAK_DIR ${CMAKE_CURRENT_SOURCE_DIR}/vendor/github.com/wolfpld/etcpak)
-    file(GLOB ETCPAK_SOURCES ${ETCPAK_DIR}/*.cpp)
-    add_library(etcpak STATIC ${ETCPAK_SOURCES})
-    target_include_directories(etcpak PUBLIC ${ETCPAK_DIR})
-
-    target_link_libraries(ge PRIVATE astcenc etcpak)
-    target_compile_definitions(ge PRIVATE GE_HAS_TRANSCODER)
 else()
     target_include_directories(ge PUBLIC
-        ${CMAKE_CURRENT_SOURCE_DIR}/vendor/github.com/chriskohlhoff/asio/include
-        ${CMAKE_CURRENT_SOURCE_DIR}/vendor/github.com/nayuki/QR-Code-generator/cpp
+        ${GE_VENDOR}/github.com/chriskohlhoff/asio/include
     )
     target_compile_definitions(ge PUBLIC ASIO_STANDALONE)
 endif()
 
+# ── Link internal vendor libs into ge ─────────────────
+
+target_link_libraries(ge PRIVATE
+    bgfx bimg bx
+    sqlite3_ge liteparser lz4_ge
+    box2d
+)
+
 # ── Platform-specific dependencies ────────────────────
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Android")
-    # SDL3 — built from source (provides SDL3::SDL3 target)
+    # SDL3 — built from source
     add_subdirectory(
-        ${CMAKE_CURRENT_SOURCE_DIR}/vendor/github.com/libsdl-org/SDL
+        ${GE_VENDOR}/github.com/libsdl-org/SDL
         ${CMAKE_BINARY_DIR}/SDL3
     )
     target_link_libraries(ge PUBLIC SDL3::SDL3)
@@ -112,28 +225,17 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Android")
     # SDL3_image — built from source
     set(SDL3IMAGE_VENDORED OFF)
     add_subdirectory(
-        ${CMAKE_CURRENT_SOURCE_DIR}/vendor/github.com/libsdl-org/SDL_image
+        ${GE_VENDOR}/github.com/libsdl-org/SDL_image
         ${CMAKE_BINARY_DIR}/SDL3_image
     )
     target_link_libraries(ge PUBLIC SDL3_image::SDL3_image)
 
-    # Dawn — pre-built static libs (from build-deps.sh)
-    set(DAWN_LIB_DIR ${CMAKE_CURRENT_SOURCE_DIR}/vendor/dawn/lib/android-arm64)
-    target_link_libraries(ge INTERFACE
-        ${DAWN_LIB_DIR}/libdawn_proc.a
-        ${DAWN_LIB_DIR}/libwebgpu_dawn.a
-        ${DAWN_LIB_DIR}/libdawn_wire.a
-    )
-
     # Android system libs
-    target_link_libraries(ge INTERFACE android log)
+    target_link_libraries(ge INTERFACE android log EGL GLESv2)
 
 elseif(CMAKE_SYSTEM_NAME STREQUAL "iOS")
-    set(GE_VENDOR ${CMAKE_CURRENT_SOURCE_DIR}/vendor)
+    # SDL3 and friends — pre-built xcframeworks
     target_link_libraries(ge INTERFACE
-        ${GE_VENDOR}/dawn/xcframeworks/dawn_proc.xcframework
-        ${GE_VENDOR}/dawn/xcframeworks/webgpu_dawn.xcframework
-        ${GE_VENDOR}/dawn/xcframeworks/dawn_wire.xcframework
         ${GE_VENDOR}/sdl3/xcframeworks/SDL3.xcframework
         ${GE_VENDOR}/sdl3/xcframeworks/SDL3_image.xcframework
         ${GE_VENDOR}/sdl3/xcframeworks/SDL3_ttf.xcframework
@@ -142,15 +244,30 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "iOS")
         ${GE_VENDOR}/sdl3/xcframeworks/plutosvg.xcframework
         ${GE_VENDOR}/sdl3/xcframeworks/plutovg.xcframework
     )
+
+    # System frameworks
     target_link_libraries(ge INTERFACE
-        "-framework Foundation" "-framework UIKit" "-framework Metal"
-        "-framework QuartzCore" "-framework IOKit" "-framework IOSurface"
-        "-framework CoreGraphics" "-framework CoreServices"
-        "-framework CoreFoundation" "-framework CoreBluetooth"
-        "-framework AudioToolbox" "-framework AVFoundation"
-        "-framework CoreMedia" "-framework CoreVideo"
-        "-framework GameController" "-framework CoreHaptics"
-        "-framework CoreMotion" "-framework ImageIO"
-        "-framework OpenGLES" "-lobjc"
+        "-framework Foundation"
+        "-framework UIKit"
+        "-framework CoreText"
+        "-framework Metal"
+        "-framework MetalKit"
+        "-framework QuartzCore"
+        "-framework IOSurface"
+        "-framework OpenGLES"
+        "-framework CoreGraphics"
+        "-framework CoreFoundation"
+        "-framework CoreBluetooth"
+        "-framework CoreServices"
+        "-framework AudioToolbox"
+        "-framework AVFoundation"
+        "-framework CoreMedia"
+        "-framework CoreVideo"
+        "-framework GameController"
+        "-framework CoreHaptics"
+        "-framework CoreMotion"
+        "-framework ImageIO"
+        "-framework UniformTypeIdentifiers"
+        "-lobjc"
     )
 endif()

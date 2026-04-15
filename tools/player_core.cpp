@@ -5,6 +5,8 @@
 // VideoToolbox, and renders to an SDL3 window.
 
 #include "player_core.h"
+#include "player_orientation.h"
+#include <ge/FrameLog.h>
 
 #include <SDL3/SDL.h>
 #include <spdlog/spdlog.h>
@@ -77,22 +79,125 @@ int playerCore(const std::string& host, int port) {
     SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "0");
     SDL_SetHint(SDL_HINT_MOUSE_TOUCH_EVENTS, "0");
 
-    SPDLOG_INFO("PLAYER sizeof(SDL_Event)={}", sizeof(SDL_Event));
-
-    if (!SDL_Init(SDL_INIT_VIDEO)) {
+    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_SENSOR)) {
         SPDLOG_ERROR("SDL_Init failed: {}", SDL_GetError());
         return 1;
     }
 
-    // Window starts at a reasonable logical size; the server renders at
-    // the actual pixel dimensions (accounting for Retina/HiDPI scaling).
-    SDL_Window* window = SDL_CreateWindow(
-        "GE Player", 820, 1180,
-        SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
-    if (!window) {
-        SPDLOG_ERROR("SDL_CreateWindow failed: {}", SDL_GetError());
+    // ── Connect to ged BEFORE creating the window ──────────────────────
+    // This lets us receive SessionConfig (orientation lock, sensor needs)
+    // and apply hints before SDL_CreateWindow, where Android reads them.
+
+    std::string path = "/ws/wire?name=yourworld";
+    auto conn = ge::connectWebSocket(host, port, path, 2000);
+    if (!conn || !conn->isOpen()) {
+        SPDLOG_ERROR("Failed to connect to ged");
+        SDL_Quit();
         return 1;
     }
+    SPDLOG_INFO("Connected to ged");
+
+    // Wait for SessionConfig — the server's signal that it's ready.
+    // DeviceInfo is sent AFTER SessionConfig so the player can apply
+    // orientation hints and report the correct dimensions.
+    SDL_Sensor* accelSensor = nullptr;
+    uint8_t requestedOrientation = 0;
+    while (conn->isOpen()) {
+        std::vector<char> msg;
+        if (!conn->recvBinary(msg) || msg.size() < 8) {
+            break;
+        }
+        uint32_t magic = 0;
+        std::memcpy(&magic, msg.data(), 4);
+
+        if (magic == wire::kSessionConfigMagic &&
+            msg.size() >= sizeof(wire::MessageHeader) + sizeof(wire::SessionConfig)) {
+            wire::SessionConfig cfg;
+            std::memcpy(&cfg, msg.data() + sizeof(wire::MessageHeader), sizeof(cfg));
+
+            if (cfg.sensors & wire::kSensorAccelerometer) {
+                int count = 0;
+                SDL_SensorID* sensors = SDL_GetSensors(&count);
+                if (sensors) {
+                    for (int i = 0; i < count; i++) {
+                        if (SDL_GetSensorTypeForID(sensors[i]) == SDL_SENSOR_ACCEL) {
+                            accelSensor = SDL_OpenSensor(sensors[i]);
+                            if (accelSensor) SPDLOG_INFO("Opened accelerometer (server requested)");
+                            break;
+                        }
+                    }
+                    SDL_free(sensors);
+                }
+            }
+            if (cfg.orientation != 0) {
+                requestedOrientation = cfg.orientation;
+                const char* hint = nullptr;
+                switch (cfg.orientation) {
+                case wire::kOrientationLandscape:        hint = "LandscapeLeft"; break;
+                case wire::kOrientationLandscapeFlipped: hint = "LandscapeRight"; break;
+                case wire::kOrientationPortrait:         hint = "Portrait"; break;
+                case wire::kOrientationPortraitFlipped:  hint = "PortraitUpsideDown"; break;
+                }
+                if (hint) {
+                    SDL_SetHint(SDL_HINT_ORIENTATIONS, hint);
+                }
+            }
+            break;
+        }
+        // ged housekeeping (ServerAssigned, etc.) — skip and keep waiting.
+        continue;
+    }
+
+    // ── Send DeviceInfo (after SessionConfig, so dimensions are correct) ─
+
+    {
+        const SDL_DisplayMode* dm = SDL_GetCurrentDisplayMode(SDL_GetPrimaryDisplay());
+        int w = dm ? dm->w : 1080;
+        int h = dm ? dm->h : 2400;
+        int pr = (dm && dm->pixel_density > 0) ? int(dm->pixel_density) : 1;
+
+        // Normalize to requested orientation.
+        bool wantPortrait = (requestedOrientation == SDL_ORIENTATION_PORTRAIT ||
+                             requestedOrientation == SDL_ORIENTATION_PORTRAIT_FLIPPED);
+        bool wantLandscape = (requestedOrientation == SDL_ORIENTATION_LANDSCAPE ||
+                              requestedOrientation == SDL_ORIENTATION_LANDSCAPE_FLIPPED);
+        if (wantPortrait && w > h) std::swap(w, h);
+        if (wantLandscape && h > w) std::swap(w, h);
+
+        wire::MessageHeader hdr{};
+        hdr.magic = wire::kDeviceInfoMagic;
+        hdr.length = sizeof(wire::DeviceInfo);
+        wire::DeviceInfo devInfo{};
+        devInfo.width = w;
+        devInfo.height = h;
+        devInfo.pixelRatio = pr;
+        devInfo.deviceClass = 3;
+        std::vector<uint8_t> msg(sizeof(hdr) + sizeof(devInfo));
+        std::memcpy(msg.data(), &hdr, sizeof(hdr));
+        std::memcpy(msg.data() + sizeof(hdr), &devInfo, sizeof(devInfo));
+        conn->sendBinary(msg.data(), msg.size());
+    }
+
+    // ── Create window (orientation hint already applied) ───────────────
+
+    SDL_Window* window = SDL_CreateWindow(
+        "GE Player", 820, 1180,
+        SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY
+#ifndef GE_DESKTOP
+        | SDL_WINDOW_BORDERLESS
+#endif
+        );
+    if (!window) {
+        SPDLOG_ERROR("SDL_CreateWindow failed: {}", SDL_GetError());
+        SDL_Quit();
+        return 1;
+    }
+
+    // On iPad (iPadOS 16+), supportedInterfaceOrientations alone doesn't
+    // prevent rotation — the window scene's geometry preferences must also
+    // be set via requestGeometryUpdateWithPreferences. This is a no-op on
+    // non-iOS platforms.
+    playerForceOrientation(requestedOrientation);
 
     SDL_Renderer* renderer = SDL_CreateRenderer(window, nullptr);
     if (!renderer) {
@@ -124,45 +229,6 @@ int playerCore(const std::string& host, int port) {
 
     AVCCParser avccParser;
 
-    // Connect to ged as a player
-    std::string path = "/ws/wire?name=yourworld";
-    auto conn = ge::connectWebSocket(host, port, path, 2000);
-    if (!conn || !conn->isOpen()) {
-        SPDLOG_ERROR("Failed to connect to ged");
-        SDL_DestroyRenderer(renderer);
-        SDL_DestroyWindow(window);
-        SDL_Quit();
-        return 1;
-    }
-    SPDLOG_INFO("Connected to ged");
-
-    // Query actual pixel dimensions (Retina/HiDPI-aware).
-    int pixW, pixH;
-    SDL_GetWindowSizeInPixels(window, &pixW, &pixH);
-    int logW, logH;
-    SDL_GetWindowSize(window, &logW, &logH);
-    int pixelRatio = (logW > 0) ? (pixW / logW) : 1;
-
-    // Send DeviceInfo: [MessageHeader][DeviceInfo struct]
-    // ged expects this exact layout as the first binary frame.
-    wire::MessageHeader hdr{};
-    hdr.magic = wire::kDeviceInfoMagic;
-    hdr.length = sizeof(wire::DeviceInfo);
-    wire::DeviceInfo devInfo{};
-    devInfo.width = pixW;
-    devInfo.height = pixH;
-    devInfo.pixelRatio = pixelRatio;
-    devInfo.deviceClass = 3; // desktop
-
-    std::vector<uint8_t> devInfoMsg(sizeof(hdr) + sizeof(devInfo));
-    std::memcpy(devInfoMsg.data(), &hdr, sizeof(hdr));
-    std::memcpy(devInfoMsg.data() + sizeof(hdr), &devInfo, sizeof(devInfo));
-    conn->sendBinary(devInfoMsg.data(), devInfoMsg.size());
-    SPDLOG_INFO("DeviceInfo sent ({}x{} @{}x)", pixW, pixH, pixelRatio);
-
-    // No send/recv timeouts — the ping-safe recvFrame fix prevents
-    // blocking, and event coalescing limits send volume.
-
     // Helper to send an SDL event to the server via ged
     auto sendEvent = [&](const SDL_Event& e) {
         if (!conn || !conn->isOpen()) {
@@ -181,34 +247,64 @@ int playerCore(const std::string& host, int port) {
         if (sent++ < 3) SPDLOG_INFO("sendEvent: sent 0x{:x} ({} bytes)", e.type, msg.size());
     };
 
-    // Coordinate mapping: player window → server render space
+    // Coordinate mapping: player window → server render space.
+    // When the window is landscape but the server renders portrait,
+    // we rotate coordinates: landscape (x,y) → portrait (y, W-x)
+    // where W is the visible width of the rotated video.
     auto mapEvent = [&](SDL_Event& e) {
         if (!videoTex) return;
         int ww, wh;
         SDL_GetWindowSizeInPixels(window, &ww, &wh);
-        float scaleX = float(ww) / float(texW);
-        float scaleY = float(wh) / float(texH);
-        float scale = std::min(scaleX, scaleY);
-        float offsetX = (ww - texW * scale) / 2.0f;
-        float offsetY = (wh - texH * scale) / 2.0f;
+        bool rotated = (ww > wh) && (texH > texW);
+
+        // Compute the visible rect of the video on screen.
+        float visW, visH;
+        if (rotated) {
+            // Rotated: portrait video displayed in landscape window.
+            // Visual (post-rotation) size is texH x texW.
+            float scaleX = float(ww) / float(texH);
+            float scaleY = float(wh) / float(texW);
+            float scale = std::min(scaleX, scaleY);
+            // visW/visH are the on-screen dimensions of the dest rect
+            // (pre-rotation, as SDL sees it).
+            visW = texW * scale;
+            visH = texH * scale;
+        } else {
+            float scaleX = float(ww) / float(texW);
+            float scaleY = float(wh) / float(texH);
+            float scale = std::min(scaleX, scaleY);
+            visW = texW * scale;
+            visH = texH * scale;
+        }
+        float offsetX = (ww - visW) / 2.0f;
+        float offsetY = (wh - visH) / 2.0f;
+
+        // Helper: map screen pixel coord to server coord.
+        auto mapCoord = [&](float sx, float sy, float& ox, float& oy) {
+            // Screen → normalized video space (0..1)
+            float nx = (sx - offsetX) / visW;
+            float ny = (sy - offsetY) / visH;
+            if (rotated) {
+                // 90° CCW rotation: landscape (nx,ny) → portrait
+                ox = (1.0f - ny) * texW;
+                oy = nx * texH;
+            } else {
+                ox = nx * texW;
+                oy = ny * texH;
+            }
+        };
 
         if (e.type == SDL_EVENT_MOUSE_MOTION) {
-            e.motion.x = (e.motion.x - offsetX) / scale;
-            e.motion.y = (e.motion.y - offsetY) / scale;
+            mapCoord(e.motion.x, e.motion.y, e.motion.x, e.motion.y);
         } else if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN ||
                    e.type == SDL_EVENT_MOUSE_BUTTON_UP) {
-            e.button.x = (e.button.x - offsetX) / scale;
-            e.button.y = (e.button.y - offsetY) / scale;
+            mapCoord(e.button.x, e.button.y, e.button.x, e.button.y);
         } else if (e.type == SDL_EVENT_FINGER_DOWN ||
                    e.type == SDL_EVENT_FINGER_UP ||
                    e.type == SDL_EVENT_FINGER_MOTION) {
-            // Finger events use normalized 0-1 coords; convert to server
-            // pixel coordinates so GlobeController uses the same scale
-            // as mouse events.
             float px = e.tfinger.x * ww;
             float py = e.tfinger.y * wh;
-            e.tfinger.x = (px - offsetX) / scale;
-            e.tfinger.y = (py - offsetY) / scale;
+            mapCoord(px, py, e.tfinger.x, e.tfinger.y);
         }
     };
 
@@ -249,14 +345,95 @@ int playerCore(const std::string& host, int port) {
                 mapEvent(e);
                 sendEvent(e);
                 break;
+            case SDL_EVENT_KEY_DOWN:
+            case SDL_EVENT_KEY_UP:
+                // Synthesize accelerometer from ⌥WASD when no real sensor.
+                // WASD maps to physical device directions (how the user
+                // holds it). The sensor axes are device-fixed (portrait):
+                //   data[0] = X (positive = device tilts right)
+                //   data[1] = Y (positive = device tilts toward user)
+                // When the window is landscape, the physical device axes
+                // are rotated relative to the keyboard.
+                if (!accelSensor && (e.key.mod & SDL_KMOD_ALT)) {
+                    constexpr float kG = 9.81f;
+                    constexpr float kTilt = 0.25f * kG;
+                    // Physical directions: W=away, S=toward, A=left, D=right
+                    // relative to how the user holds the device.
+                    float pw = 0, pa = 0;  // physical W/S and A/D axes
+                    bool isTilt = true;
+                    if (e.type == SDL_EVENT_KEY_DOWN) {
+                        switch (e.key.scancode) {
+                        case SDL_SCANCODE_W: pw = -1; break;  // away
+                        case SDL_SCANCODE_S: pw =  1; break;  // toward
+                        case SDL_SCANCODE_A: pa = -1; break;  // left
+                        case SDL_SCANCODE_D: pa =  1; break;  // right
+                        default: isTilt = false;
+                        }
+                    } else {
+                        switch (e.key.scancode) {
+                        case SDL_SCANCODE_W: case SDL_SCANCODE_S:
+                        case SDL_SCANCODE_A: case SDL_SCANCODE_D:
+                            break;
+                        default: isTilt = false;
+                        }
+                    }
+                    if (isTilt) {
+                        // Portrait sensor values.
+                        float ax = -pa * kTilt;
+                        float ay =  pw * kTilt;
+
+                        // Apply rotation matrix based on device orientation.
+                        // Each orientation is a multiple of 90°, so the
+                        // matrix is just 0, 1, -1 entries.
+                        //
+                        //   Portrait:         [ 1  0]   (identity)
+                        //                     [ 0  1]
+                        //   Landscape (CW):   [ 0  1]   (90° CW)
+                        //                     [-1  0]
+                        //   Upside-down:      [-1  0]   (180°)
+                        //                     [ 0 -1]
+                        //   Landscape (CCW):  [ 0 -1]   (270° CW)
+                        //                     [ 1  0]
+                        float rx = ax, ry = ay;
+                        int physOrient = playerGetPhysicalOrientation();
+                        switch (physOrient) {
+                        default: // portrait — identity
+                            break;
+                        case SDL_ORIENTATION_LANDSCAPE: // 90° CW
+                            rx =  ay;
+                            ry = -ax;
+                            break;
+                        case SDL_ORIENTATION_PORTRAIT_FLIPPED: // 180°
+                            rx = -ax;
+                            ry = -ay;
+                            break;
+                        case SDL_ORIENTATION_LANDSCAPE_FLIPPED: // 270° CW
+                            rx = -ay;
+                            ry =  ax;
+                            break;
+                        }
+
+                        SDL_Event se{};
+                        se.type = SDL_EVENT_SENSOR_UPDATE;
+                        se.sensor.data[0] = rx;
+                        se.sensor.data[1] = ry;
+                        sendEvent(se);
+                        break;
+                    }
+                }
+                sendEvent(e);
+                break;
+            case SDL_EVENT_SENSOR_UPDATE:
+                sendEvent(e);
+                break;
             }
         }
         if (hasMotion) sendEvent(lastMotion);
 
-        // Drain ALL available messages. Decode every H.264 frame (P-frames
-        // are delta-coded so skipping any corrupts the reference chain).
-        // The decoder callback overwrites the decoded pixel buffer each time,
-        // so the render loop always gets the latest result.
+        // Drain ALL available messages. Decode every H.264 frame.
+        int framesThisTick = 0;
+        uint32_t lastSeq = 0;
+        uint64_t pRecvStart = SDL_GetPerformanceCounter();
         while (conn->isOpen() && conn->available() > 0) {
             std::vector<char> data;
             if (!conn->recvBinary(data) || data.size() < 8) break;
@@ -269,8 +446,11 @@ int playerCore(const std::string& host, int port) {
                 std::memcpy(&length, data.data() + 4, 4);
                 if (data.size() < 8 + length) continue;
 
-                const uint8_t* avccData = reinterpret_cast<const uint8_t*>(data.data()) + 9;
-                size_t avccSize = length - 1;
+                // [flags:1][seq:4][NAL data]
+                uint32_t seq = 0;
+                std::memcpy(&seq, data.data() + 9, 4);
+                const uint8_t* avccData = reinterpret_cast<const uint8_t*>(data.data()) + 13;
+                size_t avccSize = length - 5;  // minus flags(1) + seq(4)
 
                 auto frameNals = avccParser.parse(avccData, avccSize);
 
@@ -293,9 +473,10 @@ int playerCore(const std::string& host, int port) {
                 }
 
                 frameCount++;
-                if (frameCount % 300 == 0) {
-                    SPDLOG_INFO("Decoded {} frames", frameCount);
-                }
+                framesThisTick++;
+                lastSeq = seq;
+            } else if (magic == wire::kSessionConfigMagic) {
+                // Already handled during pre-window setup; ignore late arrivals.
             } else if (magic == wire::kServerAssignedMagic) {
                 SPDLOG_INFO("Server assigned");
             } else if (magic == wire::kSessionEndMagic) {
@@ -330,22 +511,85 @@ int playerCore(const std::string& host, int port) {
         SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
         SDL_RenderClear(renderer);
         if (videoTex) {
-            // Scale to fit window while preserving aspect ratio
             int ww, wh;
             SDL_GetWindowSizeInPixels(window, &ww, &wh);
-            float scaleX = float(ww) / float(texW);
-            float scaleY = float(wh) / float(texH);
-            float scale = std::min(scaleX, scaleY);
-            float dstW = texW * scale;
-            float dstH = texH * scale;
-            SDL_FRect dst = {
-                (ww - dstW) / 2.0f,
-                (wh - dstH) / 2.0f,
-                dstW, dstH
-            };
-            SDL_RenderTexture(renderer, videoTex, nullptr, &dst);
+
+            // The video is always portrait. If the window is landscape,
+            // rotate the video 90° CW to fill the landscape display.
+            bool needsRotation = (ww > wh) && (texH > texW);
+
+            if (needsRotation) {
+                // SDL_RenderTextureRotated rotates the texture within the
+                // dest rect. The dest rect is the pre-rotation bounding box.
+                // For a portrait texture (texW x texH) rotated -90°, the
+                // visual output is (texH x texW). We scale to fit the
+                // landscape window using the visual (post-rotation) size,
+                // then set the dest rect to the pre-rotation size at that
+                // same scale so SDL's rotation produces the correct result.
+                float scaleX = float(ww) / float(texH);  // visual width
+                float scaleY = float(wh) / float(texW);  // visual height
+                float scale = std::min(scaleX, scaleY);
+                // Dest rect uses pre-rotation dimensions (portrait).
+                float dstW = texW * scale;
+                float dstH = texH * scale;
+                SDL_FRect dst = {
+                    (ww - dstW) / 2.0f,
+                    (wh - dstH) / 2.0f,
+                    dstW, dstH
+                };
+                SDL_RenderTextureRotated(renderer, videoTex, nullptr, &dst,
+                                         -90.0, nullptr, SDL_FLIP_NONE);
+            } else {
+                float scaleX = float(ww) / float(texW);
+                float scaleY = float(wh) / float(texH);
+                float scale = std::min(scaleX, scaleY);
+                float dstW = texW * scale;
+                float dstH = texH * scale;
+                SDL_FRect dst = {
+                    (ww - dstW) / 2.0f,
+                    (wh - dstH) / 2.0f,
+                    dstW, dstH
+                };
+                SDL_RenderTexture(renderer, videoTex, nullptr, &dst);
+            }
         }
+        uint64_t pRenderStart = SDL_GetPerformanceCounter();
         SDL_RenderPresent(renderer);
+        uint64_t pEnd = SDL_GetPerformanceCounter();
+        uint64_t pFreq = SDL_GetPerformanceFrequency();
+
+        struct PlayerFrame { uint64_t timestamp; int decoded; uint32_t lastSeq; float drainMs; float renderMs; };
+        static FrameLog<PlayerFrame> playerLog([](const std::vector<PlayerFrame>& frames, uint64_t freq) {
+            int totalDecoded = 0, zeroTicks = 0, seqGaps = 0;
+            uint32_t prevSeq = 0, minSeq = UINT32_MAX, maxSeq = 0;
+            float maxDrain = 0, maxRender = 0, maxGap = 0;
+            for (size_t i = 0; i < frames.size(); i++) {
+                auto& f = frames[i];
+                totalDecoded += f.decoded;
+                if (f.decoded == 0) zeroTicks++;
+                if (f.drainMs > maxDrain) maxDrain = f.drainMs;
+                if (f.renderMs > maxRender) maxRender = f.renderMs;
+                if (i > 0) {
+                    float gap = float(frames[i].timestamp - frames[i-1].timestamp) * 1000.0f / float(freq);
+                    if (gap > maxGap) maxGap = gap;
+                }
+                if (f.decoded > 0) {
+                    if (prevSeq && f.lastSeq > prevSeq + 1)
+                        seqGaps += f.lastSeq - prevSeq - 1;
+                    prevSeq = f.lastSeq;
+                    if (f.lastSeq < minSeq) minSeq = f.lastSeq;
+                    if (f.lastSeq > maxSeq) maxSeq = f.lastSeq;
+                }
+            }
+            SPDLOG_INFO("PlayerLog: {} ticks, {} decoded ({} empty), seq {}-{} ({} gaps), "
+                        "maxDrain={:.1f}ms maxRender={:.1f}ms maxGap={:.1f}ms",
+                        frames.size(), totalDecoded, zeroTicks,
+                        minSeq, maxSeq, seqGaps,
+                        maxDrain, maxRender, maxGap);
+        });
+        float drainMs = float(pRenderStart - pRecvStart) * 1000.0f / float(pFreq);
+        float renderMs = float(pEnd - pRenderStart) * 1000.0f / float(pFreq);
+        playerLog.record({pEnd, framesThisTick, lastSeq, drainMs, renderMs});
     }
 
     decoder.flush();

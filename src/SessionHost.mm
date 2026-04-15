@@ -7,35 +7,40 @@
 #include <ge/Protocol.h>
 #include <ge/VideoEncoder.h>
 #include <ge/WebSocketClient.h>
+#include <ge/FrameLog.h>
 
 #include <bgfx/bgfx.h>
 #include <SDL3/SDL.h>
 #include <spdlog/spdlog.h>
 
 #include <cstring>
+
+// Lightweight write buffer for building wire messages without manual offsets.
+struct WireWriter {
+    std::vector<uint8_t> buf;
+
+    explicit WireWriter(size_t capacity = 0) { buf.reserve(capacity); }
+
+    template <typename T>
+    void put(const T& val) {
+        auto p = reinterpret_cast<const uint8_t*>(&val);
+        buf.insert(buf.end(), p, p + sizeof(T));
+    }
+
+    void append(const void* data, size_t size) {
+        auto p = static_cast<const uint8_t*>(data);
+        buf.insert(buf.end(), p, p + size);
+    }
+
+    const uint8_t* data() const { return buf.data(); }
+    size_t size() const { return buf.size(); }
+};
 #include <string>
 #include <unistd.h>
 #include <unordered_map>
 #include <vector>
 
 namespace ge {
-
-struct Context::M {
-    int width;
-    int height;
-    DeviceClass deviceClass;
-    std::shared_ptr<sqlpipe::Database> db;
-};
-
-Context::Context(int width, int height, DeviceClass deviceClass,
-                 const std::string& dbPath)
-    : m(std::make_shared<M>(M{width, height, deviceClass,
-        std::make_shared<sqlpipe::Database>(dbPath)})) {}
-
-int Context::width() const { return m->width; }
-int Context::height() const { return m->height; }
-DeviceClass Context::deviceClass() const { return m->deviceClass; }
-std::shared_ptr<sqlpipe::Database> Context::db() const { return m->db; }
 
 // ── Per-session state ──────────────────────────────────────────────
 
@@ -50,7 +55,7 @@ struct Session {
     bgfx::FrameBufferHandle fb = BGFX_INVALID_HANDLE;
     bgfx::TextureHandle renderTex = BGFX_INVALID_HANDLE;
 
-    static constexpr int kNumReadback = 2;
+    static constexpr int kNumReadback = 3;
     struct ReadbackSlot {
         bgfx::TextureHandle tex = BGFX_INVALID_HANDLE;
         std::vector<uint8_t> buf;
@@ -144,20 +149,22 @@ void run(Factory factory, const SessionHostConfig& config) {
         + std::to_string(wire::kProtocolVersion) + "}";
     sideband->sendText(hello);
 
-    // bgfx init (one global context, sessions share it via separate FBs)
-    int defaultW = 820, defaultH = 1180;
-    BgfxContext bgfxCtx({defaultW, defaultH, config.headless});
+    // bgfx context — deferred until the first DeviceInfo arrives,
+    // so the context is sized to an actual player's dimensions.
+    std::unique_ptr<BgfxContext> bgfxCtx;
 
     // Active sessions
     std::unordered_map<std::string, std::unique_ptr<Session>> sessions;
 
     // Frame timing
-    uint64_t lastTime = SDL_GetPerformanceCounter();
     uint64_t freq = SDL_GetPerformanceFrequency();
+    uint64_t startTime = SDL_GetPerformanceCounter();
+    uint64_t lastTime = startTime;
+    uint64_t frameIndex = 0;
 
     SPDLOG_INFO("SessionHost: waiting for players...");
 
-    while (!bgfxCtx.shouldQuit()) {
+    while (!ge::shouldQuit()) {
         // ── 1. Poll sideband for control messages ──
         while (sideband->isOpen() && sideband->available() > 0) {
             std::vector<char> data;
@@ -182,6 +189,24 @@ void run(Factory factory, const SessionHostConfig& config) {
                         continue;
                     }
 
+                    // Always send SessionConfig on the wire so the player
+                    // can apply orientation/sensor hints BEFORE creating
+                    // its window. The player blocks on this message.
+                    {
+                        wire::MessageHeader cfgHdr{};
+                        cfgHdr.magic = wire::kSessionConfigMagic;
+                        cfgHdr.length = sizeof(wire::SessionConfig);
+                        wire::SessionConfig cfg{};
+                        cfg.sensors = config.sensors;
+                        cfg.orientation = config.orientation;
+                        std::vector<uint8_t> cfgMsg(sizeof(cfgHdr) + sizeof(cfg));
+                        std::memcpy(cfgMsg.data(), &cfgHdr, sizeof(cfgHdr));
+                        std::memcpy(cfgMsg.data() + sizeof(cfgHdr), &cfg, sizeof(cfg));
+                        wire->sendBinary(cfgMsg.data(), cfgMsg.size());
+                        SPDLOG_INFO("Session '{}': sent SessionConfig (sensors=0x{:x}, orientation={})",
+                                    sessionId, cfg.sensors, cfg.orientation);
+                    }
+
                     auto sess = std::make_unique<Session>();
                     sess->id = sessionId;
                     sess->wire = std::move(wire);
@@ -201,21 +226,30 @@ void run(Factory factory, const SessionHostConfig& config) {
 
         if (!sideband->isOpen()) break;
 
-        // ── 2. Delta time ──
+        // ── 2. Frame pacing: absolute timestamps, no drift ──
+        uint64_t targetTime = startTime + (uint64_t)frameIndex * freq / 60;
         uint64_t now = SDL_GetPerformanceCounter();
+        if (now < targetTime) {
+            // Sleep for most of the wait, busy-wait the remainder.
+            int64_t remaining = targetTime - now;
+            int64_t sleepTicks = remaining - freq / 1000;  // wake 1ms early
+            if (sleepTicks > 0) {
+                SDL_Delay((uint32_t)(sleepTicks * 1000 / freq));
+            }
+            while (SDL_GetPerformanceCounter() < targetTime) {}
+            now = SDL_GetPerformanceCounter();
+        }
+        frameIndex++;
         float dt = float(now - lastTime) / float(freq);
         lastTime = now;
         if (dt > 0.1f) dt = 0.1f;
 
-        // ── 3. Frame pacing (60fps total, shared across sessions) ──
-        if (config.headless && dt < 1.0f/60.0f) {
-            SDL_Delay(uint32_t((1.0f/60.0f - dt) * 1000.0f));
-        }
-
-        // Local SDL events
-        SDL_Event e;
-        while (SDL_PollEvent(&e)) {
-            if (e.type == SDL_EVENT_QUIT) break;
+        // Local SDL events (only after bgfx/SDL init)
+        if (bgfxCtx) {
+            SDL_Event e;
+            while (SDL_PollEvent(&e)) {
+                if (e.type == SDL_EVENT_QUIT) break;
+            }
         }
 
         // ── 4. Drain wires + update + render each session ──
@@ -237,7 +271,16 @@ void run(Factory factory, const SessionHostConfig& config) {
                     sess->width = info.width / 2;
                     sess->height = info.height / 2;
                     if (sess->width == 0 || sess->height == 0) {
-                        sess->width = defaultW; sess->height = defaultH;
+                        SPDLOG_WARN("Session '{}': invalid DeviceInfo {}x{}, skipping",
+                                    id, info.width, info.height);
+                        continue;
+                    }
+
+                    // Lazily init bgfx on first session.
+                    if (!bgfxCtx) {
+                        bgfxCtx = std::make_unique<BgfxContext>(
+                            BgfxConfig{sess->width, sess->height, config.headless});
+                        SPDLOG_INFO("bgfx initialized at {}x{}", sess->width, sess->height);
                     }
                     SPDLOG_INFO("Session '{}': DeviceInfo {}x{} @{}x → render at {}x{}",
                                 id, info.width, info.height, info.pixelRatio,
@@ -247,21 +290,31 @@ void run(Factory factory, const SessionHostConfig& config) {
 
                     auto wirePtr = sess->wire;
                     int w = sess->width, h = sess->height;
-                    sess->encoder = std::make_unique<VideoEncoder>(w, h, 30,
-                        [wirePtr](VideoEncoder::Frame frame) {
+                    auto encodeSeq = std::make_shared<uint32_t>(0);
+                    sess->encoder = std::make_unique<VideoEncoder>(w, h, 60,
+                        [wirePtr, encodeSeq](VideoEncoder::Frame frame) {
                             if (!wirePtr || !wirePtr->isOpen()) return;
-                            wire::MessageHeader hdr{};
-                            hdr.magic = wire::kVideoStreamMagic;
-                            hdr.length = 1 + frame.size;
+                            uint32_t seq = (*encodeSeq)++;
                             uint8_t flags = frame.isKeyframe ? 1 : 0;
-                            std::vector<uint8_t> msg(sizeof(hdr) + 1 + frame.size);
-                            std::memcpy(msg.data(), &hdr, sizeof(hdr));
-                            msg[sizeof(hdr)] = flags;
-                            std::memcpy(msg.data() + sizeof(hdr) + 1, frame.data, frame.size);
-                            wirePtr->sendBinary(msg.data(), msg.size());
+                            uint32_t payloadSize = sizeof(flags) + sizeof(seq) + frame.size;
+                            WireWriter w(sizeof(wire::MessageHeader) + payloadSize);
+                            w.put(wire::MessageHeader{wire::kVideoStreamMagic, payloadSize});
+                            w.put(flags);
+                            w.put(seq);
+                            w.append(frame.data, frame.size);
+                            wirePtr->sendBinary(w.data(), w.size());
                         });
 
-                    Context ctx{w, h, DeviceClass::Desktop, ":memory:"};
+                    std::string dbPath = ":memory:";
+                    if (config.orgName && config.appName) {
+                        char* pref = SDL_GetPrefPath(config.orgName, config.appName);
+                        if (pref) {
+                            dbPath = std::string(pref) + "game.db";
+                            SDL_free(pref);
+                            SPDLOG_INFO("Session '{}': persistent DB at {}", id, dbPath);
+                        }
+                    }
+                    Context ctx{w, h, DeviceClass::Desktop, dbPath, config.schemaDdl};
                     sess->config = factory(ctx);
                     sess->ready = true;
                     SPDLOG_INFO("Session '{}': ready ({}x{})", id, w, h);
@@ -276,8 +329,12 @@ void run(Factory factory, const SessionHostConfig& config) {
 
             if (!sess->ready) continue;  // waiting for DeviceInfo
 
+            uint64_t t0 = SDL_GetPerformanceCounter();
+
             // Update
             if (sess->config.onUpdate) sess->config.onUpdate(dt);
+
+            uint64_t t1 = SDL_GetPerformanceCounter();
 
             // Set all views to this session's framebuffer
             for (bgfx::ViewId v = 0; v < 16; ++v) {
@@ -287,20 +344,51 @@ void run(Factory factory, const SessionHostConfig& config) {
             // Render
             if (sess->config.onRender) sess->config.onRender(sess->width, sess->height);
 
+            uint64_t t2 = SDL_GetPerformanceCounter();
+
             // Capture blit
             sess->submitCaptureBlit();
 
             // Submit this session's frame
             uint32_t frameNum = bgfx::frame();
 
+            uint64_t t3 = SDL_GetPerformanceCounter();
+
             // Read back + encode
             if (sess->readCapturedFrame(frameNum)) {
                 sess->encoder->encode(sess->pixelBuf.data(), sess->width * 4);
             }
+
+            uint64_t t4 = SDL_GetPerformanceCounter();
+
+            struct ServerFrame { uint64_t t0, t1, t2, t3, t4; };
+            static FrameLog<ServerFrame> serverLog([](const std::vector<ServerFrame>& frames, uint64_t freq) {
+                auto ms = [freq](uint64_t a, uint64_t b) { return float(b - a) * 1000.0f / float(freq); };
+                float maxTotal = 0, maxUpdate = 0, maxRender = 0, maxSubmit = 0, maxEncode = 0, maxGap = 0;
+                for (size_t i = 0; i < frames.size(); i++) {
+                    auto& f = frames[i];
+                    float total = ms(f.t0, f.t4);
+                    if (total > maxTotal) maxTotal = total;
+                    if (ms(f.t0, f.t1) > maxUpdate) maxUpdate = ms(f.t0, f.t1);
+                    if (ms(f.t1, f.t2) > maxRender) maxRender = ms(f.t1, f.t2);
+                    if (ms(f.t2, f.t3) > maxSubmit) maxSubmit = ms(f.t2, f.t3);
+                    if (ms(f.t3, f.t4) > maxEncode) maxEncode = ms(f.t3, f.t4);
+                    if (i > 0) {
+                        float gap = ms(frames[i-1].t0, f.t0);
+                        if (gap > maxGap) maxGap = gap;
+                    }
+                }
+                SPDLOG_INFO("ServerLog: {} frames, maxTotal={:.1f}ms maxGap={:.1f}ms | "
+                            "update={:.1f} render={:.1f} submit={:.1f} encode={:.1f}",
+                            frames.size(), maxTotal, maxGap,
+                            maxUpdate, maxRender, maxSubmit, maxEncode);
+            });
+            serverLog.record({t0, t1, t2, t3, t4});
         }
 
-        // If no sessions, still call bgfx::frame to keep the context alive
-        if (sessions.empty()) {
+        // If bgfx is up but no sessions are rendering, still call frame
+        // to keep the context alive.
+        if (bgfxCtx && sessions.empty()) {
             bgfx::frame();
         }
 

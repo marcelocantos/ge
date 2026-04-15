@@ -18,6 +18,7 @@ add_library(main SHARED
     ${CMAKE_CURRENT_SOURCE_DIR}/main.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/QRScanner_android.cpp
     ${GE_ROOT}/tools/player_core.cpp
+    ${GE_ROOT}/tools/player_orientation_stub.cpp
     ${GE_ROOT}/tools/AudioPlayer.cpp
     ${GE_ROOT}/src/WebSocketClient.cpp
     ${GE_ROOT}/src/VideoDecoder_ffmpeg.cpp
@@ -35,6 +36,7 @@ add_library(main SHARED
 )
 
 target_compile_definitions(main PRIVATE
+    GE_ANDROID
     ASIO_STANDALONE
     SQLITE_ENABLE_SESSION
     SQLITE_ENABLE_PREUPDATE_HOOK

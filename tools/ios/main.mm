@@ -18,7 +18,9 @@
 #include <thread>
 
 // HTTP PUT sink — sends each log line to a logging server on the host.
-// Hardcoded to localhost:9999 (reachable from iOS simulator).
+// Uses the GE_DAEMON_ADDR host (or localhost for simulator).
+static std::string g_logHost = "192.168.1.217";
+
 template<typename Mutex>
 class http_sink : public spdlog::sinks::base_sink<Mutex> {
 protected:
@@ -27,10 +29,10 @@ protected:
         spdlog::sinks::base_sink<Mutex>::formatter_->format(msg, formatted);
         std::string body = fmt::to_string(formatted);
 
-        // Fire-and-forget on a detached thread to avoid blocking.
-        std::thread([body = std::move(body)] {
+        std::string urlCpp = "http://" + g_logHost + ":9999/log";
+        std::thread([body = std::move(body), urlCpp = std::move(urlCpp)] {
             @autoreleasepool {
-                NSString* urlStr = @"http://localhost:9999/log";
+                NSString* urlStr = [NSString stringWithUTF8String:urlCpp.c_str()];
                 NSURL* url = [NSURL URLWithString:urlStr];
                 NSMutableURLRequest* req = [NSMutableURLRequest requestWithURL:url];
                 req.HTTPMethod = @"PUT";

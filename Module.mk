@@ -61,8 +61,10 @@ ge/PLUTOVG_LIB = ge/vendor/sdl3/lib/macos-arm64/libplutovg.a
 ge/SDL_LIBS = $(ge/SDL3_LIB) $(ge/SDL3_IMAGE_LIB) $(ge/SDL3_TTF_LIB) $(ge/FREETYPE_LIB) $(ge/HARFBUZZ_LIB) $(ge/PLUTOSVG_LIB) $(ge/PLUTOVG_LIB)
 
 ge/SRC = \
+	ge/src/Context.cpp \
 	ge/src/Resource.cpp \
 	ge/src/FileIO.cpp \
+	ge/src/FontLoader_apple.mm \
 	ge/src/WebSocketClient.cpp \
 	ge/src/BgfxContext.mm \
 	ge/src/Signal.cpp \
@@ -75,7 +77,7 @@ ge/OBJ = $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(filter %.cpp,$(ge/SRC))) \
 ge/LIB = $(BUILD_DIR)/libge.a
 
 # Desktop player (H.264 receiver). Built on demand via `make player`.
-ge/PLAYER_SRC = ge/tools/player.cpp ge/tools/player_core.cpp
+ge/PLAYER_SRC = ge/tools/player.cpp ge/tools/player_core.cpp ge/tools/player_orientation_stub.cpp
 ge/PLAYER = bin/player
 
 # bgfx shader compiler (vendored binaries for common hosts).
@@ -254,7 +256,7 @@ ge/player: $(ge/PLAYER)
 
 $(ge/PLAYER): $(ge/PLAYER_SRC) $(ge/LIB) $(ge/BGFX_LIBS)
 	@mkdir -p $(@D)
-	$(CXX) -std=c++20 $(ge/INCLUDES) $(ge/BGFX_ALL_INCLUDES) $(ge/PLAYER_SRC) $(ge/LIB) $(ge/BGFX_LIBS) $(ge/SDL_LIBS) $(FRAMEWORKS) -o $@
+	$(CXX) -std=c++20 -DGE_DESKTOP $(ge/INCLUDES) $(ge/BGFX_ALL_INCLUDES) $(ge/PLAYER_SRC) $(ge/LIB) $(ge/BGFX_LIBS) $(ge/SDL_LIBS) $(FRAMEWORKS) -o $@
 
 # iOS Xcode project generation
 .PHONY: ge/ios
