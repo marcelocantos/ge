@@ -1,4 +1,8 @@
 build/
+bin/
+*.o
+*.passed
+math_bench.md
 ged/ged
 ged/web/
 /.claude/*
