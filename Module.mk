@@ -78,6 +78,23 @@ ge/LIB = $(BUILD_DIR)/libge.a
 ge/PLAYER_SRC = ge/tools/player.cpp ge/tools/player_core.cpp
 ge/PLAYER = bin/player
 
+# bgfx shader compiler (vendored binaries for common hosts).
+# Parent lists desired `.bin` outputs (e.g. `$(BUILD_DIR)/shaders/foo_vs.bin`);
+# Module.mk's pattern rules compile them from matching `.sc` sources.
+ge/SHADERC_HOST := $(shell uname -s | tr A-Z a-z)-$(shell uname -m | sed 's/aarch64/arm64/')
+ge/SHADERC = ge/bin/$(ge/SHADERC_HOST)/shaderc
+
+# bgfx shader include directory (bgfx_shader.sh lives here).
+ge/SHADERC_BGFX_INCLUDE = $(ge/BGFX_DIR)/src
+
+# Target GPU profile (Metal on Apple platforms — the only renderer enabled).
+ge/SHADERC_PROFILE ?= metal
+ge/SHADERC_PLATFORM ?= osx
+
+# Parent defines its shader source directory (default `shaders`) and varying def.
+ge/SHADER_DIR ?= shaders
+ge/SHADERC_VARYINGDEF ?= $(ge/SHADER_DIR)/varying.def.sc
+
 # Texture encoder (used by precompute tools, NOT part of libge.a)
 ge/TEXTURE_ENCODER_SRC = ge/src/TextureEncoder.cpp
 ge/TEXTURE_ENCODER_OBJ = $(BUILD_DIR)/ge/src/TextureEncoder.o
@@ -201,6 +218,35 @@ $(ge/BGFX_OBJ): $(ge/BGFX_DIR)/src/amalgamated.cpp
 $(ge/BGFX_LIB): $(ge/BGFX_OBJ)
 	@mkdir -p $(dir $@)
 	libtool -static -o $@ $^
+
+# bgfx shader compilation. Parent just lists the `.bin` targets (e.g. in
+# a SHADERS variable) and makes its app depend on them. These pattern
+# rules do the rest.
+#
+# Convention: files named `*_vs.sc` are vertex shaders, `*_fs.sc` fragment,
+# `*_cs.sc` compute. Outputs mirror the source path under $(BUILD_DIR).
+#
+# Override `ge/SHADER_DIR` (default: `shaders`) or `ge/SHADERC_VARYINGDEF`
+# (default: `$(ge/SHADER_DIR)/varying.def.sc`) if your layout differs.
+$(BUILD_DIR)/$(ge/SHADER_DIR)/%_vs.bin: $(ge/SHADER_DIR)/%_vs.sc $(ge/SHADERC_VARYINGDEF) $(ge/SHADERC)
+	@mkdir -p $(dir $@)
+	$(ge/SHADERC) -f $< -o $@ --type vertex \
+	    --platform $(ge/SHADERC_PLATFORM) -p $(ge/SHADERC_PROFILE) \
+	    --varyingdef $(ge/SHADERC_VARYINGDEF) \
+	    -i $(ge/SHADERC_BGFX_INCLUDE) -i $(ge/SHADER_DIR)
+
+$(BUILD_DIR)/$(ge/SHADER_DIR)/%_fs.bin: $(ge/SHADER_DIR)/%_fs.sc $(ge/SHADERC_VARYINGDEF) $(ge/SHADERC)
+	@mkdir -p $(dir $@)
+	$(ge/SHADERC) -f $< -o $@ --type fragment \
+	    --platform $(ge/SHADERC_PLATFORM) -p $(ge/SHADERC_PROFILE) \
+	    --varyingdef $(ge/SHADERC_VARYINGDEF) \
+	    -i $(ge/SHADERC_BGFX_INCLUDE) -i $(ge/SHADER_DIR)
+
+$(BUILD_DIR)/$(ge/SHADER_DIR)/%_cs.bin: $(ge/SHADER_DIR)/%_cs.sc $(ge/SHADERC)
+	@mkdir -p $(dir $@)
+	$(ge/SHADERC) -f $< -o $@ --type compute \
+	    --platform $(ge/SHADERC_PLATFORM) -p $(ge/SHADERC_PROFILE) \
+	    -i $(ge/SHADERC_BGFX_INCLUDE) -i $(ge/SHADER_DIR)
 
 # Desktop player binary (symmetry with ge/ios and ge/android).
 .PHONY: ge/player
