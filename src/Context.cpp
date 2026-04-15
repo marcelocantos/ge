@@ -13,9 +13,10 @@ struct Context::M {
 };
 
 Context::Context(int width, int height, DeviceClass deviceClass,
-                 const std::string& dbPath)
+                 const std::string& dbPath,
+                 const std::string& schemaDdl)
     : m(std::make_shared<M>(M{width, height, deviceClass,
-        std::make_shared<sqlpipe::Database>(dbPath)})) {}
+        std::make_shared<sqlpipe::Database>(dbPath, schemaDdl)})) {}
 
 int Context::width() const { return m->width; }
 int Context::height() const { return m->height; }

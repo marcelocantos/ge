@@ -137,6 +137,11 @@ set(GE_CORE_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/vendor/src/sqlpipe.cpp
 )
 
+if(APPLE)
+    list(APPEND GE_CORE_SOURCES
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/FontLoader_apple.mm)
+endif()
+
 if(GE_DIRECT)
     # Direct mode: app initializes bgfx itself; ge provides utilities only
     set(GE_SOURCES ${GE_CORE_SOURCES})
@@ -244,6 +249,7 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "iOS")
     target_link_libraries(ge INTERFACE
         "-framework Foundation"
         "-framework UIKit"
+        "-framework CoreText"
         "-framework Metal"
         "-framework MetalKit"
         "-framework QuartzCore"

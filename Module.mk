@@ -64,6 +64,7 @@ ge/SRC = \
 	ge/src/Context.cpp \
 	ge/src/Resource.cpp \
 	ge/src/FileIO.cpp \
+	ge/src/FontLoader_apple.mm \
 	ge/src/WebSocketClient.cpp \
 	ge/src/BgfxContext.mm \
 	ge/src/Signal.cpp \

@@ -314,7 +314,7 @@ void run(Factory factory, const SessionHostConfig& config) {
                             SPDLOG_INFO("Session '{}': persistent DB at {}", id, dbPath);
                         }
                     }
-                    Context ctx{w, h, DeviceClass::Desktop, dbPath};
+                    Context ctx{w, h, DeviceClass::Desktop, dbPath, config.schemaDdl};
                     sess->config = factory(ctx);
                     sess->ready = true;
                     SPDLOG_INFO("Session '{}': ready ({}x{})", id, w, h);
