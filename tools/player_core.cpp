@@ -69,7 +69,7 @@ struct AVCCParser {
     bool hasParams() const { return !sps.empty() && !pps.empty(); }
 };
 
-int playerCore(const std::string& host, int port) {
+int playerCore(const std::string& host, int port, const std::string& serverName) {
     ge::installSignalHandlers();
 
     SPDLOG_INFO("H.264 player starting");
@@ -88,7 +88,7 @@ int playerCore(const std::string& host, int port) {
     // This lets us receive SessionConfig (orientation lock, sensor needs)
     // and apply hints before SDL_CreateWindow, where Android reads them.
 
-    std::string path = "/ws/wire?name=yourworld";
+    std::string path = "/ws/wire?name=" + serverName;
     auto conn = ge::connectWebSocket(host, port, path, 2000);
     if (!conn || !conn->isOpen()) {
         SPDLOG_ERROR("Failed to connect to ged");
