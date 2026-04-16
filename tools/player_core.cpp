@@ -88,7 +88,9 @@ int playerCore(const std::string& host, int port, const std::string& serverName)
     // This lets us receive SessionConfig (orientation lock, sensor needs)
     // and apply hints before SDL_CreateWindow, where Android reads them.
 
-    std::string path = "/ws/wire?name=" + serverName;
+    // `preference` tells ged which server to route this player to (must match
+    // the server's name). `name` is this player's own display identifier.
+    std::string path = "/ws/wire?preference=" + serverName + "&name=" + serverName;
     auto conn = ge::connectWebSocket(host, port, path, 2000);
     if (!conn || !conn->isOpen()) {
         SPDLOG_ERROR("Failed to connect to ged");
