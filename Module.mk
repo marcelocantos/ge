@@ -1,6 +1,16 @@
 # ge engine module
 # Included by the project Makefile. Expects BUILD_DIR and CXX to be defined.
-ge := ge
+#
+# The `ge` variable is the relative path from the Makefile to the ge
+# repository root. Parent projects (ge as submodule) use the default
+# `ge := ge`. In-tree builds (e.g. samples that live inside the ge repo)
+# set it themselves before the include, e.g.:
+#   ge := ..
+#   -include $(ge)/Module.mk
+#
+# Output paths (under $(BUILD_DIR)) always use a literal `ge/` namespace
+# so objects land in sane locations regardless of where `$(ge)` points.
+ge ?= ge
 
 # ────────────────────────────────────────────────
 # make controls
@@ -13,20 +23,20 @@ MAKEFLAGS += -j$(shell sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || ech
 # ────────────────────────────────────────────────
 
 ge/INCLUDES = \
-	-Ige/include \
-	-Ige/vendor/include \
-	-Ige/vendor/github.com/gabime/spdlog/include \
-	-Ige/vendor/github.com/libsdl-org/SDL/include \
-	-Ige/vendor/sdl3/include \
-	-Ige/vendor/github.com/erincatto/box2d/include \
-	-Ige/vendor/github.com/chriskohlhoff/asio/include \
-	-Ige/vendor/github.com/sqliteai/liteparser/src \
+	-I$(ge)/include \
+	-I$(ge)/vendor/include \
+	-I$(ge)/vendor/github.com/gabime/spdlog/include \
+	-I$(ge)/vendor/github.com/libsdl-org/SDL/include \
+	-I$(ge)/vendor/sdl3/include \
+	-I$(ge)/vendor/github.com/erincatto/box2d/include \
+	-I$(ge)/vendor/github.com/chriskohlhoff/asio/include \
+	-I$(ge)/vendor/github.com/sqliteai/liteparser/src \
 	-DSQLITE_ENABLE_SESSION -DSQLITE_ENABLE_PREUPDATE_HOOK -DSQLITE_ENABLE_DESERIALIZE
 
 # bgfx + bx + bimg (vendored, compiled from source)
-ge/BX_DIR = ge/vendor/github.com/bkaradzic/bx
-ge/BIMG_DIR = ge/vendor/github.com/bkaradzic/bimg
-ge/BGFX_DIR = ge/vendor/github.com/bkaradzic/bgfx
+ge/BX_DIR = $(ge)/vendor/github.com/bkaradzic/bx
+ge/BIMG_DIR = $(ge)/vendor/github.com/bkaradzic/bimg
+ge/BGFX_DIR = $(ge)/vendor/github.com/bkaradzic/bgfx
 
 ge/BX_INCLUDES = -I$(ge/BX_DIR)/include -I$(ge/BX_DIR)/include/compat/osx
 ge/BIMG_INCLUDES = -I$(ge/BIMG_DIR)/include
@@ -51,40 +61,40 @@ ge/BGFX_LIB = $(BUILD_DIR)/libbgfx.a
 ge/BGFX_LIBS = $(ge/BGFX_LIB) $(ge/BIMG_LIB) $(ge/BX_LIB)
 
 # SDL3 libraries (static, vendored)
-ge/SDL3_LIB = ge/vendor/sdl3/lib/macos-arm64/libSDL3.a
-ge/SDL3_IMAGE_LIB = ge/vendor/sdl3/lib/macos-arm64/libSDL3_image.a
-ge/SDL3_TTF_LIB = ge/vendor/sdl3/lib/macos-arm64/libSDL3_ttf.a
-ge/FREETYPE_LIB = ge/vendor/sdl3/lib/macos-arm64/libfreetype.a
-ge/HARFBUZZ_LIB = ge/vendor/sdl3/lib/macos-arm64/libharfbuzz.a
-ge/PLUTOSVG_LIB = ge/vendor/sdl3/lib/macos-arm64/libplutosvg.a
-ge/PLUTOVG_LIB = ge/vendor/sdl3/lib/macos-arm64/libplutovg.a
+ge/SDL3_LIB = $(ge)/vendor/sdl3/lib/macos-arm64/libSDL3.a
+ge/SDL3_IMAGE_LIB = $(ge)/vendor/sdl3/lib/macos-arm64/libSDL3_image.a
+ge/SDL3_TTF_LIB = $(ge)/vendor/sdl3/lib/macos-arm64/libSDL3_ttf.a
+ge/FREETYPE_LIB = $(ge)/vendor/sdl3/lib/macos-arm64/libfreetype.a
+ge/HARFBUZZ_LIB = $(ge)/vendor/sdl3/lib/macos-arm64/libharfbuzz.a
+ge/PLUTOSVG_LIB = $(ge)/vendor/sdl3/lib/macos-arm64/libplutosvg.a
+ge/PLUTOVG_LIB = $(ge)/vendor/sdl3/lib/macos-arm64/libplutovg.a
 ge/SDL_LIBS = $(ge/SDL3_LIB) $(ge/SDL3_IMAGE_LIB) $(ge/SDL3_TTF_LIB) $(ge/FREETYPE_LIB) $(ge/HARFBUZZ_LIB) $(ge/PLUTOSVG_LIB) $(ge/PLUTOVG_LIB)
 
 ge/SRC = \
-	ge/src/Context.cpp \
-	ge/src/Resource.cpp \
-	ge/src/FileIO.cpp \
-	ge/src/FontLoader_apple.mm \
-	ge/src/WebSocketClient.cpp \
-	ge/src/BgfxContext.mm \
-	ge/src/Signal.cpp \
-	ge/src/SessionHost.mm \
-	ge/src/VideoEncoder_apple.mm \
-	ge/src/VideoDecoder_apple.mm
+	$(ge)/src/Context.cpp \
+	$(ge)/src/Resource.cpp \
+	$(ge)/src/FileIO.cpp \
+	$(ge)/src/FontLoader_apple.mm \
+	$(ge)/src/WebSocketClient.cpp \
+	$(ge)/src/BgfxContext.mm \
+	$(ge)/src/Signal.cpp \
+	$(ge)/src/SessionHost.mm \
+	$(ge)/src/VideoEncoder_apple.mm \
+	$(ge)/src/VideoDecoder_apple.mm
 
-ge/OBJ = $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(filter %.cpp,$(ge/SRC))) \
-         $(patsubst %.mm,$(BUILD_DIR)/%.o,$(filter %.mm,$(ge/SRC)))
+ge/OBJ = $(patsubst $(ge)/src/%.cpp,$(BUILD_DIR)/ge/src/%.o,$(filter %.cpp,$(ge/SRC))) \
+         $(patsubst $(ge)/src/%.mm,$(BUILD_DIR)/ge/src/%.o,$(filter %.mm,$(ge/SRC)))
 ge/LIB = $(BUILD_DIR)/libge.a
 
 # Desktop player (H.264 receiver). Built on demand via `make player`.
-ge/PLAYER_SRC = ge/tools/player.cpp ge/tools/player_core.cpp ge/tools/player_orientation_stub.cpp
+ge/PLAYER_SRC = $(ge)/tools/player.cpp $(ge)/tools/player_core.cpp $(ge)/tools/player_orientation_stub.cpp
 ge/PLAYER = bin/player
 
 # bgfx shader compiler (vendored binaries for common hosts).
 # Parent lists desired `.bin` outputs (e.g. `$(BUILD_DIR)/shaders/foo_vs.bin`);
 # Module.mk's pattern rules compile them from matching `.sc` sources.
 ge/SHADERC_HOST := $(shell uname -s | tr A-Z a-z)-$(shell uname -m | sed 's/aarch64/arm64/')
-ge/SHADERC = ge/bin/$(ge/SHADERC_HOST)/shaderc
+ge/SHADERC = $(ge)/bin/$(ge/SHADERC_HOST)/shaderc
 
 # bgfx shader include directory (bgfx_shader.sh lives here).
 ge/SHADERC_BGFX_INCLUDE = $(ge/BGFX_DIR)/src
@@ -98,64 +108,64 @@ ge/SHADER_DIR ?= shaders
 ge/SHADERC_VARYINGDEF ?= $(ge/SHADER_DIR)/varying.def.sc
 
 # Texture encoder (used by precompute tools, NOT part of libge.a)
-ge/TEXTURE_ENCODER_SRC = ge/src/TextureEncoder.cpp
+ge/TEXTURE_ENCODER_SRC = $(ge)/src/TextureEncoder.cpp
 ge/TEXTURE_ENCODER_OBJ = $(BUILD_DIR)/ge/src/TextureEncoder.o
 
 # Box2D v3 physics library (C code)
-ge/BOX2D_DIR = ge/vendor/github.com/erincatto/box2d
+ge/BOX2D_DIR = $(ge)/vendor/github.com/erincatto/box2d
 ge/BOX2D_SRC = $(wildcard $(ge/BOX2D_DIR)/src/*.c)
-ge/BOX2D_OBJ = $(patsubst %.c,$(BUILD_DIR)/%.o,$(ge/BOX2D_SRC))
+ge/BOX2D_OBJ = $(patsubst $(ge/BOX2D_DIR)/src/%.c,$(BUILD_DIR)/ge/vendor/box2d/%.o,$(ge/BOX2D_SRC))
 ge/BOX2D_CFLAGS = -I$(ge/BOX2D_DIR)/include -I$(ge/BOX2D_DIR)/src -O2 -std=c17
 
 # SQLite3 (C code, vendored amalgamation — used by Tweak.h)
-ge/SQLITE_SRC = ge/vendor/src/sqlite3.c
+ge/SQLITE_SRC = $(ge)/vendor/src/sqlite3.c
 ge/SQLITE_OBJ = $(BUILD_DIR)/ge/vendor/sqlite3.o
 
 # Triangle library (C code, used by precompute tool)
-ge/TRIANGLE_SRC = ge/vendor/src/triangle.c
+ge/TRIANGLE_SRC = $(ge)/vendor/src/triangle.c
 ge/TRIANGLE_OBJ = $(BUILD_DIR)/ge/vendor/triangle.o
-ge/TRIANGLE_CFLAGS = -O2 -Ige/vendor/include -DTRILIBRARY -DREAL=double -DANSI_DECLARATORS -DNO_TIMER
+ge/TRIANGLE_CFLAGS = -O2 -I$(ge)/vendor/include -DTRILIBRARY -DREAL=double -DANSI_DECLARATORS -DNO_TIMER
 
 # lz4 compression (C code, used by sqlpipe)
-ge/LZ4_SRC = ge/vendor/src/lz4.c
+ge/LZ4_SRC = $(ge)/vendor/src/lz4.c
 ge/LZ4_OBJ = $(BUILD_DIR)/ge/vendor/lz4.o
 
 # liteparser (C code, used by sqlpipe for query analysis)
-ge/LITEPARSER_DIR = ge/vendor/github.com/sqliteai/liteparser/src
+ge/LITEPARSER_DIR = $(ge)/vendor/github.com/sqliteai/liteparser/src
 ge/LITEPARSER_SRC = $(addprefix $(ge/LITEPARSER_DIR)/,arena.c liteparser.c lp_tokenize.c lp_unparse.c parse.c)
 ge/LITEPARSER_OBJ = $(patsubst $(ge/LITEPARSER_DIR)/%.c,$(BUILD_DIR)/ge/vendor/liteparser/%.o,$(ge/LITEPARSER_SRC))
 
 # Vendor C++ libraries (compiled into libge.a)
-ge/VENDOR_CPP_SRC = ge/vendor/src/sqlift.cpp ge/vendor/src/sqlpipe.cpp
-ge/VENDOR_CPP_OBJ = $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(ge/VENDOR_CPP_SRC))
+ge/VENDOR_CPP_SRC = $(ge)/vendor/src/sqlift.cpp $(ge)/vendor/src/sqlpipe.cpp
+ge/VENDOR_CPP_OBJ = $(patsubst $(ge)/vendor/src/%.cpp,$(BUILD_DIR)/ge/vendor/%.o,$(ge/VENDOR_CPP_SRC))
 
 # Test sources
 ge/TEST_SRC = \
-	ge/src/main_test.cpp \
-	ge/src/DampedRotation_test.cpp
-ge/TEST_OBJ = $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(ge/TEST_SRC))
+	$(ge)/src/main_test.cpp \
+	$(ge)/src/DampedRotation_test.cpp
+ge/TEST_OBJ = $(patsubst $(ge)/src/%.cpp,$(BUILD_DIR)/ge/src/%.o,$(ge/TEST_SRC))
 
 # Shared variables (parent can += to extend)
-CLEAN = bin build deps.dot deps.svg deps.png ge/ged/web
-COMPILE_DB_DEPS = $(ge/SRC) $(ge/TEST_SRC) ge/Module.mk
-ge/DEPGRAPH_DEPS = $(ge/SRC) $(wildcard ge/include/ge/*.h) ge/tools/depgraph.py
+CLEAN = bin build deps.dot deps.svg deps.png $(ge)/ged/web
+COMPILE_DB_DEPS = $(ge/SRC) $(ge/TEST_SRC) $(ge)/Module.mk
+ge/DEPGRAPH_DEPS = $(ge/SRC) $(wildcard $(ge)/include/ge/*.h) $(ge)/tools/depgraph.py
 
 # ────────────────────────────────────────────────
 # Rules
 # ────────────────────────────────────────────────
 
 # Engine objects
-$(BUILD_DIR)/ge/src/%.o: ge/src/%.cpp
+$(BUILD_DIR)/ge/src/%.o: $(ge)/src/%.cpp
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) $(SDL_CFLAGS) -MMD -MP -c $< -o $@
 
 # Engine ObjC++ objects (.mm)
-$(BUILD_DIR)/ge/src/%.o: ge/src/%.mm
+$(BUILD_DIR)/ge/src/%.o: $(ge)/src/%.mm
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) $(SDL_CFLAGS) -MMD -MP -c $< -o $@
 
 # Tools ObjC++ objects (.mm) — e.g. player_capture_apple.mm
-$(BUILD_DIR)/ge/tools/%.o: ge/tools/%.mm
+$(BUILD_DIR)/ge/tools/%.o: $(ge)/tools/%.mm
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) $(SDL_CFLAGS) -MMD -MP -c $< -o $@
 
@@ -165,24 +175,24 @@ $(ge/LIB): $(ge/OBJ) $(ge/SQLITE_OBJ) $(ge/LZ4_OBJ) $(ge/LITEPARSER_OBJ) $(ge/VE
 	libtool -static -o $@ $^
 
 # Vendor C++ sources
-$(BUILD_DIR)/ge/vendor/%.o: ge/vendor/%.cpp
+$(BUILD_DIR)/ge/vendor/%.o: $(ge)/vendor/src/%.cpp
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -MMD -MP -c $< -o $@
 
 # Box2D library
-$(BUILD_DIR)/$(ge/BOX2D_DIR)/src/%.o: $(ge/BOX2D_DIR)/src/%.c
+$(BUILD_DIR)/ge/vendor/box2d/%.o: $(ge/BOX2D_DIR)/src/%.c
 	@mkdir -p $(dir $@)
 	$(CC) $(ge/BOX2D_CFLAGS) -MMD -MP -c $< -o $@
 
 # SQLite3 (C amalgamation)
 $(ge/SQLITE_OBJ): $(ge/SQLITE_SRC)
 	@mkdir -p $(dir $@)
-	$(CC) -O2 -Ige/vendor/include -DSQLITE_ENABLE_SESSION -DSQLITE_ENABLE_PREUPDATE_HOOK -DSQLITE_ENABLE_DESERIALIZE -c $< -o $@
+	$(CC) -O2 -I$(ge)/vendor/include -DSQLITE_ENABLE_SESSION -DSQLITE_ENABLE_PREUPDATE_HOOK -DSQLITE_ENABLE_DESERIALIZE -c $< -o $@
 
 # lz4 compression
 $(ge/LZ4_OBJ): $(ge/LZ4_SRC)
 	@mkdir -p $(dir $@)
-	$(CC) -O2 -Ige/vendor/include -c $< -o $@
+	$(CC) -O2 -I$(ge)/vendor/include -c $< -o $@
 
 # liteparser
 $(BUILD_DIR)/ge/vendor/liteparser/%.o: $(ge/LITEPARSER_DIR)/%.c
@@ -261,17 +271,17 @@ $(ge/PLAYER): $(ge/PLAYER_SRC) $(ge/LIB) $(ge/BGFX_LIBS)
 # iOS Xcode project generation
 .PHONY: ge/ios
 ge/ios:
-	cd ge/tools/ios && cmake -G Xcode -B build/xcode \
+	cd $(ge)/tools/ios && cmake -G Xcode -B build/xcode \
 	    -DCMAKE_SYSTEM_NAME=iOS \
 	    -DCMAKE_OSX_ARCHITECTURES=arm64 \
 	    -DCMAKE_OSX_SYSROOT=iphoneos \
 	    -DCMAKE_OSX_DEPLOYMENT_TARGET=16.0
-	@echo "Open ge/tools/ios/build/xcode/Player.xcodeproj in Xcode"
+	@echo "Open $(ge)/tools/ios/build/xcode/Player.xcodeproj in Xcode"
 
 # iOS player archive (generate Xcode project + xcodebuild archive)
 .PHONY: ge/ios-archive
 ge/ios-archive: ge/ios
-	cd ge/tools/ios && xcodebuild \
+	cd $(ge)/tools/ios && xcodebuild \
 	    -project build/xcode/Player.xcodeproj \
 	    -scheme Player \
 	    -destination "generic/platform=iOS" \
@@ -282,7 +292,7 @@ ge/ios-archive: ge/ios
 # iOS player TestFlight upload (archive + export/upload to App Store Connect)
 .PHONY: ge/ios-testflight
 ge/ios-testflight: ge/ios-archive
-	cd ge/tools/ios && xcodebuild -exportArchive \
+	cd $(ge)/tools/ios && xcodebuild -exportArchive \
 	    -archivePath build/Player.xcarchive \
 	    -exportOptionsPlist ExportOptions.plist \
 	    -exportPath build/export \
@@ -292,14 +302,14 @@ ge/ios-testflight: ge/ios-archive
 # Android debug APK (player)
 .PHONY: ge/android
 ge/android:
-	cd ge/tools/android && ./gradlew assembleDebug
-	@echo "APK: ge/tools/android/app/build/outputs/apk/debug/app-debug.apk"
+	cd $(ge)/tools/android && ./gradlew assembleDebug
+	@echo "APK: $(ge)/tools/android/app/build/outputs/apk/debug/app-debug.apk"
 
 # Android release AAB for Play Store upload
 .PHONY: ge/android-release
 ge/android-release:
-	cd ge/tools/android && ./gradlew bundleRelease
-	@echo "AAB: ge/tools/android/app/build/outputs/bundle/release/app-release.aab"
+	cd $(ge)/tools/android && ./gradlew bundleRelease
+	@echo "AAB: $(ge)/tools/android/app/build/outputs/bundle/release/app-release.aab"
 
 # Direct-mode project generation
 # Parent Makefile sets APP_ID and APP_NAME before calling.
@@ -307,13 +317,13 @@ ge/android-release:
 ge/android-init:
 	@if [ -z "$(APP_ID)" ] || [ -z "$(APP_NAME)" ]; then \
 		echo "Error: set APP_ID and APP_NAME"; exit 1; fi
-	ge/tools/init-android.sh "$(APP_ID)" "$(APP_NAME)"
+	$(ge)/tools/init-android.sh "$(APP_ID)" "$(APP_NAME)"
 
 .PHONY: ge/ios-init
 ge/ios-init:
 	@if [ -z "$(APP_ID)" ] || [ -z "$(APP_NAME)" ]; then \
 		echo "Error: set APP_ID and APP_NAME"; exit 1; fi
-	ge/tools/init-ios.sh "$(APP_ID)" "$(APP_NAME)" "$(IOS_DEVELOPMENT_TEAM)"
+	$(ge)/tools/init-ios.sh "$(APP_ID)" "$(APP_NAME)" "$(IOS_DEVELOPMENT_TEAM)"
 
 # ────────────────────────────────────────────────
 # Generic targets (use CLEAN, COMPILE_DB_DEPS)
@@ -331,10 +341,10 @@ clean:
 depgraph: deps.svg
 
 deps.svg: $(ge/DEPGRAPH_DEPS)
-	python3 ge/tools/depgraph.py --format svg --output deps
+	python3 $(ge)/tools/depgraph.py --format svg --output deps
 
 deps.dot: $(ge/DEPGRAPH_DEPS)
-	python3 ge/tools/depgraph.py --format dot --output deps
+	python3 $(ge)/tools/depgraph.py --format dot --output deps
 
 clean-depgraph:
 	rm -f deps.dot deps.svg deps.png
@@ -368,25 +378,25 @@ ge/init:
 # Dashboard web app (Vite + React)
 .PHONY: web
 web:
-	cd ge/web && npm install && npm run build
+	cd $(ge)/web && npm install && npm run build
 
 # Game Engine Daemon (Go binary with embedded web UI)
 .PHONY: ged
 ged: web
-	@if [ ! -d ge/web/dist ]; then \
-		echo "ERROR: ge/web/dist not found. Run 'make web' first."; exit 1; \
+	@if [ ! -d $(ge)/web/dist ]; then \
+		echo "ERROR: $(ge)/web/dist not found. Run 'make web' first."; exit 1; \
 	fi
-	@rm -rf ge/ged/web/dist
-	@mkdir -p ge/ged/web
-	@cp -R ge/web/dist ge/ged/web/dist
-	cd ge/ged && go build -o ../../bin/ged .
+	@rm -rf $(ge)/ged/web/dist
+	@mkdir -p $(ge)/ged/web
+	@cp -R $(ge)/web/dist $(ge)/ged/web/dist
+	cd $(ge)/ged && go build -o $(CURDIR)/bin/ged .
 
 .PHONY: ged-test
 ged-test:
-	@if [ ! -d ge/ged/web/dist ]; then \
-		mkdir -p ge/ged/web/dist && touch ge/ged/web/dist/index.html; \
+	@if [ ! -d $(ge)/ged/web/dist ]; then \
+		mkdir -p $(ge)/ged/web/dist && touch $(ge)/ged/web/dist/index.html; \
 	fi
-	cd ge/ged && go test ./...
+	cd $(ge)/ged && go test ./...
 
 # Canned recipe for the parent to expand at the end of its init target.
 define ge/INIT_DONE
