@@ -229,6 +229,19 @@ targets:
       Lets us delete the duplicated ⌥-mouse synthesis code (use AccelSynth from src/render/) and gives the player binary the same architectural clarity as the engine.
     origin: 'deferred from PR #11 (subsystem split)'
     discovered: 2026-04-16
+  T16:
+    name: TiltBuggy vehicle dynamics feel right
+    status: identified
+    value: 3.0
+    cost: 3.0
+    acceptance:
+    - Tilting in a steady direction produces a smooth predictable arc with no oscillation
+    - Releasing tilt lets the buggy decelerate without strange angular spinning
+    - Quick tilt changes feel responsive but not jittery
+    - Tuning constants are exposed via tweaks or at least clearly named in Scene.cpp
+    context: Current arcade implementation in Scene::step uses chassis as the only body, killing lateral velocity (kGrip = 0.85) and applying torque proportional to angle between heading and velocity (5.0 * deltaAngle * speed). It works but feels slightly wonky. Iterate on the constants, or escalate to real vehicle dynamics with wheel bodies if the simple model can't feel right.
+    origin: discovered while testing tiltbuggy stage 2
+    discovered: 2026-04-16
   T2:
     name: Smoke test validates network connectivity between laptop and device
     status: identified
