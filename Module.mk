@@ -79,6 +79,8 @@ ge/SRC = \
 	$(ge)/src/BgfxContext.mm \
 	$(ge)/src/Signal.cpp \
 	$(ge)/src/SessionHost.mm \
+	$(ge)/src/DirectRenderHost.mm \
+	$(ge)/src/ServerWireBridge.mm \
 	$(ge)/src/VideoEncoder_apple.mm \
 	$(ge)/src/VideoDecoder_apple.mm
 

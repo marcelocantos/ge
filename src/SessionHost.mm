@@ -9,32 +9,15 @@
 #include <ge/WebSocketClient.h>
 #include <ge/FrameLog.h>
 
+#include "DirectRenderHost.h"
+#include "ServerWireBridge.h"
+
 #include <bgfx/bgfx.h>
 #include <SDL3/SDL.h>
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
 #include <cstring>
-
-// Lightweight write buffer for building wire messages without manual offsets.
-struct WireWriter {
-    std::vector<uint8_t> buf;
-
-    explicit WireWriter(size_t capacity = 0) { buf.reserve(capacity); }
-
-    template <typename T>
-    void put(const T& val) {
-        auto p = reinterpret_cast<const uint8_t*>(&val);
-        buf.insert(buf.end(), p, p + sizeof(T));
-    }
-
-    void append(const void* data, size_t size) {
-        auto p = static_cast<const uint8_t*>(data);
-        buf.insert(buf.end(), p, p + size);
-    }
-
-    const uint8_t* data() const { return buf.data(); }
-    size_t size() const { return buf.size(); }
-};
 #include <string>
 #include <unistd.h>
 #include <unordered_map>
@@ -42,84 +25,12 @@ struct WireWriter {
 
 namespace ge {
 
-// ── Per-session state ──────────────────────────────────────────────
-
-struct Session {
-    std::string id;
-    std::shared_ptr<WsConnection> wire;
-    RunConfig config;
-    int width = 0, height = 0;
-    bool ready = false;  // true once DeviceInfo arrives and capture is initialized
-
-    // Offscreen capture: framebuffer + double-buffered readback.
-    bgfx::FrameBufferHandle fb = BGFX_INVALID_HANDLE;
-    bgfx::TextureHandle renderTex = BGFX_INVALID_HANDLE;
-
-    static constexpr int kNumReadback = 3;
-    struct ReadbackSlot {
-        bgfx::TextureHandle tex = BGFX_INVALID_HANDLE;
-        std::vector<uint8_t> buf;
-        uint32_t readyFrame = 0;
-        bool pending = false;
-    };
-    ReadbackSlot readback[kNumReadback];
-    int submitIdx = 0;
-
-    std::unique_ptr<VideoEncoder> encoder;
-    std::vector<uint8_t> pixelBuf;
-
-    bool initCapture() {
-        renderTex = bgfx::createTexture2D(
-            width, height, false, 1,
-            bgfx::TextureFormat::BGRA8,
-            BGFX_TEXTURE_RT | BGFX_TEXTURE_BLIT_DST);
-        bgfx::TextureHandle attachments[] = { renderTex };
-        fb = bgfx::createFrameBuffer(1, attachments, false);
-
-        size_t frameBytes = width * height * 4;
-        for (auto& slot : readback) {
-            slot.tex = bgfx::createTexture2D(
-                width, height, false, 1,
-                bgfx::TextureFormat::BGRA8,
-                BGFX_TEXTURE_BLIT_DST | BGFX_TEXTURE_READ_BACK);
-            slot.buf.resize(frameBytes);
-        }
-        pixelBuf.resize(frameBytes);
-        return bgfx::isValid(fb);
-    }
-
-    void submitCaptureBlit() {
-        auto& slot = readback[submitIdx];
-        if (slot.pending) return;
-        bgfx::setViewFrameBuffer(255, BGFX_INVALID_HANDLE);
-        bgfx::blit(255, slot.tex, 0, 0, renderTex);
-        slot.readyFrame = bgfx::readTexture(slot.tex, slot.buf.data());
-        slot.pending = true;
-        submitIdx = (submitIdx + 1) % kNumReadback;
-    }
-
-    bool readCapturedFrame(uint32_t frameNum) {
-        for (auto& slot : readback) {
-            if (slot.pending && frameNum >= slot.readyFrame) {
-                slot.pending = false;
-                std::memcpy(pixelBuf.data(), slot.buf.data(), pixelBuf.size());
-                return true;
-            }
-        }
-        return false;
-    }
-
-    void destroy() {
-        if (config.onShutdown) config.onShutdown();
-        if (encoder) encoder->flush();
-        for (auto& slot : readback)
-            if (bgfx::isValid(slot.tex)) bgfx::destroy(slot.tex);
-        if (bgfx::isValid(fb)) bgfx::destroy(fb);
-        // renderTex is NOT destroyed — owned by FB (destroyTexture=false above,
-        // but we passed false to createFrameBuffer so we must destroy it ourselves)
-        if (bgfx::isValid(renderTex)) bgfx::destroy(renderTex);
-    }
+namespace {
+struct BrokeredSession {
+    std::unique_ptr<ServerWireBridge> bridge;
+    RunConfig config;  // empty until DeviceInfo arrives + factory called
 };
+}  // namespace
 
 // ── Sideband JSON parsing (minimal, no dependencies) ───────────────
 
@@ -134,9 +45,15 @@ static std::string jsonStringValue(const std::string& json, const std::string& k
     return json.substr(pos + 1, end - pos - 1);
 }
 
-// ── ge::run — multi-session server ─────────────────────────────────
+// ── runBrokered: game-server in the player/ged modality ───────────
+//
+// This is the server-side half of the bridge subsystem in the intended
+// architecture. It owns ged sideband + per-session wire + headless
+// bgfx framebuffer + H.264 encode. Future refactor: extract into
+// a dedicated ServerWireBridge class that implements a RenderHost
+// interface shared with runDirect's DirectRenderHost.
 
-void run(Factory factory, const SessionHostConfig& config) {
+static void runBrokered(Factory factory, const SessionHostConfig& config) {
     const char* name = (config.appName && *config.appName) ? config.appName : "server";
 
     // Initial screen-saver policy — must be set before SDL_Init
@@ -157,12 +74,11 @@ void run(Factory factory, const SessionHostConfig& config) {
         + std::to_string(wire::kProtocolVersion) + "}";
     sideband->sendText(hello);
 
-    // bgfx context — deferred until the first DeviceInfo arrives,
-    // so the context is sized to an actual player's dimensions.
+    // bgfx context — deferred until the first session's DeviceInfo arrives.
     std::unique_ptr<BgfxContext> bgfxCtx;
 
-    // Active sessions
-    std::unordered_map<std::string, std::unique_ptr<Session>> sessions;
+    // Active sessions: each owns a ServerWireBridge (wire + capture + encode).
+    std::unordered_map<std::string, BrokeredSession> sessions;
 
     // Frame timing
     uint64_t freq = SDL_GetPerformanceFrequency();
@@ -178,58 +94,43 @@ void run(Factory factory, const SessionHostConfig& config) {
             std::vector<char> data;
             if (!sideband->recvBinary(data) || data.empty()) break;
 
-            // Text frames (JSON) start with '{'; binary frames start with a magic uint32.
-            if (data[0] == '{') {
-                std::string msg(data.begin(), data.end());
-                auto type = jsonStringValue(msg, "type");
-                auto sessionId = jsonStringValue(msg, "session_id");
+            if (data[0] != '{') continue;  // ignore binary on sideband
+            std::string msg(data.begin(), data.end());
+            auto type = jsonStringValue(msg, "type");
+            auto sessionId = jsonStringValue(msg, "session_id");
 
-                if (type == "player_attached" && !sessionId.empty()) {
-                    if (sessions.count(sessionId)) continue;
-                    SPDLOG_INFO("Player attached: session '{}'", sessionId);
+            if (type == "player_attached" && !sessionId.empty()) {
+                if (sessions.count(sessionId)) continue;
+                SPDLOG_INFO("Player attached: session '{}'", sessionId);
 
-                    // Open per-session wire. DeviceInfo will arrive on it
-                    // naturally — the session initializes when it does.
-                    std::string wirePath = "/ws/server/wire/" + sessionId;
-                    auto wire = connectWebSocket("localhost", 42069, wirePath, 2000);
-                    if (!wire || !wire->isOpen()) {
-                        SPDLOG_ERROR("Failed to open wire for session '{}'", sessionId);
-                        continue;
-                    }
+                std::string wirePath = "/ws/server/wire/" + sessionId;
+                auto wire = connectWebSocket("localhost", 42069, wirePath, 2000);
+                if (!wire || !wire->isOpen()) {
+                    SPDLOG_ERROR("Failed to open wire for session '{}'", sessionId);
+                    continue;
+                }
 
-                    // Always send SessionConfig on the wire so the player
-                    // can apply orientation/sensor hints BEFORE creating
-                    // its window. The player blocks on this message.
-                    {
-                        wire::MessageHeader cfgHdr{};
-                        cfgHdr.magic = wire::kSessionConfigMagic;
-                        cfgHdr.length = sizeof(wire::SessionConfig);
-                        wire::SessionConfig cfg{};
-                        cfg.sensors = config.sensors;
-                        cfg.orientation = config.orientation;
-                        std::vector<uint8_t> cfgMsg(sizeof(cfgHdr) + sizeof(cfg));
-                        std::memcpy(cfgMsg.data(), &cfgHdr, sizeof(cfgHdr));
-                        std::memcpy(cfgMsg.data() + sizeof(cfgHdr), &cfg, sizeof(cfg));
-                        wire->sendBinary(cfgMsg.data(), cfgMsg.size());
-                        SPDLOG_INFO("Session '{}': sent SessionConfig (sensors=0x{:x}, orientation={})",
-                                    sessionId, cfg.sensors, cfg.orientation);
-                    }
+                BrokeredSession bs;
+                bs.bridge = std::make_unique<ServerWireBridge>(sessionId, std::move(wire));
 
-                    auto sess = std::make_unique<Session>();
-                    sess->id = sessionId;
-                    sess->wire = std::move(wire);
-                    sessions[sessionId] = std::move(sess);
+                // Tell the player about session requirements (sensors,
+                // orientation) before it creates its window.
+                wire::SessionConfig sc{};
+                sc.sensors = config.sensors;
+                sc.orientation = config.orientation;
+                bs.bridge->send(sc);
 
-                } else if (type == "player_detached" && !sessionId.empty()) {
-                    auto it = sessions.find(sessionId);
-                    if (it != sessions.end()) {
-                        SPDLOG_INFO("Player detached: session '{}'", sessionId);
-                        it->second->destroy();
-                        sessions.erase(it);
-                    }
+                sessions.emplace(sessionId, std::move(bs));
+
+            } else if (type == "player_detached" && !sessionId.empty()) {
+                auto it = sessions.find(sessionId);
+                if (it != sessions.end()) {
+                    SPDLOG_INFO("Player detached: session '{}'", sessionId);
+                    if (it->second.config.onShutdown) it->second.config.onShutdown();
+                    it->second.bridge->shutdown();
+                    sessions.erase(it);
                 }
             }
-            // Binary frames on sideband are ignored (all data goes on wires now)
         }
 
         if (!sideband->isOpen()) break;
@@ -238,12 +139,9 @@ void run(Factory factory, const SessionHostConfig& config) {
         uint64_t targetTime = startTime + (uint64_t)frameIndex * freq / 60;
         uint64_t now = SDL_GetPerformanceCounter();
         if (now < targetTime) {
-            // Sleep for most of the wait, busy-wait the remainder.
             int64_t remaining = targetTime - now;
-            int64_t sleepTicks = remaining - freq / 1000;  // wake 1ms early
-            if (sleepTicks > 0) {
-                SDL_Delay((uint32_t)(sleepTicks * 1000 / freq));
-            }
+            int64_t sleepTicks = remaining - freq / 1000;
+            if (sleepTicks > 0) SDL_Delay((uint32_t)(sleepTicks * 1000 / freq));
             while (SDL_GetPerformanceCounter() < targetTime) {}
             now = SDL_GetPerformanceCounter();
         }
@@ -252,7 +150,7 @@ void run(Factory factory, const SessionHostConfig& config) {
         lastTime = now;
         if (dt > 0.1f) dt = 0.1f;
 
-        // Local SDL events (only after bgfx/SDL init)
+        // Local SDL events (only after bgfx/SDL init).
         if (bgfxCtx) {
             SDL_Event e;
             while (SDL_PollEvent(&e)) {
@@ -260,113 +158,49 @@ void run(Factory factory, const SessionHostConfig& config) {
             }
         }
 
-        // ── 4. Drain wires + update + render each session ──
-        for (auto& [id, sess] : sessions) {
-            // Drain messages from this session's wire
-            while (sess->wire && sess->wire->isOpen() && sess->wire->available() > 0) {
-                std::vector<char> data;
-                if (!sess->wire->recvBinary(data)) break;
-                if (data.size() < 8) continue;
+        // ── 3. Drain wires + (one-time init) + per-session frame ──
+        for (auto& [id, bs] : sessions) {
+            bs.bridge->pumpWire();
 
-                uint32_t magic = 0;
-                std::memcpy(&magic, data.data(), 4);
-
-                if (magic == wire::kDeviceInfoMagic && !sess->ready &&
-                    data.size() >= sizeof(wire::MessageHeader) + sizeof(wire::DeviceInfo)) {
-                    // DeviceInfo arrived — initialize the session.
-                    wire::DeviceInfo info;
-                    std::memcpy(&info, data.data() + sizeof(wire::MessageHeader), sizeof(info));
-                    sess->width = info.width / 2;
-                    sess->height = info.height / 2;
-                    if (sess->width == 0 || sess->height == 0) {
-                        SPDLOG_WARN("Session '{}': invalid DeviceInfo {}x{}, skipping",
-                                    id, info.width, info.height);
-                        continue;
-                    }
-
-                    // Lazily init bgfx on first session.
-                    if (!bgfxCtx) {
-                        bgfxCtx = std::make_unique<BgfxContext>(
-                            BgfxConfig{sess->width, sess->height, config.headless});
-                        SPDLOG_INFO("bgfx initialized at {}x{}", sess->width, sess->height);
-                    }
-                    SPDLOG_INFO("Session '{}': DeviceInfo {}x{} @{}x → render at {}x{}",
-                                id, info.width, info.height, info.pixelRatio,
-                                sess->width, sess->height);
-
-                    sess->initCapture();
-
-                    auto wirePtr = sess->wire;
-                    int w = sess->width, h = sess->height;
-                    auto encodeSeq = std::make_shared<uint32_t>(0);
-                    sess->encoder = std::make_unique<VideoEncoder>(w, h, 60,
-                        [wirePtr, encodeSeq](VideoEncoder::Frame frame) {
-                            if (!wirePtr || !wirePtr->isOpen()) return;
-                            uint32_t seq = (*encodeSeq)++;
-                            uint8_t flags = frame.isKeyframe ? 1 : 0;
-                            uint32_t payloadSize = sizeof(flags) + sizeof(seq) + frame.size;
-                            WireWriter w(sizeof(wire::MessageHeader) + payloadSize);
-                            w.put(wire::MessageHeader{wire::kVideoStreamMagic, payloadSize});
-                            w.put(flags);
-                            w.put(seq);
-                            w.append(frame.data, frame.size);
-                            wirePtr->sendBinary(w.data(), w.size());
-                        });
-
-                    std::string dbPath = ":memory:";
-                    if (config.orgName && config.appName) {
-                        char* pref = SDL_GetPrefPath(config.orgName, config.appName);
-                        if (pref) {
-                            dbPath = std::string(pref) + "game.db";
-                            SDL_free(pref);
-                            SPDLOG_INFO("Session '{}': persistent DB at {}", id, dbPath);
-                        }
-                    }
-                    Context ctx{w, h, DeviceClass::Desktop, dbPath, config.schemaDdl};
-                    sess->config = factory(ctx);
-                    sess->ready = true;
-                    SPDLOG_INFO("Session '{}': ready ({}x{})", id, w, h);
-
-                } else if (magic == wire::kSdlEventMagic && sess->ready &&
-                           data.size() >= sizeof(wire::MessageHeader) + sizeof(SDL_Event)) {
-                    SDL_Event ev;
-                    std::memcpy(&ev, data.data() + sizeof(wire::MessageHeader), sizeof(SDL_Event));
-                    if (sess->config.onEvent) sess->config.onEvent(ev);
+            // Lazy init: when DeviceInfo has arrived, init bgfx (once,
+            // shared across all sessions) and the per-session capture.
+            if (!bs.bridge->isReady() && bs.bridge->hasDimensions()) {
+                if (!bgfxCtx) {
+                    bgfxCtx = std::make_unique<BgfxContext>(
+                        BgfxConfig{bs.bridge->width(), bs.bridge->height(),
+                                   config.headless});
+                    SPDLOG_INFO("bgfx initialized at {}x{}",
+                                bs.bridge->width(), bs.bridge->height());
                 }
+                bs.bridge->initialise();
+
+                std::string dbPath = ":memory:";
+                if (config.orgName && config.appName) {
+                    char* pref = SDL_GetPrefPath(config.orgName, config.appName);
+                    if (pref) {
+                        dbPath = std::string(pref) + "game.db";
+                        SDL_free(pref);
+                        SPDLOG_INFO("Session '{}': persistent DB at {}", id, dbPath);
+                    }
+                }
+                Context ctx{bs.bridge->width(), bs.bridge->height(),
+                            bs.bridge->deviceClass(), dbPath, config.schemaDdl};
+                bs.config = factory(ctx);
+                bs.bridge->setEventHandler(bs.config.onEvent);
             }
 
-            if (!sess->ready) continue;  // waiting for DeviceInfo
+            if (!bs.bridge->isReady()) continue;
 
             uint64_t t0 = SDL_GetPerformanceCounter();
-
-            // Update
-            if (sess->config.onUpdate) sess->config.onUpdate(dt);
-
+            if (bs.config.onUpdate) bs.config.onUpdate(dt);
             uint64_t t1 = SDL_GetPerformanceCounter();
-
-            // Set all views to this session's framebuffer
-            for (bgfx::ViewId v = 0; v < 16; ++v) {
-                bgfx::setViewFrameBuffer(v, sess->fb);
-            }
-
-            // Render
-            if (sess->config.onRender) sess->config.onRender(sess->width, sess->height);
-
+            bs.bridge->beginFrame();
+            if (bs.config.onRender)
+                bs.config.onRender(bs.bridge->width(), bs.bridge->height());
             uint64_t t2 = SDL_GetPerformanceCounter();
-
-            // Capture blit
-            sess->submitCaptureBlit();
-
-            // Submit this session's frame
             uint32_t frameNum = bgfx::frame();
-
             uint64_t t3 = SDL_GetPerformanceCounter();
-
-            // Read back + encode
-            if (sess->readCapturedFrame(frameNum)) {
-                sess->encoder->encode(sess->pixelBuf.data(), sess->width * 4);
-            }
-
+            bs.bridge->endFrame(frameNum);
             uint64_t t4 = SDL_GetPerformanceCounter();
 
             struct ServerFrame { uint64_t t0, t1, t2, t3, t4; };
@@ -394,17 +228,15 @@ void run(Factory factory, const SessionHostConfig& config) {
             serverLog.record({t0, t1, t2, t3, t4});
         }
 
-        // If bgfx is up but no sessions are rendering, still call frame
-        // to keep the context alive.
-        if (bgfxCtx && sessions.empty()) {
-            bgfx::frame();
-        }
+        // Keep bgfx alive when no sessions are rendering.
+        if (bgfxCtx && sessions.empty()) bgfx::frame();
 
-        // Clean up disconnected sessions
+        // Reap disconnected sessions.
         for (auto it = sessions.begin(); it != sessions.end(); ) {
-            if (it->second->wire && !it->second->wire->isOpen()) {
+            if (it->second.bridge->shouldQuit()) {
                 SPDLOG_INFO("Session '{}': wire disconnected", it->first);
-                it->second->destroy();
+                if (it->second.config.onShutdown) it->second.config.onShutdown();
+                it->second.bridge->shutdown();
                 it = sessions.erase(it);
             } else {
                 ++it;
@@ -412,9 +244,70 @@ void run(Factory factory, const SessionHostConfig& config) {
         }
     }
 
-    // Tear down remaining sessions
-    for (auto& [id, sess] : sessions) {
-        sess->destroy();
+    // Tear down remaining sessions.
+    for (auto& [id, bs] : sessions) {
+        if (bs.config.onShutdown) bs.config.onShutdown();
+        bs.bridge->shutdown();
+    }
+}
+
+// ── runDirect: standalone / distribution modality ─────────────────
+//
+// Render + engine in one process, no ged, no wire. Uses DirectRenderHost
+// for window + bgfx + input.
+
+static void runDirect(Factory factory, const SessionHostConfig& config) {
+    DirectRenderHost host(config);
+
+    std::string dbPath = ":memory:";
+    if (config.orgName && config.appName) {
+        char* pref = SDL_GetPrefPath(config.orgName, config.appName);
+        if (pref) {
+            dbPath = std::string(pref) + "game.db";
+            SDL_free(pref);
+            SPDLOG_INFO("Direct mode: persistent DB at {}", dbPath);
+        }
+    }
+
+    Context ctx{host.width(), host.height(), host.deviceClass(),
+                dbPath, config.schemaDdl};
+    RunConfig rc = factory(ctx);
+    host.setEventHandler(rc.onEvent);
+
+    wire::SessionConfig sc{};
+    sc.sensors = config.sensors;
+    sc.orientation = config.orientation;
+    host.send(sc);
+
+    uint64_t freq = SDL_GetPerformanceFrequency();
+    uint64_t last = SDL_GetPerformanceCounter();
+
+    while (!host.shouldQuit()) {
+        host.pumpEvents();
+
+        uint64_t now = SDL_GetPerformanceCounter();
+        float dt = float(now - last) / float(freq);
+        last = now;
+        if (dt > 0.1f) dt = 0.1f;
+
+        if (rc.onUpdate) rc.onUpdate(dt);
+
+        host.beginFrame();
+        if (rc.onRender) rc.onRender(host.width(), host.height());
+        uint32_t frameNum = bgfx::frame();
+        host.endFrame(frameNum);
+    }
+
+    if (rc.onShutdown) rc.onShutdown();
+}
+
+// ── ge::run — dispatch by modality ────────────────────────────────
+
+void run(Factory factory, const SessionHostConfig& config) {
+    if (config.headless) {
+        runBrokered(factory, config);
+    } else {
+        runDirect(factory, config);
     }
 }
 

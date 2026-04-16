@@ -54,7 +54,8 @@ BgfxContext::BgfxContext(const BgfxConfig& config)
         init.platformData.nwh = (__bridge void*)layer;
         init.resolution.reset = 0;
     } else {
-        m->window = SDL_CreateWindow("Your World",
+        const char* title = (config.title && *config.title) ? config.title : "ge";
+        m->window = SDL_CreateWindow(title,
             config.width, config.height,
             SDL_WINDOW_METAL | SDL_WINDOW_RESIZABLE);
         if (!m->window) {
