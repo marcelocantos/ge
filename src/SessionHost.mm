@@ -9,8 +9,8 @@
 #include <ge/WebSocketClient.h>
 #include <ge/FrameLog.h>
 
-#include "DirectRenderHost.h"
-#include "ServerWireBridge.h"
+#include "render/DirectRenderHost.h"
+#include "bridge/ServerWireBridge.h"
 
 #include <bgfx/bgfx.h>
 #include <SDL3/SDL.h>

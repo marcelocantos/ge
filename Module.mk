@@ -75,14 +75,14 @@ ge/SRC = \
 	$(ge)/src/Resource.cpp \
 	$(ge)/src/FileIO.cpp \
 	$(ge)/src/FontLoader_apple.mm \
-	$(ge)/src/WebSocketClient.cpp \
 	$(ge)/src/BgfxContext.mm \
 	$(ge)/src/Signal.cpp \
 	$(ge)/src/SessionHost.mm \
-	$(ge)/src/DirectRenderHost.mm \
-	$(ge)/src/ServerWireBridge.mm \
-	$(ge)/src/VideoEncoder_apple.mm \
-	$(ge)/src/VideoDecoder_apple.mm
+	$(ge)/src/render/DirectRenderHost.mm \
+	$(ge)/src/bridge/ServerWireBridge.mm \
+	$(ge)/src/bridge/WebSocketClient.cpp \
+	$(ge)/src/bridge/VideoEncoder_apple.mm \
+	$(ge)/src/bridge/VideoDecoder_apple.mm
 
 ge/OBJ = $(patsubst $(ge)/src/%.cpp,$(BUILD_DIR)/ge/src/%.o,$(filter %.cpp,$(ge/SRC))) \
          $(patsubst $(ge)/src/%.mm,$(BUILD_DIR)/ge/src/%.o,$(filter %.mm,$(ge/SRC)))
@@ -156,12 +156,12 @@ ge/DEPGRAPH_DEPS = $(ge/SRC) $(wildcard $(ge)/include/ge/*.h) $(ge)/tools/depgra
 # Rules
 # ────────────────────────────────────────────────
 
-# Engine objects
+# Engine + render + bridge objects (.cpp)
 $(BUILD_DIR)/ge/src/%.o: $(ge)/src/%.cpp
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) $(SDL_CFLAGS) -MMD -MP -c $< -o $@
 
-# Engine ObjC++ objects (.mm)
+# Engine + render + bridge objects (.mm)
 $(BUILD_DIR)/ge/src/%.o: $(ge)/src/%.mm
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) $(SDL_CFLAGS) -MMD -MP -c $< -o $@
