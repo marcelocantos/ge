@@ -127,7 +127,7 @@ DirectRenderHost::DirectRenderHost(const SessionHostConfig& config)
         !AccelSynth::realSensorAvailable()) {
         i_->synth.emplace();
         i_->synth->setWindow(i_->bgfxCtx->window());
-        SPDLOG_INFO("DirectRenderHost: ⌥-mouse accelerometer synthesis enabled");
+        SPDLOG_INFO("DirectRenderHost: Shift-mouse accelerometer synthesis enabled");
     }
 
     SPDLOG_INFO("DirectRenderHost: {}x{}", i_->width, i_->height);
@@ -168,7 +168,7 @@ void DirectRenderHost::beginFrame() {
     // swap chain). Otherwise, render straight to the swap chain.
     Tilt t{};
     if (i_->synth) {
-        i_->synth->update();   // drive ease-back when ⌥ has been released
+        i_->synth->update();   // drive ease-back when Shift has been released
         t = i_->synth->current();
     }
     i_->tiltActiveThisFrame = (t.x * t.x + t.y * t.y) > 0.5f;  // >~0.7 px

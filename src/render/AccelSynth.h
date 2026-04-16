@@ -1,7 +1,7 @@
 // Copyright 2026 Marcelo Cantos
 // SPDX-License-Identifier: Apache-2.0
 //
-// AccelSynth — synthesise SDL_EVENT_SENSOR_UPDATE events from ⌥-gated
+// AccelSynth — synthesise SDL_EVENT_SENSOR_UPDATE events from Shift-gated
 // mouse motion when no real accelerometer is available (desktop, iOS
 // simulator, Android emulator).
 //
@@ -43,23 +43,23 @@ public:
     void setWindow(SDL_Window* w) { window_ = w; }
     void setEmit(std::function<void(const SDL_Event&)> fn) { emit_ = std::move(fn); }
 
-    // Current tilt vector (raw mouse displacement from the ⌥-press
-    // point, in pixels). Zero when ⌥ isn't held.
+    // Current tilt vector (raw mouse displacement from the Shift-press
+    // point, in pixels). Zero when Shift isn't held.
     Tilt current() const { return tilt_; }
 
     // Returns true if the event was consumed by the synthesis (caller
     // should NOT forward it). Returns false if the event passes through.
     bool handle(const SDL_Event& e) {
         if ((e.type == SDL_EVENT_KEY_DOWN || e.type == SDL_EVENT_KEY_UP)
-            && (e.key.scancode == SDL_SCANCODE_LALT ||
-                e.key.scancode == SDL_SCANCODE_RALT)) {
-            const bool newAlt = (e.type == SDL_EVENT_KEY_DOWN);
-            if (newAlt != altDown_) {
-                altDown_ = newAlt;
+            && (e.key.scancode == SDL_SCANCODE_LSHIFT ||
+                e.key.scancode == SDL_SCANCODE_RSHIFT)) {
+            const bool newShift = (e.type == SDL_EVENT_KEY_DOWN);
+            if (newShift != shiftDown_) {
+                shiftDown_ = newShift;
                 if (window_) {
-                    SDL_SetWindowRelativeMouseMode(window_, altDown_);
+                    SDL_SetWindowRelativeMouseMode(window_, shiftDown_);
                 }
-                if (altDown_) {
+                if (shiftDown_) {
                     // Fresh capture — start from zero, no easing.
                     tilt_ = {};
                     easing_ = false;
@@ -69,10 +69,10 @@ public:
                     lastTickNs_ = 0;  // first update() initialises clock
                 }
             }
-            return true;  // consume ⌥
+            return true;  // consume Shift
         }
 
-        if (e.type == SDL_EVENT_MOUSE_MOTION && altDown_) {
+        if (e.type == SDL_EVENT_MOUSE_MOTION && shiftDown_) {
             tilt_.x += e.motion.xrel;
             tilt_.y += e.motion.yrel;
             emitSensorFromTilt();
@@ -83,7 +83,7 @@ public:
     }
 
     // Called once per frame by the host. Drives tilt easing back to
-    // zero after ⌥ is released. No-op while ⌥ is held or after the
+    // zero after Shift is released. No-op while Shift is held or after the
     // tilt has fully decayed.
     void update() {
         if (!easing_) return;
@@ -138,7 +138,7 @@ private:
     }
 
     Tilt tilt_;
-    bool altDown_ = false;
+    bool shiftDown_ = false;
     bool easing_  = false;
     uint64_t lastTickNs_ = 0;
     SDL_Window* window_ = nullptr;

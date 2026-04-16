@@ -20,8 +20,8 @@ add_library(main SHARED
     ${GE_ROOT}/tools/player_core.cpp
     ${GE_ROOT}/tools/player_orientation_stub.cpp
     ${GE_ROOT}/tools/AudioPlayer.cpp
-    ${GE_ROOT}/src/WebSocketClient.cpp
-    ${GE_ROOT}/src/VideoDecoder_ffmpeg.cpp
+    ${GE_ROOT}/src/bridge/WebSocketClient.cpp
+    ${GE_ROOT}/src/bridge/VideoDecoder_ffmpeg.cpp
     ${GE_ROOT}/src/Signal.cpp
     ${GE_ROOT}/src/Resource.cpp
     ${GE_ROOT}/src/FileIO.cpp
