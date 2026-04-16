@@ -20,7 +20,12 @@ public:
     void init(const char* shaderDir);
 
     // Clear + draw the scene. Call per frame under bgfx view 0.
-    void drawFrame(const Scene& scene, int width, int height);
+    // `tiltX` / `tiltY` are normalised (~[-1, +1]) device tilt; the
+    // renderer uses them to apply a perspective camera tilt so the
+    // visible viewport leans with the synthesised tilt input. Pass
+    // (0, 0) for a flat top-down view.
+    void drawFrame(const Scene& scene, int width, int height,
+                   float tiltX = 0.f, float tiltY = 0.f);
 
 private:
     struct Impl;

@@ -3,6 +3,7 @@
 
 #include "Scene.h"
 
+#include <cmath>
 #include <memory>
 
 namespace tiltbuggy {
@@ -138,6 +139,9 @@ Scene::~Scene() = default;
 void Scene::step(float dt, b2Vec2 gravity) {
     b2World_SetGravity(i_->worldId, gravity);
     b2World_Step(i_->worldId, dt, 4);
+    // Arcade vehicle dynamics + surface effects temporarily disabled
+    // so the buggy moves as a free-floating body — easier to diagnose
+    // tilt-input behaviour. Re-enable after viewport tilt is dialled in.
 }
 
 Pose Scene::buggyPose() const {

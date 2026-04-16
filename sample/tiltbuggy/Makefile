@@ -38,7 +38,7 @@ COMPILE_DB_DEPS += $(SRC) Makefile
 
 shaders: $(SHADERS)
 
-$(APP): $(APP_OBJ) $(SHADERS) $(ge/LIB) $(ge/BGFX_LIBS) $(ge/BOX2D_OBJ)
+$(APP): $(APP_OBJ) $(SHADERS) $(ge/RENDER_SHADERS) $(ge/LIB) $(ge/BGFX_LIBS) $(ge/BOX2D_OBJ)
 	@mkdir -p $(@D)
 	$(CXX) $(APP_OBJ) $(ge/LIB) $(ge/BGFX_LIBS) $(ge/BOX2D_OBJ) $(ge/SDL_LIBS) $(FRAMEWORKS) -o $@
 

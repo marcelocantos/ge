@@ -104,48 +104,42 @@ void Renderer::init(const char* shaderDir) {
     i_->program = bgfx::createProgram(vs, fs, /*destroyShaders=*/true);
 }
 
-void Renderer::drawFrame(const Scene& scene, int width, int height) {
-    // --- View setup ---
+void Renderer::drawFrame(const Scene& scene, int width, int height,
+                         float /*tiltX*/, float /*tiltY*/) {
+    // The host's composite pass applies viewport tilt (when synthesised
+    // tilt is non-zero). The game just renders a flat top-down view.
     bgfx::setViewRect(0, 0, 0, static_cast<uint16_t>(width),
                                 static_cast<uint16_t>(height));
     bgfx::setViewClear(0,
         BGFX_CLEAR_COLOR | BGFX_CLEAR_DEPTH,
-        0x22222255, 1.0f, 0);
+        0x222222ff, 1.0f, 0);
 
     // Orthographic projection: fit [-he,+he] in the shorter axis.
     const float he    = scene.halfExtent();
     const float aspect = static_cast<float>(width) / static_cast<float>(height);
     float orthoW, orthoH;
     if (aspect >= 1.0f) {
-        // Landscape: height is shorter axis.
         orthoH = he;
         orthoW = he * aspect;
     } else {
-        // Portrait: width is shorter axis.
         orthoW = he;
         orthoH = he / aspect;
     }
 
-    // bgfx ortho is Y-down in clip space; world is Y-up.
-    // Flip Y by swapping top/bottom: top = +orthoH, bottom = -orthoH.
     float proj[16];
     bx::mtxOrtho(proj,
-        -orthoW,  orthoW,   // left, right
-        -orthoH,  orthoH,   // bottom, top  (Y-up world → natural mapping)
-        -1.0f,    1.0f,
-        0.0f,
+        -orthoW, orthoW,
+        -orthoH, orthoH,
+        -1.0f, 1.0f, 0.0f,
         bgfx::getCaps()->homogeneousDepth);
 
     float view[16];
     bx::mtxIdentity(view);
-
     bgfx::setViewTransform(0, view, proj);
 
-    // --- Build geometry ---
     std::vector<PosColorVertex> verts;
     verts.reserve(6 * (2 + scene.surfaces().size()));
 
-    // 1. Asphalt background: full world extent.
     pushRect(verts, -orthoW, -orthoH, orthoW, orthoH, rgb(0x44, 0x44, 0x44));
 
     // 2. Surface rects.
