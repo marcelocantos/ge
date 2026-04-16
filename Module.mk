@@ -109,6 +109,14 @@ ge/SHADERC_PLATFORM ?= osx
 ge/SHADER_DIR ?= shaders
 ge/SHADERC_VARYINGDEF ?= $(ge/SHADER_DIR)/varying.def.sc
 
+# ge's own internal render shaders (compose pass for viewport tilt).
+# Consumers depend on $(ge/RENDER_SHADERS) so the binaries exist on
+# disk at runtime. DirectRenderHost loads them from "build/ge/shaders/".
+ge/RENDER_SHADER_DIR = $(ge)/src/render/shaders
+ge/RENDER_SHADERS = \
+	$(BUILD_DIR)/ge/shaders/ge_compose_vs.bin \
+	$(BUILD_DIR)/ge/shaders/ge_compose_fs.bin
+
 # Texture encoder (used by precompute tools, NOT part of libge.a)
 ge/TEXTURE_ENCODER_SRC = $(ge)/src/TextureEncoder.cpp
 ge/TEXTURE_ENCODER_OBJ = $(BUILD_DIR)/ge/src/TextureEncoder.o
@@ -261,6 +269,21 @@ $(BUILD_DIR)/$(ge/SHADER_DIR)/%_cs.bin: $(ge/SHADER_DIR)/%_cs.sc $(ge/SHADERC)
 	$(ge/SHADERC) -f $< -o $@ --type compute \
 	    --platform $(ge/SHADERC_PLATFORM) -p $(ge/SHADERC_PROFILE) \
 	    -i $(ge/SHADERC_BGFX_INCLUDE) -i $(ge/SHADER_DIR)
+
+# Engine-internal render shaders (compose pass for viewport tilt).
+$(BUILD_DIR)/ge/shaders/%_vs.bin: $(ge/RENDER_SHADER_DIR)/%_vs.sc $(ge/RENDER_SHADER_DIR)/varying.def.sc $(ge/SHADERC)
+	@mkdir -p $(dir $@)
+	$(ge/SHADERC) -f $< -o $@ --type vertex \
+	    --platform $(ge/SHADERC_PLATFORM) -p $(ge/SHADERC_PROFILE) \
+	    --varyingdef $(ge/RENDER_SHADER_DIR)/varying.def.sc \
+	    -i $(ge/SHADERC_BGFX_INCLUDE) -i $(ge/RENDER_SHADER_DIR)
+
+$(BUILD_DIR)/ge/shaders/%_fs.bin: $(ge/RENDER_SHADER_DIR)/%_fs.sc $(ge/RENDER_SHADER_DIR)/varying.def.sc $(ge/SHADERC)
+	@mkdir -p $(dir $@)
+	$(ge/SHADERC) -f $< -o $@ --type fragment \
+	    --platform $(ge/SHADERC_PLATFORM) -p $(ge/SHADERC_PROFILE) \
+	    --varyingdef $(ge/RENDER_SHADER_DIR)/varying.def.sc \
+	    -i $(ge/SHADERC_BGFX_INCLUDE) -i $(ge/RENDER_SHADER_DIR)
 
 # Desktop player binary (symmetry with ge/ios and ge/android).
 .PHONY: ge/player

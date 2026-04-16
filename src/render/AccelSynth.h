@@ -10,30 +10,42 @@
 // only ever sees SDL_EVENT_SENSOR_UPDATE events; whether they originate
 // from real hardware or this synthesis is invisible to the engine.
 //
-// Usage:
-//   AccelSynth synth(windowWidth, windowHeight);
-//   synth.setWindow(window);  // for SDL_SetWindowRelativeMouseMode
-//   synth.setEmit([](const SDL_Event& e){ ... });
-//
-//   for each SDL event:
-//     if (synth.handle(e)) continue;  // event was consumed
-//     ... forward event normally
+// Tilt model: mouse displacement from its initial press-point is the
+// tilt vector. Magnitude × a fixed radians-per-pixel scale gives the
+// tilt angle; the axis of rotation is perpendicular to the displacement
+// in the screen plane. One rotation about one axis — no gimballing.
+// No cap on displacement: let the user "flip the device upside down"
+// if they want, with the physics following sin(angle) naturally.
 #pragma once
 
 #include <SDL3/SDL.h>
 
-#include <algorithm>
+#include <cmath>
 #include <functional>
 
 namespace ge {
 
+// Radians of tilt per pixel of mouse displacement. Chosen so that ~300 px
+// of displacement corresponds to ~45° tilt — a comfortable reach on a
+// laptop trackpad / mouse.
+constexpr float kTiltRadPerPixel = 0.0026f;  // ≈ π/4 / 300
+constexpr float kG = 9.81f;
+
+struct Tilt {
+    float x = 0.f;  // mouse displacement from press-point, pixels
+    float y = 0.f;
+};
+
 class AccelSynth {
 public:
-    AccelSynth(int windowWidth, int windowHeight)
-        : tiltMax_(float(std::min(windowWidth, windowHeight)) * 0.3f) {}
+    AccelSynth() = default;
 
     void setWindow(SDL_Window* w) { window_ = w; }
     void setEmit(std::function<void(const SDL_Event&)> fn) { emit_ = std::move(fn); }
+
+    // Current tilt vector (raw mouse displacement from the ⌥-press
+    // point, in pixels). Zero when ⌥ isn't held.
+    Tilt current() const { return tilt_; }
 
     // Returns true if the event was consumed by the synthesis (caller
     // should NOT forward it). Returns false if the event passes through.
@@ -47,37 +59,52 @@ public:
                 if (window_) {
                     SDL_SetWindowRelativeMouseMode(window_, altDown_);
                 }
-                tiltX_ = tiltY_ = 0.f;
-                if (!altDown_ && emit_) {
-                    SDL_Event se{};
-                    se.type = SDL_EVENT_SENSOR_UPDATE;
-                    se.sensor.data[0] = 0.f;
-                    se.sensor.data[1] = 0.f;
-                    emit_(se);
+                if (altDown_) {
+                    // Fresh capture — start from zero, no easing.
+                    tilt_ = {};
+                    easing_ = false;
+                } else {
+                    // Released — start easing tilt back to zero.
+                    easing_ = true;
+                    lastTickNs_ = 0;  // first update() initialises clock
                 }
             }
             return true;  // consume ⌥
         }
 
         if (e.type == SDL_EVENT_MOUSE_MOTION && altDown_) {
-            tiltX_ += e.motion.xrel;
-            tiltY_ += e.motion.yrel;
-            if (tiltX_ >  tiltMax_) tiltX_ =  tiltMax_;
-            if (tiltX_ < -tiltMax_) tiltX_ = -tiltMax_;
-            if (tiltY_ >  tiltMax_) tiltY_ =  tiltMax_;
-            if (tiltY_ < -tiltMax_) tiltY_ = -tiltMax_;
-            if (emit_) {
-                constexpr float kG = 9.81f;
-                SDL_Event se{};
-                se.type = SDL_EVENT_SENSOR_UPDATE;
-                se.sensor.data[0] =  (tiltX_ / tiltMax_) * kG;
-                se.sensor.data[1] = -(tiltY_ / tiltMax_) * kG;  // screen-Y is down
-                emit_(se);
-            }
+            tilt_.x += e.motion.xrel;
+            tilt_.y += e.motion.yrel;
+            emitSensorFromTilt();
             return true;  // consume motion-while-tilting
         }
 
         return false;
+    }
+
+    // Called once per frame by the host. Drives tilt easing back to
+    // zero after ⌥ is released. No-op while ⌥ is held or after the
+    // tilt has fully decayed.
+    void update() {
+        if (!easing_) return;
+        const uint64_t now = SDL_GetPerformanceCounter();
+        if (lastTickNs_ == 0) {
+            lastTickNs_ = now;
+            return;
+        }
+        const uint64_t freq = SDL_GetPerformanceFrequency();
+        const float dt = float(now - lastTickNs_) / float(freq);
+        lastTickNs_ = now;
+
+        constexpr float kTau = 0.08f;  // 80 ms — quick ease
+        const float decay = std::exp(-dt / kTau);
+        tilt_.x *= decay;
+        tilt_.y *= decay;
+        if (std::sqrt(tilt_.x * tilt_.x + tilt_.y * tilt_.y) < 0.5f) {
+            tilt_ = {};
+            easing_ = false;
+        }
+        emitSensorFromTilt();
     }
 
     // True if a real accelerometer is available (synthesis should NOT
@@ -91,9 +118,29 @@ public:
     }
 
 private:
-    float tiltMax_;
-    float tiltX_ = 0.f, tiltY_ = 0.f;
+    void emitSensorFromTilt() {
+        if (!emit_) return;
+        // Map displacement → gravity-along-screen-plane, i.e. g·sin(angle)
+        // in the direction of the displacement. Bounded naturally by ±g.
+        float mag = std::sqrt(tilt_.x * tilt_.x + tilt_.y * tilt_.y);
+        float gx = 0.f, gy = 0.f;
+        if (mag > 0.f) {
+            float angle = mag * kTiltRadPerPixel;
+            float s = std::sin(angle);
+            gx =  kG * s * tilt_.x / mag;
+            gy = -kG * s * tilt_.y / mag;
+        }
+        SDL_Event se{};
+        se.type = SDL_EVENT_SENSOR_UPDATE;
+        se.sensor.data[0] = gx;
+        se.sensor.data[1] = gy;
+        emit_(se);
+    }
+
+    Tilt tilt_;
     bool altDown_ = false;
+    bool easing_  = false;
+    uint64_t lastTickNs_ = 0;
     SDL_Window* window_ = nullptr;
     std::function<void(const SDL_Event&)> emit_;
 };
