@@ -210,7 +210,7 @@ targets:
     discovered: 2026-04-16
   T15:
     name: Player binary restructured around named PlayerWireBridge + PlayerRender classes
-    status: identified
+    status: achieved
     value: 3.0
     cost: 5.0
     acceptance:
@@ -229,6 +229,7 @@ targets:
       Lets us delete the duplicated ⌥-mouse synthesis code (use AccelSynth from src/render/) and gives the player binary the same architectural clarity as the engine.
     origin: 'deferred from PR #11 (subsystem split)'
     discovered: 2026-04-16
+    achieved: 2026-04-17
   T16:
     name: TiltBuggy vehicle dynamics feel right
     status: identified
@@ -242,6 +243,31 @@ targets:
     context: Current arcade implementation in Scene::step uses chassis as the only body, killing lateral velocity (kGrip = 0.85) and applying torque proportional to angle between heading and velocity (5.0 * deltaAngle * speed). It works but feels slightly wonky. Iterate on the constants, or escalate to real vehicle dynamics with wheel bodies if the simple model can't feel right.
     origin: discovered while testing tiltbuggy stage 2
     discovered: 2026-04-16
+  T17:
+    name: Player binary applies viewport tilt composite symmetric to DirectRenderHost
+    status: achieved
+    value: 3.0
+    cost: 5.0
+    acceptance:
+    - Player binary's display of decoded H.264 frames tilts in 3D based on its local sensor input (real accelerometer or AccelSynth synthesis)
+    - 'Visible effect is equivalent to DirectRenderHost''s viewport composite: rendered image as a tilted 3D quad'
+    - Server-side rendering remains untilted — tilt is purely a display-time effect on the player side
+    - Works on desktop player, iOS simulator player, iOS device player, Android emulator player, Android device player
+    context: |-
+      DirectRenderHost (distribution mode) already applies viewport tilt via an offscreen FB + composite quad pass. In brokered mode the render subsystem is the player binary, which currently decodes H.264 to an SDL_Texture and blits flat via SDL_Renderer.
+
+      The architectural principle is symmetric: any render subsystem in any modality should apply the same visual tilt when sensor input is non-zero. Without this, brokered-mode playback misses the "device tilting in hands" feedback that makes ⌥-mouse synthesis intuitive — and physical devices streaming a game from a laptop lose a feature they'd have if the game were bundled (distribution mode).
+
+      Implementation options:
+      1. SDL_RenderGeometryRaw with CPU-computed tilted corners. Simple, works inside existing player_core.cpp, but limited perspective correctness (linear UV interpolation). Tessellate the quad into a grid to approximate.
+      2. Replace SDL_Renderer path with bgfx (like DirectRenderHost). More code change but gives identical composite pipeline.
+
+      Naturally pairs with 🎯T15 (player restructure). Doing them together lets the tilt logic live in a clean place (PlayerWireBridge + a local render module that mirrors DirectRenderHost).
+    depends_on:
+    - T15
+    origin: 'gap discovered during mobile validation of PR #11 architecture'
+    discovered: 2026-04-16
+    achieved: 2026-04-17
   T2:
     name: Smoke test validates network connectivity between laptop and device
     status: identified

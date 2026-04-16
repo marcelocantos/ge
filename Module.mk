@@ -79,7 +79,9 @@ ge/SRC = \
 	$(ge)/src/Signal.cpp \
 	$(ge)/src/SessionHost.mm \
 	$(ge)/src/render/DirectRenderHost.mm \
+	$(ge)/src/render/PlayerRender.cpp \
 	$(ge)/src/bridge/ServerWireBridge.mm \
+	$(ge)/src/bridge/PlayerWireBridge.cpp \
 	$(ge)/src/bridge/WebSocketClient.cpp \
 	$(ge)/src/bridge/VideoEncoder_apple.mm \
 	$(ge)/src/bridge/VideoDecoder_apple.mm
