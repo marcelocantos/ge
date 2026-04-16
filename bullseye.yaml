@@ -208,6 +208,27 @@ targets:
     - T12
     origin: user suggestion during tiltbuggy architecture validation
     discovered: 2026-04-16
+  T15:
+    name: Player binary restructured around named PlayerWireBridge + PlayerRender classes
+    status: identified
+    value: 3.0
+    cost: 5.0
+    acceptance:
+    - tools/player_core.cpp is gone (or reduced to a thin shim)
+    - src/bridge/PlayerWireBridge.{h,cpp} exists, exposing typed wire operations symmetric to ServerWireBridge
+    - Player binary uses AccelSynth from src/render/ rather than duplicating the synthesis code
+    - Player + tiltbuggy --brokered round-trip still works
+    context: |-
+      tools/player_core.cpp is currently a single 605-line `playerCore()` function that mixes wire transport (WebSocket connection, SessionConfig RX, DeviceInfo TX, SDL event TX, H.264 RX) with local rendering (SDL window, SDL_Renderer, SDL_Texture, decoder, AVCC parser, present loop) and ⌥-mouse synthesis (now duplicated against the AccelSynth helper in the engine binary).
+
+      Refactor into:
+      - src/bridge/PlayerWireBridge.{h,cpp} — owns WsConnection, exposes typed helpers (sendSdlEvent, sendDeviceInfo, waitForSessionConfig, onVideoFrame, pumpWire). Symmetric to ServerWireBridge.
+      - tools/PlayerRender.{h,cpp} or similar — owns SDL window + SDL_Renderer + SDL_Texture + decoder + AccelSynth + main loop. Consumes a PlayerWireBridge.
+      - tools/player.cpp — main(): build PlayerRender + PlayerWireBridge, wire them together, run.
+
+      Lets us delete the duplicated ⌥-mouse synthesis code (use AccelSynth from src/render/) and gives the player binary the same architectural clarity as the engine.
+    origin: 'deferred from PR #11 (subsystem split)'
+    discovered: 2026-04-16
   T2:
     name: Smoke test validates network connectivity between laptop and device
     status: identified
