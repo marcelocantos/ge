@@ -15,7 +15,7 @@ all: bin/tiltbuggy
 
 -include $(ge)/Module.mk
 
-CXXFLAGS := -std=c++20 -O2 -g $(ge/INCLUDES) $(ge/BGFX_ALL_INCLUDES) -Isrc
+CXXFLAGS := -std=c++20 -O2 -g $(ge/INCLUDES) $(ge/BGFX_ALL_INCLUDES) -Isrc -DBX_CONFIG_DEBUG=0
 SDL_CFLAGS := -I$(ge)/vendor/sdl3/include
 FRAMEWORKS := \
     -framework Metal -framework MetalKit -framework QuartzCore \
@@ -27,14 +27,18 @@ FRAMEWORKS := \
     -framework VideoToolbox -framework CoreMotion
 
 APP := bin/tiltbuggy
-SRC := src/main.cpp
+SRC := src/main.cpp src/Scene.cpp src/Renderer.cpp
 APP_OBJ := $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(SRC))
+
+SHADERS := $(BUILD_DIR)/shaders/simple_vs.bin $(BUILD_DIR)/shaders/simple_fs.bin
 
 COMPILE_DB_DEPS += $(SRC) Makefile
 
-.PHONY: run
+.PHONY: run shaders
 
-$(APP): $(APP_OBJ) $(ge/LIB) $(ge/BGFX_LIBS) $(ge/BOX2D_OBJ)
+shaders: $(SHADERS)
+
+$(APP): $(APP_OBJ) $(SHADERS) $(ge/LIB) $(ge/BGFX_LIBS) $(ge/BOX2D_OBJ)
 	@mkdir -p $(@D)
 	$(CXX) $(APP_OBJ) $(ge/LIB) $(ge/BGFX_LIBS) $(ge/BOX2D_OBJ) $(ge/SDL_LIBS) $(FRAMEWORKS) -o $@
 

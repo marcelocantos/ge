@@ -1,54 +1,87 @@
 // Copyright 2026 Marcelo Cantos
 // SPDX-License-Identifier: Apache-2.0
 //
-// TiltBuggy — a minimal ge sample that draws a buggy driven by device tilt.
-// Stage 1: ge::run() boilerplate + bgfx clear. No physics yet.
+// TiltBuggy — a ge sample driving a 2D buggy with tilt gravity.
+// Stage 2: Box2D physics + bgfx rendering. On a real device the
+// accelerometer drives gravity. On desktop/simulator/emulator the
+// player synthesises accelerometer events from ⌥WASD when the game
+// requests the sensor — no special key handling needed here.
 
+#include "Renderer.h"
+#include "Scene.h"
+
+#include <ge/Protocol.h>
 #include <ge/SessionHost.h>
-#include <bgfx/bgfx.h>
 #include <SDL3/SDL.h>
 #include <spdlog/spdlog.h>
 
+#include <cstring>
+#include <memory>
+
 namespace {
 
+constexpr float kWorldHalfExtent = 10.0f;
+
 struct State {
-    float t = 0;
+    std::unique_ptr<tiltbuggy::Scene> scene;
+    std::unique_ptr<tiltbuggy::Renderer> renderer;
+    b2Vec2 gravity{0, 0};
+    bool rendererInited = false;
 };
 
 } // namespace
 
-int main() {
+int main(int argc, char* argv[]) {
+    bool brokered = false;  // default: direct/distribution modality
+    for (int i = 1; i < argc; i++) {
+        if (std::strcmp(argv[i], "--brokered") == 0) brokered = true;
+    }
+
     State state;
 
     ge::run([&](ge::Context ctx) -> ge::RunConfig {
-        const bgfx::ViewId kMainView = 0;
+        state.scene = std::make_unique<tiltbuggy::Scene>(kWorldHalfExtent);
+        state.renderer = std::make_unique<tiltbuggy::Renderer>();
+        state.rendererInited = false;
 
         return {
             .onUpdate = [&](float dt) {
-                state.t += dt;
+                state.scene->step(dt, state.gravity);
+                static int frame = 0;
+                if (++frame % 60 == 0) {
+                    auto p = state.scene->buggyPose();
+                    SPDLOG_INFO("tick: dt={:.4f} g=[{:.2f},{:.2f}] pose=[{:.2f},{:.2f},{:.2f}]",
+                                dt, state.gravity.x, state.gravity.y, p.x, p.y, p.angle);
+                }
             },
-            .onRender = [&, ctx](int w, int h) {
-                const float cycle = 0.5f + 0.5f * SDL_sinf(state.t);
-                const uint8_t grey = static_cast<uint8_t>(30 + cycle * 40);
-                const uint32_t rgba =
-                    (uint32_t(grey) << 24) | (uint32_t(grey) << 16) |
-                    (uint32_t(grey) <<  8) | 0xffu;
-                bgfx::setViewClear(kMainView, BGFX_CLEAR_COLOR | BGFX_CLEAR_DEPTH, rgba, 1.0f, 0);
-                bgfx::setViewRect(kMainView, 0, 0, uint16_t(w), uint16_t(h));
-                bgfx::touch(kMainView);
+            .onRender = [&](int w, int h) {
+                if (!state.rendererInited) {
+                    state.renderer->init("build/shaders");
+                    state.rendererInited = true;
+                }
+                state.renderer->drawFrame(*state.scene, w, h);
             },
             .onEvent = [&](const SDL_Event& e) {
-                if (e.type == SDL_EVENT_KEY_DOWN) {
-                    SPDLOG_INFO("key: {}", int(e.key.key));
+                SPDLOG_INFO("onEvent type=0x{:x}", e.type);
+                if (e.type == SDL_EVENT_SENSOR_UPDATE) {
+                    state.gravity.x = e.sensor.data[0];
+                    state.gravity.y = e.sensor.data[1];
+                    SPDLOG_INFO("  → gravity=[{:.2f},{:.2f}]",
+                                state.gravity.x, state.gravity.y);
                 }
             },
             .onShutdown = [&] {
-                SPDLOG_INFO("TiltBuggy shutdown, final t={:.2f}", state.t);
+                state.scene.reset();
+                state.renderer.reset();
+                SPDLOG_INFO("TiltBuggy shutdown");
             },
         };
     }, {
+        .width = brokered ? 0 : 1024,
+        .height = brokered ? 0 : 768,
+        .headless = brokered,
         .appName = "tiltbuggy",
-        // Tilt is the primary input — keep the screen awake.
+        .sensors = wire::kSensorAccelerometer,
         .disableScreenSaver = true,
     });
 }
