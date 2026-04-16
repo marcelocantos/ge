@@ -94,6 +94,9 @@ ge/LIB = $(BUILD_DIR)/libge.a
 ge/PLAYER_SRC = $(ge)/tools/player.cpp $(ge)/tools/player_core.cpp $(ge)/tools/player_orientation_stub.cpp
 ge/PLAYER = bin/player
 
+# Small helper CLIs, built on demand.
+ge/IMGDIFF = bin/imgdiff
+
 # bgfx shader compiler (vendored binaries for common hosts).
 # Parent lists desired `.bin` outputs (e.g. `$(BUILD_DIR)/shaders/foo_vs.bin`);
 # Module.mk's pattern rules compile them from matching `.sc` sources.
@@ -294,6 +297,14 @@ ge/player: $(ge/PLAYER)
 $(ge/PLAYER): $(ge/PLAYER_SRC) $(ge/LIB) $(ge/BGFX_LIBS)
 	@mkdir -p $(@D)
 	$(CXX) -std=c++20 -DGE_DESKTOP $(ge/INCLUDES) $(ge/BGFX_ALL_INCLUDES) $(ge/PLAYER_SRC) $(ge/LIB) $(ge/BGFX_LIBS) $(ge/SDL_LIBS) $(FRAMEWORKS) -o $@
+
+# imgdiff helper — used by matrix-test.sh for reference-image checks.
+.PHONY: ge/imgdiff
+ge/imgdiff: $(ge/IMGDIFF)
+
+$(ge/IMGDIFF): $(ge)/tools/imgdiff.cpp
+	@mkdir -p $(@D)
+	$(CXX) -std=c++20 -O2 -I$(ge)/include -I$(ge)/vendor/include $< -o $@
 
 # iOS Xcode project generation
 .PHONY: ge/ios
