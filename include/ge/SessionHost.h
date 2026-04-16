@@ -76,6 +76,15 @@ struct SessionHostConfig {
     // creating its window. Game-wide, not per-session.
     uint8_t sensors = 0;      // Bitmask: wire::kSensorAccelerometer
     uint8_t orientation = 0;  // wire::kOrientation* value, 0 = no lock
+
+    // Initial screen-saver policy. Default: false (let the device sleep
+    // normally, per OS convention). Set true for games where the primary
+    // input is the accelerometer — otherwise the device may sleep
+    // mid-play because the screen isn't being touched. Games that need
+    // per-state control (e.g. saver enabled in menus, disabled during
+    // play) should leave this false and call SDL_DisableScreenSaver /
+    // SDL_EnableScreenSaver at the appropriate moments.
+    bool disableScreenSaver = false;
 };
 
 // Factory receives platform context and returns render loop callbacks.

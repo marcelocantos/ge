@@ -139,6 +139,11 @@ static std::string jsonStringValue(const std::string& json, const std::string& k
 void run(Factory factory, const SessionHostConfig& config) {
     const char* name = (config.appName && *config.appName) ? config.appName : "server";
 
+    // Initial screen-saver policy — must be set before SDL_Init
+    // (BgfxContext does that). Games can toggle at runtime.
+    SDL_SetHint(SDL_HINT_VIDEO_ALLOW_SCREENSAVER,
+                config.disableScreenSaver ? "0" : "1");
+
     // Connect to ged sideband (control channel)
     auto sideband = connectWebSocket("localhost", 42069,
         std::string("/ws/server?name=") + name, 2000);
