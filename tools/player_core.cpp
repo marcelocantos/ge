@@ -207,6 +207,13 @@ int playerCore(const std::string& host, int port, const std::string& serverName)
         return 1;
     }
 
+    // Present a black frame immediately so the CAMetalLayer drawable is
+    // initialised before any orientation animation begins. Without this,
+    // the layer's default (pink) background flashes briefly on iOS.
+    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+    SDL_RenderClear(renderer);
+    SDL_RenderPresent(renderer);
+
     // Texture for decoded video frames (created on first decoded frame)
     SDL_Texture* videoTex = nullptr;
     int texW = 0, texH = 0;
