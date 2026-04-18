@@ -100,7 +100,10 @@ ge/FRAMEWORKS = \
     -framework UniformTypeIdentifiers -framework CoreGraphics \
     -framework VideoToolbox -framework CoreMotion
 
-ge/SRC = \
+# Core engine sources — always needed. Split into "direct-only" (runs on
+# any platform / modality) and "brokered" (only the server-side of the
+# ged-paired modality) so mobile distribution builds can omit the latter.
+ge/SRC_DIRECT = \
 	$(ge)/src/Context.cpp \
 	$(ge)/src/Resource.cpp \
 	$(ge)/src/FileIO.cpp \
@@ -108,13 +111,18 @@ ge/SRC = \
 	$(ge)/src/BgfxContext.mm \
 	$(ge)/src/Signal.cpp \
 	$(ge)/src/SessionHost.mm \
-	$(ge)/src/render/DirectRenderHost.mm \
+	$(ge)/src/render/DirectRenderHost.mm
+
+ge/SRC_BROKERED = \
+	$(ge)/src/bridge/SessionHost_brokered.mm \
 	$(ge)/src/render/PlayerRender.cpp \
 	$(ge)/src/bridge/ServerWireBridge.mm \
 	$(ge)/src/bridge/PlayerWireBridge.cpp \
 	$(ge)/src/bridge/WebSocketClient.cpp \
 	$(ge)/src/bridge/VideoEncoder_apple.mm \
 	$(ge)/src/bridge/VideoDecoder_apple.mm
+
+ge/SRC = $(ge/SRC_DIRECT) $(ge/SRC_BROKERED)
 
 ge/OBJ = $(patsubst $(ge)/src/%.cpp,$(BUILD_DIR)/ge/src/%.o,$(filter %.cpp,$(ge/SRC))) \
          $(patsubst $(ge)/src/%.mm,$(BUILD_DIR)/ge/src/%.o,$(filter %.mm,$(ge/SRC)))
@@ -151,6 +159,13 @@ ge/RENDER_SHADER_DIR = $(ge)/src/render/shaders
 ge/RENDER_SHADERS = \
 	$(BUILD_DIR)/ge/shaders/ge_compose_vs.bin \
 	$(BUILD_DIR)/ge/shaders/ge_compose_fs.bin
+
+# SPIR-V variants of the app's and ge's shaders, for Vulkan (Android).
+# Consumed by the Android Gradle build's syncAssets task; deposited into
+# the APK under assets/build/shaders/ at the same paths so the runtime
+# lookup via ge::resource("build/shaders/*.bin") keeps working.
+ge/APP_SHADERS_SPIRV    = $(patsubst $(BUILD_DIR)/$(ge/SHADER_DIR)/%.bin,$(BUILD_DIR)/$(ge/SHADER_DIR)-spirv/%.bin,$(APP_SHADERS))
+ge/RENDER_SHADERS_SPIRV = $(patsubst $(BUILD_DIR)/ge/shaders/%.bin,$(BUILD_DIR)/ge/shaders-spirv/%.bin,$(ge/RENDER_SHADERS))
 
 # Texture encoder (used by precompute tools, NOT part of libge.a)
 ge/TEXTURE_ENCODER_SRC = $(ge)/src/TextureEncoder.cpp
@@ -221,7 +236,7 @@ APP_OBJ     ?= $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(APP_SRC))
 # Display name used for iOS / Android bundles and Xcode targets/schemes.
 # Defaults to APP_NAME; set to a Pascal-cased variant if you want a pretty
 # string on the home screen while keeping a lowercase binary name.
-APP_DISPLAY ?= $(APP_NAME)
+APP_DISPLAY_NAME ?= $(APP_NAME)
 
 # Extra static libs/objects the app needs beyond the ge engine (e.g. ship a
 # specialised third-party library). Defaults to Box2D since many ge apps use
@@ -373,6 +388,38 @@ $(BUILD_DIR)/ge/shaders/%_fs.bin: $(ge/RENDER_SHADER_DIR)/%_fs.sc $(ge/RENDER_SH
 	    --varyingdef $(ge/RENDER_SHADER_DIR)/varying.def.sc \
 	    -i $(ge/SHADERC_BGFX_INCLUDE) -i $(ge/RENDER_SHADER_DIR)
 
+# SPIR-V variants — for the Vulkan backend (Android). Output lives in
+# $(BUILD_DIR)/shaders-spirv/ and $(BUILD_DIR)/ge/shaders-spirv/. The
+# Android Gradle syncAssets task flattens these into assets/build/shaders/
+# so runtime lookups continue to work via ge::resource("build/shaders/...").
+$(BUILD_DIR)/$(ge/SHADER_DIR)-spirv/%_vs.bin: $(ge/SHADER_DIR)/%_vs.sc $(ge/SHADERC_VARYINGDEF) $(ge/SHADERC)
+	@mkdir -p $(dir $@)
+	$(ge/SHADERC) -f $< -o $@ --type vertex \
+	    --platform android -p spirv \
+	    --varyingdef $(ge/SHADERC_VARYINGDEF) \
+	    -i $(ge/SHADERC_BGFX_INCLUDE) -i $(ge/SHADER_DIR)
+
+$(BUILD_DIR)/$(ge/SHADER_DIR)-spirv/%_fs.bin: $(ge/SHADER_DIR)/%_fs.sc $(ge/SHADERC_VARYINGDEF) $(ge/SHADERC)
+	@mkdir -p $(dir $@)
+	$(ge/SHADERC) -f $< -o $@ --type fragment \
+	    --platform android -p spirv \
+	    --varyingdef $(ge/SHADERC_VARYINGDEF) \
+	    -i $(ge/SHADERC_BGFX_INCLUDE) -i $(ge/SHADER_DIR)
+
+$(BUILD_DIR)/ge/shaders-spirv/%_vs.bin: $(ge/RENDER_SHADER_DIR)/%_vs.sc $(ge/RENDER_SHADER_DIR)/varying.def.sc $(ge/SHADERC)
+	@mkdir -p $(dir $@)
+	$(ge/SHADERC) -f $< -o $@ --type vertex \
+	    --platform android -p spirv \
+	    --varyingdef $(ge/RENDER_SHADER_DIR)/varying.def.sc \
+	    -i $(ge/SHADERC_BGFX_INCLUDE) -i $(ge/RENDER_SHADER_DIR)
+
+$(BUILD_DIR)/ge/shaders-spirv/%_fs.bin: $(ge/RENDER_SHADER_DIR)/%_fs.sc $(ge/RENDER_SHADER_DIR)/varying.def.sc $(ge/SHADERC)
+	@mkdir -p $(dir $@)
+	$(ge/SHADERC) -f $< -o $@ --type fragment \
+	    --platform android -p spirv \
+	    --varyingdef $(ge/RENDER_SHADER_DIR)/varying.def.sc \
+	    -i $(ge/SHADERC_BGFX_INCLUDE) -i $(ge/RENDER_SHADER_DIR)
+
 # Desktop player binary (symmetry with ge/ios and ge/android).
 .PHONY: ge/player
 ge/player: $(ge/PLAYER)
@@ -410,28 +457,29 @@ $(ge/IMGDIFF): $(ge)/tools/imgdiff.cpp
 # Generate the Xcode project (if not already generated) and build the .app
 # into ios/build/xcode/Debug-iphonesimulator/ (or the device equivalent).
 # Expects ios/CMakeLists.txt to exist — run `make ge/ios-init` first.
+#
+# We depend on $(APP_SHADERS) and $(ge/RENDER_SHADERS) so they exist on disk
+# when CMake's file(GLOB ...) for the bundle Resources runs.
 .PHONY: ge/ios
-ge/ios:
+ge/ios: $(APP_SHADERS) $(ge/RENDER_SHADERS)
 	@if [ ! -d ios ]; then \
 	    echo "ios/ not found — run 'make ge/ios-init APP_ID=... APP_NAME=...' first"; \
 	    exit 1; \
 	fi
-	@if [ ! -d ios/build/xcode ]; then \
-	    cd ios && cmake -G Xcode -B build/xcode \
-	        -DCMAKE_SYSTEM_NAME=iOS \
-	        -DCMAKE_OSX_ARCHITECTURES=arm64 \
-	        -DCMAKE_OSX_SYSROOT=iphonesimulator \
-	        -DCMAKE_OSX_DEPLOYMENT_TARGET=16.0; \
-	fi
+	cd ios && cmake -G Xcode -B build/xcode \
+	    -DCMAKE_SYSTEM_NAME=iOS \
+	    -DCMAKE_OSX_ARCHITECTURES=arm64 \
+	    -DCMAKE_OSX_SYSROOT=iphonesimulator \
+	    -DCMAKE_OSX_DEPLOYMENT_TARGET=16.0
 	cd ios && xcodebuild \
-	    -project build/xcode/$(APP_DISPLAY).xcodeproj -scheme $(APP_DISPLAY) \
+	    -project build/xcode/$(APP_DISPLAY_NAME).xcodeproj -scheme $(APP_DISPLAY_NAME) \
 	    -configuration Debug -destination "generic/platform=iOS Simulator" \
 	    build
 
 # ── Consuming app's Android build ──────────────────────────────────
 
 .PHONY: ge/android
-ge/android:
+ge/android: $(ge/APP_SHADERS_SPIRV) $(ge/RENDER_SHADERS_SPIRV)
 	@if [ ! -d android ]; then \
 	    echo "android/ not found — run 'make ge/android-init APP_ID=... APP_NAME=...' first"; \
 	    exit 1; \
@@ -487,19 +535,19 @@ ge/player-android-release:
 # ── Mobile project scaffolding (consuming app) ─────────────────────
 
 # Parent Makefile sets APP_ID (bundle id / package) and APP_NAME before
-# calling. APP_DISPLAY defaults to APP_NAME; override for a prettier
+# calling. APP_DISPLAY_NAME defaults to APP_NAME; override for a prettier
 # on-device name while keeping APP_NAME as the lowercase binary name.
 .PHONY: ge/android-init
 ge/android-init:
 	@if [ -z "$(APP_ID)" ] || [ -z "$(APP_NAME)" ]; then \
 		echo "Error: set APP_ID and APP_NAME"; exit 1; fi
-	$(ge)/tools/init-android.sh "$(APP_ID)" "$(APP_DISPLAY)"
+	$(ge)/tools/init-android.sh "$(APP_ID)" "$(APP_DISPLAY_NAME)"
 
 .PHONY: ge/ios-init
 ge/ios-init:
 	@if [ -z "$(APP_ID)" ] || [ -z "$(APP_NAME)" ]; then \
 		echo "Error: set APP_ID and APP_NAME"; exit 1; fi
-	$(ge)/tools/init-ios.sh "$(APP_ID)" "$(APP_DISPLAY)" "$(IOS_DEVELOPMENT_TEAM)"
+	$(ge)/tools/init-ios.sh "$(APP_ID)" "$(APP_DISPLAY_NAME)" "$(IOS_DEVELOPMENT_TEAM)"
 
 # ────────────────────────────────────────────────
 # Generic targets (use CLEAN, COMPILE_DB_DEPS)

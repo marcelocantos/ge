@@ -4,12 +4,15 @@
 #include "Renderer.h"
 #include "Scene.h"
 
+#include <ge/FileIO.h>
+
 #include <bgfx/bgfx.h>
 #include <bx/math.h>
 
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <iterator>
 #include <string>
 #include <vector>
 
@@ -31,19 +34,21 @@ bgfx::VertexLayout makeLayout() {
     return layout;
 }
 
-// Read a compiled shader .bin file into bgfx memory.
+// Read a compiled shader .bin file into bgfx memory. Uses ge::openFile so
+// the lookup goes through SDL_IOStream, which transparently handles APK
+// asset reads on Android, iOS bundle resources, and plain filesystem on
+// desktop.
 bgfx::ShaderHandle loadShader(const char* shaderDir, const char* name) {
     char path[512];
     std::snprintf(path, sizeof(path), "%s/%s.bin", shaderDir, name);
-    FILE* f = std::fopen(path, "rb");
-    if (!f) return BGFX_INVALID_HANDLE;
-    std::fseek(f, 0, SEEK_END);
-    long sz = std::ftell(f);
-    std::rewind(f);
-    const bgfx::Memory* mem = bgfx::alloc(static_cast<uint32_t>(sz + 1));
-    std::fread(mem->data, 1, static_cast<size_t>(sz), f);
-    mem->data[sz] = '\0';
-    std::fclose(f);
+    auto stream = ge::openFile(path, /*binary=*/true);
+    if (!stream || !*stream) return BGFX_INVALID_HANDLE;
+    std::vector<uint8_t> data((std::istreambuf_iterator<char>(*stream)),
+                              std::istreambuf_iterator<char>());
+    if (data.empty()) return BGFX_INVALID_HANDLE;
+    const bgfx::Memory* mem = bgfx::alloc(static_cast<uint32_t>(data.size() + 1));
+    std::memcpy(mem->data, data.data(), data.size());
+    mem->data[data.size()] = '\0';
     return bgfx::createShader(mem);
 }
 

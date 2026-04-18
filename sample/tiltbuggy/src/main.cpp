@@ -11,8 +11,10 @@
 #include "Scene.h"
 
 #include <ge/Protocol.h>
+#include <ge/Resource.h>
 #include <ge/SessionHost.h>
 #include <SDL3/SDL.h>
+#include <SDL3/SDL_main.h>  // required on iOS/Android; no-op on desktop
 #include <spdlog/spdlog.h>
 
 #include <cstring>
@@ -56,7 +58,7 @@ int main(int argc, char* argv[]) {
             },
             .onRender = [&](int w, int h) {
                 if (!state.rendererInited) {
-                    state.renderer->init("build/shaders");
+                    state.renderer->init(ge::resource("build/shaders").c_str());
                     state.rendererInited = true;
                 }
                 state.renderer->drawFrame(*state.scene, w, h);

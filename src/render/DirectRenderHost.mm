@@ -4,8 +4,13 @@
 #include "DirectRenderHost.h"
 #include "AccelSynth.h"
 
+#include <ge/FileIO.h>
 #include <ge/Protocol.h>
+#include <ge/Resource.h>
 #include <ge/Signal.h>
+
+#include <iterator>
+#include <vector>
 
 #include <bgfx/bgfx.h>
 #include <bx/math.h>
@@ -41,18 +46,20 @@ bgfx::VertexLayout composeLayout() {
 }
 
 bgfx::ShaderHandle loadShader(const char* path) {
-    std::FILE* f = std::fopen(path, "rb");
-    if (!f) {
+    auto stream = ge::openFile(path, /*binary=*/true);
+    if (!stream || !*stream) {
         SPDLOG_ERROR("DirectRenderHost: can't open shader {}", path);
         return BGFX_INVALID_HANDLE;
     }
-    std::fseek(f, 0, SEEK_END);
-    long sz = std::ftell(f);
-    std::rewind(f);
-    const bgfx::Memory* mem = bgfx::alloc(static_cast<uint32_t>(sz + 1));
-    std::fread(mem->data, 1, static_cast<size_t>(sz), f);
-    mem->data[sz] = '\0';
-    std::fclose(f);
+    std::vector<uint8_t> data((std::istreambuf_iterator<char>(*stream)),
+                              std::istreambuf_iterator<char>());
+    if (data.empty()) {
+        SPDLOG_ERROR("DirectRenderHost: empty shader {}", path);
+        return BGFX_INVALID_HANDLE;
+    }
+    const bgfx::Memory* mem = bgfx::alloc(static_cast<uint32_t>(data.size() + 1));
+    std::memcpy(mem->data, data.data(), data.size());
+    mem->data[data.size()] = '\0';
     return bgfx::createShader(mem);
 }
 
@@ -90,8 +97,8 @@ struct DirectRenderHost::Impl {
         bgfx::TextureHandle atts[] = { colorTex, depthTex };
         offFB = bgfx::createFrameBuffer(2, atts, /*destroyTextures=*/false);
 
-        bgfx::ShaderHandle vs = loadShader("build/ge/shaders/ge_compose_vs.bin");
-        bgfx::ShaderHandle fs = loadShader("build/ge/shaders/ge_compose_fs.bin");
+        bgfx::ShaderHandle vs = loadShader(ge::resource("build/ge/shaders/ge_compose_vs.bin").c_str());
+        bgfx::ShaderHandle fs = loadShader(ge::resource("build/ge/shaders/ge_compose_fs.bin").c_str());
         if (!bgfx::isValid(vs) || !bgfx::isValid(fs)) {
             SPDLOG_ERROR("DirectRenderHost: compose shaders missing — viewport tilt disabled");
             return;

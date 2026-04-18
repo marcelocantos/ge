@@ -51,10 +51,17 @@ android {
     }
 }
 
-// Sync game data into APK assets before building.
+// Sync game data + compiled SPIR-V shaders into APK assets before building.
+// The host-side build compiles shaders for multiple profiles:
+//   build/shaders/           — Metal bytecode (macOS / iOS)
+//   build/shaders-spirv/     — SPIR-V (Android Vulkan)
+// We consume the SPIR-V variant but place it under assets/build/shaders/
+// so the runtime lookup via ge::resource("build/shaders/...") keeps working
+// unchanged across platforms.
 tasks.register('syncAssets', Sync) {
-    from("${rootDir}/../data")    { into('data') }
-    from("${rootDir}/../shaders") { into('shaders') }
+    from("${rootDir}/../data")                    { into('data') }
+    from("${rootDir}/../build/shaders-spirv")     { into('build/shaders') }
+    from("${rootDir}/../build/ge/shaders-spirv")  { into('build/ge/shaders') }
     into('src/main/assets')
 }
 preBuild.dependsOn('syncAssets')
