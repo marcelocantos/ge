@@ -21,6 +21,7 @@
 #   --rms <f>           Image-diff RMS threshold (default: 0.08)
 #   --app <path>        App root (default: current directory)
 #   --app-name <name>   App binary name (default: derived from --app basename)
+#   --app-id <id>       iOS bundle-id / Android package (for *-dist cells)
 #   --server-name <n>   Server name registered with ged (default: app-name)
 #   --ged-port <port>   ged port (default: 42069)
 #   --no-ged            Assume ged is already running; don't start/stop it
@@ -52,6 +53,7 @@ TIMEOUT=5
 RMS=0.08
 APP_DIR="$(pwd)"
 APP_NAME=""
+APP_ID=""
 SERVER_NAME=""
 GED_PORT=42069
 NO_GED=0
@@ -65,6 +67,7 @@ while [[ $# -gt 0 ]]; do
         --rms)           RMS="$2"; shift 2 ;;
         --app)           APP_DIR="$(cd "$2" && pwd)"; shift 2 ;;
         --app-name)      APP_NAME="$2"; shift 2 ;;
+        --app-id)        APP_ID="$2"; shift 2 ;;
         --server-name)   SERVER_NAME="$2"; shift 2 ;;
         --ged-port)      GED_PORT="$2"; shift 2 ;;
         --no-ged)        NO_GED=1; shift ;;
@@ -358,14 +361,68 @@ cell_ios_sim_dist() {
     local cell="ios-sim-dist"
     echo "── $cell ──"
 
-    # iOS distribution requires a generated Xcode project at $APP_DIR/ios/.
-    # If absent, skip.
+    if ! command -v xcrun >/dev/null 2>&1; then
+        record "$cell" SKIP "no xcrun (Xcode not installed)"
+        return
+    fi
     if [[ ! -d "$APP_DIR/ios" ]]; then
         record "$cell" SKIP "no ios/ project (run make ge/ios-init)"
         return
     fi
-    record "$cell" SKIP "distribution build not yet implemented"
-    # TODO: cmake → xcodebuild → simctl install/launch → screenshot
+    if ! ensure_ios_sim; then
+        record "$cell" SKIP "no iPad simulator available"
+        return
+    fi
+
+    # Derive expected bundle id from APP_ID var or fall back to project name.
+    local bundle_id="${APP_ID:-com.example.$APP_NAME}"
+
+    ( cd "$APP_DIR" && run make ge/ios ) \
+        || { record "$cell" FAIL "make ge/ios failed"; return; }
+
+    local app_path
+    app_path=$(find "$APP_DIR/ios/build" -name "*.app" -path "*iphonesimulator*" 2>/dev/null | head -1)
+    if [[ -z "$app_path" ]]; then
+        record "$cell" FAIL ".app not found in ios/build"
+        return
+    fi
+
+    xcrun simctl terminate booted "$bundle_id" 2>/dev/null || true
+    if ! run xcrun simctl install booted "$app_path"; then
+        record "$cell" FAIL "simctl install"
+        return
+    fi
+    if ! run xcrun simctl launch booted "$bundle_id"; then
+        record "$cell" FAIL "simctl launch"
+        return
+    fi
+
+    sleep "$TIMEOUT"
+    local shot="$TMPDIR_ROOT/$cell-untilted.png"
+    xcrun simctl io booted screenshot "$shot" >/dev/null 2>&1
+    xcrun simctl terminate booted "$bundle_id" 2>/dev/null || true
+
+    if [[ ! -s "$shot" ]]; then
+        record "$cell" FAIL "no screenshot"
+        return
+    fi
+
+    local ref="$REFS_DIR/$cell-untilted.png"
+    if [[ $CAPTURE_REFS -eq 1 ]]; then
+        cp "$shot" "$ref"
+        record "$cell" PASS "ref captured"
+        return
+    fi
+    if [[ ! -f "$ref" ]]; then
+        record "$cell" SKIP "no reference (run with --capture-refs)"
+        return
+    fi
+    local rms
+    if rms=$("$APP_DIR/bin/imgdiff" "$ref" "$shot" --threshold="$RMS" 2>/dev/null); then
+        record "$cell" PASS "rms=$rms"
+    else
+        record "$cell" FAIL "rms=$rms > $RMS"
+    fi
 }
 
 # ── Cell: ios-sim-player ─────────────────────────────────────────────
@@ -404,8 +461,8 @@ cell_ios_sim_player() {
 
     local ios_proj="$GE_ROOT/tools/ios/build/xcode"
     if [[ ! -d "$ios_proj" ]]; then
-        ( cd "$APP_DIR" && run make ge/ios ) \
-            || { record "$cell" FAIL "make ge/ios failed"; return; }
+        ( cd "$APP_DIR" && run make ge/player-ios ) \
+            || { record "$cell" FAIL "make ge/player-ios failed"; return; }
     fi
     # Build for simulator.
     if ! ( cd "$GE_ROOT/tools/ios" && run xcodebuild \
@@ -485,11 +542,62 @@ cell_ios_sim_player() {
 cell_android_emu_dist() {
     local cell="android-emu-dist"
     echo "── $cell ──"
+    if ! command -v adb >/dev/null 2>&1; then
+        record "$cell" SKIP "no adb"
+        return
+    fi
     if [[ ! -d "$APP_DIR/android" ]]; then
         record "$cell" SKIP "no android/ project (run make ge/android-init)"
         return
     fi
-    record "$cell" SKIP "distribution build not yet implemented"
+    local online
+    online=$(adb devices 2>/dev/null | awk 'NR>1 && /emulator.*device$/ {print $1}' | head -1)
+    if [[ -z "$online" ]]; then
+        record "$cell" SKIP "no running emulator"
+        return
+    fi
+    local adb_cmd="adb -s $online"
+    local pkg="${APP_ID:-com.example.$APP_NAME}"
+
+    ( cd "$APP_DIR" && run make ge/android ) \
+        || { record "$cell" FAIL "make ge/android failed"; return; }
+    local apk="$APP_DIR/android/app/build/outputs/apk/debug/app-debug.apk"
+    [[ -f "$apk" ]] || { record "$cell" FAIL "apk not found"; return; }
+
+    $adb_cmd shell am force-stop "$pkg" 2>/dev/null || true
+    run $adb_cmd install -r "$apk" \
+        || { record "$cell" FAIL "adb install"; return; }
+    # Activity name convention: package + "." + app-name-with-"Activity" suffix.
+    local activity="${pkg}/.${APP_NAME^}Activity"
+    run $adb_cmd shell am start -n "$activity" \
+        || { record "$cell" FAIL "adb am start $activity"; return; }
+
+    sleep "$TIMEOUT"
+    local shot="$TMPDIR_ROOT/$cell-untilted.png"
+    $adb_cmd exec-out screencap -p > "$shot" 2>/dev/null
+    $adb_cmd shell am force-stop "$pkg" 2>/dev/null || true
+
+    if [[ ! -s "$shot" ]]; then
+        record "$cell" FAIL "no screenshot"
+        return
+    fi
+
+    local ref="$REFS_DIR/$cell-untilted.png"
+    if [[ $CAPTURE_REFS -eq 1 ]]; then
+        cp "$shot" "$ref"
+        record "$cell" PASS "ref captured"
+        return
+    fi
+    if [[ ! -f "$ref" ]]; then
+        record "$cell" SKIP "no reference (run with --capture-refs)"
+        return
+    fi
+    local rms
+    if rms=$("$APP_DIR/bin/imgdiff" "$ref" "$shot" --threshold="$RMS" 2>/dev/null); then
+        record "$cell" PASS "rms=$rms"
+    else
+        record "$cell" FAIL "rms=$rms > $RMS"
+    fi
 }
 
 # ── Cell: android-emu-player ─────────────────────────────────────────

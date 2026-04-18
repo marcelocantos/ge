@@ -1,26 +1,87 @@
+# Android distribution build for __APP_NAME__ — standalone, no ged / player.
+#
+# Builds the game as a self-contained Android APK that renders directly via
+# bgfx/Vulkan. Uses the ge engine at __GE_REL__ (from this CMakeLists.txt).
+#
+# NOTE: full distribution support on Android depends on bgfx-on-Android
+# working end-to-end (target: a green ge/android-dist matrix cell). This
+# template is the build scaffold; expect iteration if bgfx Android surfaces
+# issues.
 cmake_minimum_required(VERSION 3.22)
-project(__CMAKE_PROJECT__ LANGUAGES CXX)
+project(__CMAKE_PROJECT__ LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 20)
 
 set(PROJECT_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../../../../..)
-set(SQ_ROOT ${PROJECT_ROOT}/sq)
+set(GE_ROOT      ${PROJECT_ROOT}/__GE_REL__)
 
-# ── sq engine (direct mode — no wire/networking) ─────
+# SDL3 — built from source as part of the Gradle build.
+add_subdirectory(
+    ${GE_ROOT}/vendor/github.com/libsdl-org/SDL
+    ${CMAKE_CURRENT_BINARY_DIR}/SDL3
+)
 
-set(SQ_DIRECT ON CACHE BOOL "" FORCE)
-add_subdirectory(${SQ_ROOT} ${CMAKE_BINARY_DIR}/sq)
+# ── Engine source selection (direct mode, headless=false) ───────────────
+# Mirrors ge/SRC in Module.mk minus bridge/ServerWireBridge (server wire
+# path) and bridge video encoders (headless mode only needs decoder, and
+# distribution mode doesn't even need that).
+set(GE_SOURCES
+    ${GE_ROOT}/src/Context.cpp
+    ${GE_ROOT}/src/Resource.cpp
+    ${GE_ROOT}/src/FileIO.cpp
+    ${GE_ROOT}/src/SdlContext_android.cpp
+    ${GE_ROOT}/src/Signal.cpp
+    ${GE_ROOT}/src/SessionHost.mm   # may need Android variant
+    ${GE_ROOT}/src/render/DirectRenderHost.mm
+    ${GE_ROOT}/vendor/src/sqlite3.c
+    ${GE_ROOT}/vendor/src/sqlpipe.cpp
+    ${GE_ROOT}/vendor/src/sqlift.cpp
+    ${GE_ROOT}/vendor/src/lz4.c
+    ${GE_ROOT}/vendor/github.com/sqliteai/liteparser/src/arena.c
+    ${GE_ROOT}/vendor/github.com/sqliteai/liteparser/src/liteparser.c
+    ${GE_ROOT}/vendor/github.com/sqliteai/liteparser/src/lp_tokenize.c
+    ${GE_ROOT}/vendor/github.com/sqliteai/liteparser/src/lp_unparse.c
+    ${GE_ROOT}/vendor/github.com/sqliteai/liteparser/src/parse.c
+)
 
-# ── Game sources ─────────────────────────────────────
+# ── App sources ─────────────────────────────────────────────────────────
+# Globs everything under src/. Adjust if you keep sources elsewhere.
+file(GLOB_RECURSE APP_SOURCES
+    ${PROJECT_ROOT}/src/*.cpp
+    ${PROJECT_ROOT}/src/*.mm
+)
 
-add_library(main SHARED
-    ${PROJECT_ROOT}/src/main.cpp
-    ${PROJECT_ROOT}/src/Application.cpp
+add_library(main SHARED ${APP_SOURCES} ${GE_SOURCES})
+
+target_compile_definitions(main PRIVATE
+    GE_ANDROID
+    ASIO_STANDALONE
+    SQLITE_ENABLE_SESSION
+    SQLITE_ENABLE_PREUPDATE_HOOK
+    SQLITE_ENABLE_DESERIALIZE
+    BX_CONFIG_DEBUG=0
+    BGFX_CONFIG_RENDERER_VULKAN=1
 )
 
 target_include_directories(main PRIVATE
     ${PROJECT_ROOT}/src
     ${PROJECT_ROOT}/include
+    ${GE_ROOT}/include
+    ${GE_ROOT}/vendor/include
+    ${GE_ROOT}/vendor/github.com/gabime/spdlog/include
+    ${GE_ROOT}/vendor/github.com/chriskohlhoff/asio/include
+    ${GE_ROOT}/vendor/github.com/libsdl-org/SDL/include
+    ${GE_ROOT}/vendor/github.com/erincatto/box2d/include
+    ${GE_ROOT}/vendor/github.com/bkaradzic/bgfx/include
+    ${GE_ROOT}/vendor/github.com/bkaradzic/bx/include
+    ${GE_ROOT}/vendor/github.com/bkaradzic/bx/include/compat/android
+    ${GE_ROOT}/vendor/github.com/bkaradzic/bimg/include
+    ${GE_ROOT}/vendor/github.com/sqliteai/liteparser/src
 )
 
-# Everything propagates from sq via INTERFACE/PUBLIC linking
-target_link_libraries(main PRIVATE sq)
+target_link_libraries(main PRIVATE
+    SDL3::SDL3
+    android
+    log
+    vulkan
+    z
+)

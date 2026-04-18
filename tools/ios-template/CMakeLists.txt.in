@@ -1,58 +1,103 @@
+# iOS distribution build for __APP_NAME__ — standalone, no ged / player.
+#
+# Builds the app as a self-contained iOS binary that renders directly via
+# bgfx/Metal. Uses the ge engine at ../ge/ (or wherever GE_ROOT points to).
+#
+# NOTE: full distribution support on iOS depends on bgfx-on-iOS working
+# end-to-end (target: a green ge/ios-dist matrix cell). This template is
+# the build scaffold; if bgfx iOS turns up issues, iterate here.
 cmake_minimum_required(VERSION 3.28)
-project(__CMAKE_PROJECT__ LANGUAGES CXX OBJCXX)
+project(__CMAKE_PROJECT__ LANGUAGES C CXX OBJC OBJCXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_XCODE_LINK_BUILD_PHASE_MODE KNOWN_LOCATION)
 
+set(GE_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/__GE_REL__)
 set(PROJECT_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/..)
-set(SQ_ROOT ${PROJECT_ROOT}/sq)
 
-# ── sq engine (direct mode — no wire/networking) ─────
-
-set(SQ_DIRECT ON CACHE BOOL "" FORCE)
-add_subdirectory(${SQ_ROOT} ${CMAKE_BINARY_DIR}/sq)
-
-# ── Sources ──────────────────────────────────────────
-
-set(GAME_SOURCES
-    ${PROJECT_ROOT}/src/main.cpp
-    ${PROJECT_ROOT}/src/Application.cpp
+# ── Engine source selection (direct mode, headless=false) ───────────────
+# Mirrors ge/SRC in Module.mk minus bridge/ServerWireBridge (server-side
+# wire path, not needed in distribution).
+set(GE_SOURCES
+    ${GE_ROOT}/src/Context.cpp
+    ${GE_ROOT}/src/Resource.cpp
+    ${GE_ROOT}/src/FileIO.cpp
+    ${GE_ROOT}/src/FontLoader_apple.mm
+    ${GE_ROOT}/src/BgfxContext.mm
+    ${GE_ROOT}/src/Signal.cpp
+    ${GE_ROOT}/src/SessionHost.mm
+    ${GE_ROOT}/src/render/DirectRenderHost.mm
+    ${GE_ROOT}/vendor/src/sqlite3.c
+    ${GE_ROOT}/vendor/src/sqlpipe.cpp
+    ${GE_ROOT}/vendor/src/sqlift.cpp
+    ${GE_ROOT}/vendor/src/lz4.c
 )
 
-add_executable(__CMAKE_PROJECT__ MACOSX_BUNDLE ${GAME_SOURCES})
+# ── App source files ────────────────────────────────────────────────────
+# Globs everything under src/. If you keep sources in other directories,
+# adjust the globs or switch to an explicit list.
+file(GLOB_RECURSE APP_SOURCES
+    ${PROJECT_ROOT}/src/*.cpp
+    ${PROJECT_ROOT}/src/*.mm
+)
 
-# main.cpp needs ObjC++ on iOS for SDL_main.h UIApplication integration
+add_executable(__CMAKE_PROJECT__ MACOSX_BUNDLE
+    ${APP_SOURCES}
+    ${GE_SOURCES}
+)
+
+# main.cpp often needs ObjC++ on iOS for SDL_main.h UIApplication integration.
 set_source_files_properties(${PROJECT_ROOT}/src/main.cpp PROPERTIES LANGUAGE OBJCXX)
+
+target_compile_definitions(__CMAKE_PROJECT__ PRIVATE
+    ASIO_STANDALONE
+    GE_IOS
+    SQLITE_ENABLE_SESSION
+    SQLITE_ENABLE_PREUPDATE_HOOK
+    SQLITE_ENABLE_DESERIALIZE
+    BX_CONFIG_DEBUG=0
+    BGFX_CONFIG_RENDERER_METAL=1
+)
 
 target_include_directories(__CMAKE_PROJECT__ PRIVATE
     ${PROJECT_ROOT}/src
     ${PROJECT_ROOT}/include
+    ${GE_ROOT}/include
+    ${GE_ROOT}/vendor/include
+    ${GE_ROOT}/vendor/github.com/gabime/spdlog/include
+    ${GE_ROOT}/vendor/github.com/chriskohlhoff/asio/include
+    ${GE_ROOT}/vendor/github.com/libsdl-org/SDL/include
+    ${GE_ROOT}/vendor/sdl3/include
+    ${GE_ROOT}/vendor/github.com/erincatto/box2d/include
+    ${GE_ROOT}/vendor/github.com/bkaradzic/bgfx/include
+    ${GE_ROOT}/vendor/github.com/bkaradzic/bx/include
+    ${GE_ROOT}/vendor/github.com/bkaradzic/bx/include/compat/ios
+    ${GE_ROOT}/vendor/github.com/bkaradzic/bimg/include
+    ${GE_ROOT}/vendor/github.com/sqliteai/liteparser/src
 )
 
-# xcframeworks + iOS system frameworks propagate from sq via INTERFACE linking
-target_link_libraries(__CMAKE_PROJECT__ PRIVATE sq)
+# SDL3 prebuilt libraries (iOS device vs simulator).
+set(SDL_DEVICE_DIR ${GE_ROOT}/vendor/sdl3/lib/ios-arm64)
+set(SDL_SIM_DIR    ${GE_ROOT}/vendor/sdl3/lib/ios-arm64-simulator)
 
-# ── Bundle resources ─────────────────────────────────
-
-set(RESOURCE_FILES
-    ${PROJECT_ROOT}/data/manifest.json
-    ${PROJECT_ROOT}/data/meshes.bin
-    ${PROJECT_ROOT}/shaders/atlas.wgsl
+target_link_libraries(__CMAKE_PROJECT__ PRIVATE
+    -lSDL3 -lSDL3_image -lSDL3_ttf
+    -lfreetype -lharfbuzz -lplutosvg -lplutovg
 )
 
-file(GLOB TEXTURE_FILES ${PROJECT_ROOT}/data/textures/*.sqtex)
-list(APPEND RESOURCE_FILES ${TEXTURE_FILES})
-
-target_sources(__CMAKE_PROJECT__ PRIVATE ${RESOURCE_FILES})
-
-# Place data files in their subdirectories within the bundle
-foreach(FILE ${RESOURCE_FILES})
-    file(RELATIVE_PATH REL_PATH ${PROJECT_ROOT} ${FILE})
-    get_filename_component(REL_DIR ${REL_PATH} DIRECTORY)
-    set_source_files_properties(${FILE} PROPERTIES
-        MACOSX_PACKAGE_LOCATION "Resources/${REL_DIR}")
-endforeach()
-
-# ── Xcode properties ────────────────────────────────
+# iOS frameworks needed by SDL3 + bgfx/Metal + CoreMotion.
+target_link_libraries(__CMAKE_PROJECT__ PRIVATE
+    "-framework Foundation" "-framework UIKit"
+    "-framework Metal" "-framework MetalKit"
+    "-framework QuartzCore" "-framework IOKit" "-framework IOSurface"
+    "-framework CoreGraphics" "-framework CoreServices"
+    "-framework CoreFoundation" "-framework CoreBluetooth"
+    "-framework CoreMedia" "-framework CoreVideo"
+    "-framework AudioToolbox" "-framework AVFoundation"
+    "-framework GameController" "-framework CoreHaptics"
+    "-framework CoreMotion" "-framework VideoToolbox"
+    "-framework Security" "-framework OpenGLES" "-framework ImageIO"
+    "-lobjc"
+)
 
 set_target_properties(__CMAKE_PROJECT__ PROPERTIES
     MACOSX_BUNDLE_GUI_IDENTIFIER __BUNDLE_ID__
@@ -60,8 +105,13 @@ set_target_properties(__CMAKE_PROJECT__ PROPERTIES
     MACOSX_BUNDLE_SHORT_VERSION_STRING "1.0"
     MACOSX_BUNDLE_INFO_PLIST ${CMAKE_CURRENT_SOURCE_DIR}/Info.plist
     XCODE_ATTRIBUTE_TARGETED_DEVICE_FAMILY "1,2"
+    XCODE_ATTRIBUTE_SUPPORTED_PLATFORMS "iphoneos iphonesimulator"
     XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "__BUNDLE_ID__"
     XCODE_ATTRIBUTE_DEVELOPMENT_TEAM "__DEVELOPMENT_TEAM__"
+    XCODE_ATTRIBUTE_CODE_SIGN_STYLE "Automatic"
     XCODE_GENERATE_SCHEME TRUE
     XCODE_SCHEME_ENABLE_GPU_API_VALIDATION OFF
+    XCODE_ATTRIBUTE_IPHONEOS_DEPLOYMENT_TARGET 16.3
+    "XCODE_ATTRIBUTE_LIBRARY_SEARCH_PATHS[sdk=iphoneos*]" "${SDL_DEVICE_DIR}"
+    "XCODE_ATTRIBUTE_LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]" "${SDL_SIM_DIR}"
 )

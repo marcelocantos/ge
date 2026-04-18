@@ -268,6 +268,19 @@ targets:
     origin: 'gap discovered during mobile validation of PR #11 architecture'
     discovered: 2026-04-16
     achieved: 2026-04-17
+  T18:
+    name: bgfx builds and renders on iOS + Android for distribution apps
+    status: identified
+    value: 4.0
+    cost: 8.0
+    acceptance:
+    - ge/ios-init and ge/android-init generate scaffolds that compile and link via Module.mk
+    - '`make ge/ios` produces a runnable .app for iOS simulator that renders a ge::run-based game (verified with tiltbuggy)'
+    - '`make ge/android` produces a runnable APK that renders via bgfx/Vulkan on an Android emulator'
+    - ios-sim-dist and android-emu-dist matrix-test cells go green
+    context: 'The current init-ios.sh / init-android.sh templates generate ge-oriented scaffolds but the resulting builds fail at link time: Box2D, bgfx (amalgamated compiled for iOS/Android compat), and the not-yet-split SessionHost (which references ServerWireBridge unconditionally) all need port/refactor work. Module.mk''s bgfx variables currently hardcode include/compat/osx — iOS needs include/compat/ios and Android needs include/compat/android. Also bgfx Vulkan backend needs enabling for Android (currently only Metal is enabled). Likely split SessionHost into direct-only vs brokered pieces so distribution builds don''t pull in WebSocket/asio unnecessarily.'
+    origin: gap surfaced by the new matrix-test's *-dist cells failing at build time
+    discovered: 2026-04-18
   T2:
     name: Smoke test validates network connectivity between laptop and device
     status: identified

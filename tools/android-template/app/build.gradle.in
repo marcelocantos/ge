@@ -36,12 +36,12 @@ android {
         }
     }
 
-    // Include SDL3 Java sources from vendor
+    // Include SDL3 Java sources from the ge engine's vendored SDL.
     sourceSets {
         main {
             java.srcDirs = [
                 'src/main/java',
-                "${rootDir}/../sq/vendor/github.com/libsdl-org/SDL/android-project/app/src/main/java"
+                "${rootDir}/__GE_REL__/vendor/github.com/libsdl-org/SDL/android-project/app/src/main/java"
             ]
         }
     }
@@ -51,9 +51,9 @@ android {
     }
 }
 
-// Sync game data into APK assets before building
+// Sync game data into APK assets before building.
 tasks.register('syncAssets', Sync) {
-    from("${rootDir}/../data") { into('data') }
+    from("${rootDir}/../data")    { into('data') }
     from("${rootDir}/../shaders") { into('shaders') }
     into('src/main/assets')
 }
