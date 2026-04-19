@@ -800,7 +800,7 @@ cold_launch_desktop() {
 
 cold_launch_player_desktop() {
     local subcheck="cold-launch"
-    local player_bin="$GE_ROOT/bin/player"
+    local player_bin="$APP_DIR/bin/player"
     [[ -x "$player_bin" ]] || { fail_check "$subcheck" "player binary not found: $player_bin"; return 1; }
 
     "$player_bin" > "$ARTIFACTS/player.log" 2>&1 &
@@ -1598,6 +1598,10 @@ run_debug_player() {
         ios)
             require_cmd xcrun "xcrun not found — Xcode not installed"
             local ios_proj="$GE_ROOT/tools/ios"
+            if [[ ! -d "$ios_proj/build/xcode" ]]; then
+                ( cd "$APP_DIR" && run make ge/player-ios ) \
+                    || { fail_check "cold-launch" "make ge/player-ios failed"; return; }
+            fi
             if ! ( cd "$ios_proj" && run xcodebuild \
                     -project build/xcode/Player.xcodeproj -scheme Player \
                     -configuration Debug -destination "generic/platform=iOS Simulator" \
