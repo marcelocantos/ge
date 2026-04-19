@@ -346,10 +346,11 @@ targets:
     achieved: 2026-04-19
   T21:
     name: 'Physical-device smoke validation for render-engine-bridge-split: iPhone, iPad Pippa, Android phone'
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     observable: true
+    actual_cost: 5.0
     acceptance:
     - 'iPhone: dist + player smoke pass (cold launch, 60s soak, no crashes)'
     - 'iPad Pippa: dist + player smoke pass, including one manual rotation cycle'
@@ -360,6 +361,7 @@ targets:
     - T23
     origin: manual
     discovered: 2026-04-19
+    achieved: 2026-04-19
   T22:
     name: Debug-build matrix cells build and exercise a real debug variant, not a reused release build
     status: achieved
