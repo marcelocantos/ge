@@ -623,6 +623,66 @@ ged-test:
 	cd $(ge)/ged && go test ./...
 
 # ────────────────────────────────────────────────
+# Debug build
+#
+# `make ge/debug` builds bin/$(APP_NAME)-debug with assertions enabled,
+# debug symbols, and no optimisation.  The debug matrix cells exercise
+# this binary rather than the default release binary.
+# ────────────────────────────────────────────────
+
+# Override points: apps can extend APP_DEBUG_OBJ or set APP_DEBUG separately.
+APP_DEBUG     ?= bin/$(APP_NAME)-debug
+APP_DEBUG_OBJ ?= $(patsubst %.cpp,$(BUILD_DIR)/debug/%.o,$(APP_SRC))
+
+ge/CXXFLAGS_DEBUG = -std=c++20 -O0 -g -DDEBUG $(ge/INCLUDES) $(ge/BGFX_ALL_INCLUDES) -DBX_CONFIG_DEBUG=1
+
+.PHONY: ge/debug
+ge/debug: $(APP_DEBUG)
+
+$(APP_DEBUG): $(APP_DEBUG_OBJ) $(APP_SHADERS) $(ge/RENDER_SHADERS) $(ge/LIB) $(ge/BGFX_LIBS) $(APP_LIBS)
+	@mkdir -p $(@D)
+	$(CXX) $(APP_DEBUG_OBJ) $(APP_LIBS) $(ge/LIB) $(ge/BGFX_LIBS) $(ge/SDL_LIBS) $(FRAMEWORKS) -o $@
+
+$(BUILD_DIR)/debug/src/%.o: src/%.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(ge/CXXFLAGS_DEBUG) $(SDL_CFLAGS) -MMD -MP -c $< -o $@
+
+# ── iOS release build ──────────────────────────────────────────────────
+# `make ge/ios-release` builds the consuming app's iOS .app with
+# -configuration Release.  The regular `make ge/ios` builds Debug.
+# Release cells use ge/ios-release; debug cells use ge/ios.
+
+.PHONY: ge/ios-release
+ge/ios-release: $(APP_SHADERS) $(ge/RENDER_SHADERS)
+	@if [ ! -d ios ]; then \
+	    echo "ios/ not found — run 'make ge/ios-init APP_ID=... APP_NAME=...' first"; \
+	    exit 1; \
+	fi
+	cd ios && cmake -G Xcode -B build/xcode \
+	    -DCMAKE_SYSTEM_NAME=iOS \
+	    -DCMAKE_OSX_ARCHITECTURES=arm64 \
+	    -DCMAKE_OSX_SYSROOT=iphonesimulator \
+	    -DCMAKE_OSX_DEPLOYMENT_TARGET=16.0
+	cd ios && xcodebuild \
+	    -project build/xcode/$(APP_DISPLAY_NAME).xcodeproj -scheme $(APP_DISPLAY_NAME) \
+	    -configuration Release -destination "generic/platform=iOS Simulator" \
+	    build
+
+# ── Android release build ──────────────────────────────────────────────
+# `make ge/android-release` builds the consuming app's Android APK with
+# assembleRelease.  The regular `make ge/android` builds assembleDebug.
+# Release cells use ge/android-release; debug cells use ge/android.
+
+.PHONY: ge/android-release
+ge/android-release: $(ge/APP_SHADERS_GLES) $(ge/RENDER_SHADERS_GLES)
+	@if [ ! -d android ]; then \
+	    echo "android/ not found — run 'make ge/android-init APP_ID=... APP_NAME=...' first"; \
+	    exit 1; \
+	fi
+	cd android && ./gradlew assembleRelease
+	@echo "APK: android/app/build/outputs/apk/release/app-release-unsigned.apk"
+
+# ────────────────────────────────────────────────
 # End-to-end test matrix
 # ────────────────────────────────────────────────
 #
@@ -635,6 +695,11 @@ ged-test:
 #
 # Glob syntax: `*` matches any run of characters within a cell name.
 # Multiple patterns: space-separated.
+
+# Android tablet AVD name used by matrix-cell.sh to pick the right emulator
+# for tablet cells.  Override in the app's Makefile if you use a different AVD.
+# Set to empty to fall back to the heuristic name-matching logic.
+GE_ANDROID_TABLET_AVD ?= Pixel_Tablet
 
 # Canonical 24-cell list. Cells are grouped for readability.
 ge/CELLS := \
@@ -671,20 +736,20 @@ cell.ios-device-phone-dist:      ; $(ge)/tools/matrix-cell.sh ios-device-phone-d
 cell.ios-device-phone-player:    ; $(ge)/tools/matrix-cell.sh ios-device-phone-player
 cell.ios-device-tablet-dist:     ; $(ge)/tools/matrix-cell.sh ios-device-tablet-dist
 cell.ios-device-tablet-player:   ; $(ge)/tools/matrix-cell.sh ios-device-tablet-player
-cell.android-emu-phone-dist:     ; $(ge)/tools/matrix-cell.sh android-emu-phone-dist
-cell.android-emu-phone-player:   ; $(ge)/tools/matrix-cell.sh android-emu-phone-player
-cell.android-emu-tablet-dist:    ; $(ge)/tools/matrix-cell.sh android-emu-tablet-dist
-cell.android-emu-tablet-player:  ; $(ge)/tools/matrix-cell.sh android-emu-tablet-player
-cell.android-device-phone-dist:  ; $(ge)/tools/matrix-cell.sh android-device-phone-dist
-cell.android-device-phone-player: ; $(ge)/tools/matrix-cell.sh android-device-phone-player
-cell.android-device-tablet-dist: ; $(ge)/tools/matrix-cell.sh android-device-tablet-dist
-cell.android-device-tablet-player: ; $(ge)/tools/matrix-cell.sh android-device-tablet-player
+cell.android-emu-phone-dist:     ; GE_ANDROID_TABLET_AVD=$(GE_ANDROID_TABLET_AVD) $(ge)/tools/matrix-cell.sh android-emu-phone-dist
+cell.android-emu-phone-player:   ; GE_ANDROID_TABLET_AVD=$(GE_ANDROID_TABLET_AVD) $(ge)/tools/matrix-cell.sh android-emu-phone-player
+cell.android-emu-tablet-dist:    ; GE_ANDROID_TABLET_AVD=$(GE_ANDROID_TABLET_AVD) $(ge)/tools/matrix-cell.sh android-emu-tablet-dist
+cell.android-emu-tablet-player:  ; GE_ANDROID_TABLET_AVD=$(GE_ANDROID_TABLET_AVD) $(ge)/tools/matrix-cell.sh android-emu-tablet-player
+cell.android-device-phone-dist:  ; GE_ANDROID_TABLET_AVD=$(GE_ANDROID_TABLET_AVD) $(ge)/tools/matrix-cell.sh android-device-phone-dist
+cell.android-device-phone-player: ; GE_ANDROID_TABLET_AVD=$(GE_ANDROID_TABLET_AVD) $(ge)/tools/matrix-cell.sh android-device-phone-player
+cell.android-device-tablet-dist: ; GE_ANDROID_TABLET_AVD=$(GE_ANDROID_TABLET_AVD) $(ge)/tools/matrix-cell.sh android-device-tablet-dist
+cell.android-device-tablet-player: ; GE_ANDROID_TABLET_AVD=$(GE_ANDROID_TABLET_AVD) $(ge)/tools/matrix-cell.sh android-device-tablet-player
 cell.desktop-debug-dist:         ; $(ge)/tools/matrix-cell.sh desktop-debug-dist
 cell.desktop-debug-player:       ; $(ge)/tools/matrix-cell.sh desktop-debug-player
 cell.ios-debug-dist:             ; $(ge)/tools/matrix-cell.sh ios-debug-dist
 cell.ios-debug-player:           ; $(ge)/tools/matrix-cell.sh ios-debug-player
-cell.android-debug-dist:         ; $(ge)/tools/matrix-cell.sh android-debug-dist
-cell.android-debug-player:       ; $(ge)/tools/matrix-cell.sh android-debug-player
+cell.android-debug-dist:         ; GE_ANDROID_TABLET_AVD=$(GE_ANDROID_TABLET_AVD) $(ge)/tools/matrix-cell.sh android-debug-dist
+cell.android-debug-player:       ; GE_ANDROID_TABLET_AVD=$(GE_ANDROID_TABLET_AVD) $(ge)/tools/matrix-cell.sh android-debug-player
 
 .PHONY: check matrix-test
 check matrix-test: $(addprefix cell.,$(ge/CHECK_CELLS))
