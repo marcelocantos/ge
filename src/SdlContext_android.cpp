@@ -57,16 +57,15 @@ SdlContext::SdlContext(const char* windowTitle, int width, int height)
 
     SPDLOG_INFO("SDL3 initialized");
 
-    // Create window with Vulkan support (Dawn uses Vulkan on Android)
     m->window = SDL_CreateWindow(windowTitle, width, height,
-                                  SDL_WINDOW_RESIZABLE | SDL_WINDOW_VULKAN |
+                                  SDL_WINDOW_FULLSCREEN |
                                   SDL_WINDOW_HIGH_PIXEL_DENSITY);
     if (!m->window) {
         SDL_Quit();
         throw std::runtime_error(std::string("SDL_CreateWindow failed: ") + SDL_GetError());
     }
 
-    SPDLOG_INFO("Window created (Vulkan)");
+    SPDLOG_INFO("Window created");
 }
 
 SdlContext::~SdlContext() {

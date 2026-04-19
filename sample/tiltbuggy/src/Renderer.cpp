@@ -21,14 +21,14 @@ namespace tiltbuggy {
 namespace {
 
 struct PosColorVertex {
-    float x, y;
+    float x, y, z;
     uint32_t abgr;
 };
 
 bgfx::VertexLayout makeLayout() {
     bgfx::VertexLayout layout;
     layout.begin()
-        .add(bgfx::Attrib::Position, 2, bgfx::AttribType::Float)
+        .add(bgfx::Attrib::Position, 3, bgfx::AttribType::Float)
         .add(bgfx::Attrib::Color0,   4, bgfx::AttribType::Uint8, true)
         .end();
     return layout;
@@ -56,12 +56,12 @@ bgfx::ShaderHandle loadShader(const char* shaderDir, const char* name) {
 void pushRect(std::vector<PosColorVertex>& verts,
               float l, float t, float r, float b,
               uint32_t abgr) {
-    verts.push_back({l, t, abgr});
-    verts.push_back({r, t, abgr});
-    verts.push_back({r, b, abgr});
-    verts.push_back({l, t, abgr});
-    verts.push_back({r, b, abgr});
-    verts.push_back({l, b, abgr});
+    verts.push_back({l, t, 0.0f, abgr});
+    verts.push_back({r, t, 0.0f, abgr});
+    verts.push_back({r, b, 0.0f, abgr});
+    verts.push_back({l, t, 0.0f, abgr});
+    verts.push_back({r, b, 0.0f, abgr});
+    verts.push_back({l, b, 0.0f, abgr});
 }
 
 // Append two triangles forming a rotated rect centred at (cx,cy).
@@ -75,8 +75,9 @@ void pushRotatedRect(std::vector<PosColorVertex>& verts,
     float ly[4] = { -hh, -hh,  hh,  hh };
     PosColorVertex v[4];
     for (int i = 0; i < 4; ++i) {
-        v[i].x   = cx + lx[i] * c - ly[i] * s;
-        v[i].y   = cy + lx[i] * s + ly[i] * c;
+        v[i].x    = cx + lx[i] * c - ly[i] * s;
+        v[i].y    = cy + lx[i] * s + ly[i] * c;
+        v[i].z    = 0.0f;
         v[i].abgr = abgr;
     }
     // Two triangles: 0-1-2, 0-2-3

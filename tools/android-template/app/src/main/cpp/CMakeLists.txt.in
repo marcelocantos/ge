@@ -1,7 +1,8 @@
 # Android distribution build for __APP_NAME__ — standalone, no ged / player.
 #
 # Builds the game as a self-contained Android APK that renders directly via
-# bgfx/Vulkan. Uses the ge engine at __GE_REL__ (from this CMakeLists.txt).
+# bgfx/OpenGL ES 3.1. Uses the ge engine at __GE_REL__ (from this
+# CMakeLists.txt).
 cmake_minimum_required(VERSION 3.22)
 project(__CMAKE_PROJECT__ LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 20)
@@ -55,7 +56,7 @@ target_include_directories(bgfx PRIVATE
 )
 target_link_libraries(bgfx PUBLIC bx bimg)
 target_compile_definitions(bgfx PUBLIC
-    BGFX_CONFIG_RENDERER_VULKAN=1
+    BGFX_CONFIG_RENDERER_OPENGLES=31
 )
 
 # ── Box2D (vendored C code) ─────────────────────────────────────────────
@@ -115,7 +116,7 @@ target_compile_definitions(main PRIVATE
     SQLITE_ENABLE_PREUPDATE_HOOK
     SQLITE_ENABLE_DESERIALIZE
     BX_CONFIG_DEBUG=0
-    BGFX_CONFIG_RENDERER_VULKAN=1
+    BGFX_CONFIG_RENDERER_OPENGLES=31
 )
 
 target_include_directories(main PRIVATE
@@ -132,5 +133,5 @@ target_include_directories(main PRIVATE
 target_link_libraries(main PRIVATE
     bgfx box2d
     SDL3::SDL3
-    android log vulkan z
+    android log EGL GLESv3 z
 )
