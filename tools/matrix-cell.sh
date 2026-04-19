@@ -462,7 +462,6 @@ ios_sim_crash_count() {
 
 android_get_serial() {
     local ff="${1:-}"  # phone or tablet; empty = any emulator
-    local pattern="emulator-[0-9]+"
 
     # Determine connected emulator serials.
     local serials
@@ -477,6 +476,20 @@ android_get_serial() {
     if [[ -z "$ff" ]]; then
         echo "$serials" | head -1
         return 0
+    fi
+
+    # For tablet form factor, prefer GE_ANDROID_TABLET_AVD if it names a
+    # running emulator.  GE_ANDROID_TABLET_AVD is passed via env from
+    # Module.mk cell rules (default: Pixel_Tablet).
+    if [[ "$ff" == "tablet" && -n "${GE_ANDROID_TABLET_AVD:-}" ]]; then
+        while IFS= read -r serial; do
+            local avd_name
+            avd_name=$(adb -s "$serial" emu avd name 2>/dev/null | head -1 | tr -d '\r' || true)
+            if [[ "$avd_name" == "$GE_ANDROID_TABLET_AVD" ]]; then
+                echo "$serial"; return 0
+            fi
+        done <<< "$serials"
+        # GE_ANDROID_TABLET_AVD not booted — fall through to heuristic.
     fi
 
     # Filter by form factor: check avd name via adb emu avd name.
@@ -749,13 +762,14 @@ PY
 # Platform-specific variants set LAUNCH_PID (desktop) or just launch the app
 # on sim/emu/device. Returns 0 on success.
 
-LAUNCH_PID=""   # desktop only; sim/emu/device don't give us a local PID
-SIM_UDID=""     # set by ios launch helpers
+LAUNCH_PID=""    # desktop only; sim/emu/device don't give us a local PID
+SIM_UDID=""      # set by ios launch helpers
 ANDROID_SERIAL=""  # set by android launch helpers
+DESKTOP_BIN=""   # overridden by debug cells to point at bin/$APP_NAME-debug
 
 cold_launch_desktop() {
     local subcheck="cold-launch"
-    local bin="$APP_DIR/bin/$APP_NAME"
+    local bin="${DESKTOP_BIN:-$APP_DIR/bin/$APP_NAME}"
     [[ -x "$bin" ]] || { fail_check "$subcheck" "binary not found: $bin"; return 1; }
 
     "$bin" > "$ARTIFACTS/app.log" 2>&1 &
@@ -1033,7 +1047,8 @@ check_reconnect_desktop_player() {
     local serverlog="$ARTIFACTS/server-reconnect.log"
     local baseline
     baseline=$(current_sessions)
-    ( cd "$APP_DIR" && exec "$APP_DIR/bin/$APP_NAME" > "$serverlog" 2>&1 ) &
+    local srv_bin="${DESKTOP_BIN:-$APP_DIR/bin/$APP_NAME}"
+    ( cd "$APP_DIR" && exec "$srv_bin" > "$serverlog" 2>&1 ) &
     local new_srv_pid=$!
 
     if ! wait_for_sessions $((baseline + 1)); then
@@ -1064,7 +1079,8 @@ check_reconnect_ios_sim_player() {
     local serverlog="$ARTIFACTS/server-reconnect.log"
     local baseline
     baseline=$(current_sessions)
-    ( cd "$APP_DIR" && exec "$APP_DIR/bin/$APP_NAME" > "$serverlog" 2>&1 ) &
+    local srv_bin="${DESKTOP_BIN:-$APP_DIR/bin/$APP_NAME}"
+    ( cd "$APP_DIR" && exec "$srv_bin" > "$serverlog" 2>&1 ) &
     local new_srv_pid=$!
 
     if ! wait_for_sessions $((baseline + 1)); then
@@ -1094,7 +1110,8 @@ check_reconnect_android_player() {
     local serverlog="$ARTIFACTS/server-reconnect.log"
     local baseline
     baseline=$(current_sessions)
-    ( cd "$APP_DIR" && exec "$APP_DIR/bin/$APP_NAME" > "$serverlog" 2>&1 ) &
+    local srv_bin="${DESKTOP_BIN:-$APP_DIR/bin/$APP_NAME}"
+    ( cd "$APP_DIR" && exec "$srv_bin" > "$serverlog" 2>&1 ) &
     local new_srv_pid=$!
 
     if ! wait_for_sessions $((baseline + 1)); then
@@ -1234,9 +1251,13 @@ check_clean_exit_android() {
 # ── Build helpers ────────────────────────────────────────────────────
 
 build_desktop() {
-    # TODO: add separate debug-variant build when Module.mk has a debug target.
-    echo "  … building (make) …"
+    echo "  … building release (make) …"
     ( cd "$APP_DIR" && run make ) || return 1
+}
+
+build_desktop_debug() {
+    echo "  … building debug (make ge/debug) …"
+    ( cd "$APP_DIR" && run make ge/debug ) || return 1
 }
 
 build_player_desktop() {
@@ -1245,23 +1266,75 @@ build_player_desktop() {
     ( cd "$APP_DIR" && run make ge/player ) || return 1
 }
 
-build_ios_sim() {
-    echo "  … building (make ge/ios) …"
+build_player_desktop_debug() {
+    echo "  … building debug server + player (make ge/debug + make ge/player) …"
+    ( cd "$APP_DIR" && run make ge/debug ) || return 1
+    ( cd "$APP_DIR" && run make ge/player ) || return 1
+}
+
+# iOS Debug (.app built with -configuration Debug via `make ge/ios`).
+build_ios_sim_debug() {
+    echo "  … building iOS debug (make ge/ios) …"
     ( cd "$APP_DIR" && run make ge/ios ) || return 1
 }
 
-build_android() {
-    echo "  … building (make ge/android) …"
+# iOS Release (.app built with -configuration Release via `make ge/ios-release`).
+build_ios_sim_release() {
+    echo "  … building iOS release (make ge/ios-release) …"
+    ( cd "$APP_DIR" && run make ge/ios-release ) || return 1
+}
+
+# Alias used by non-debug dist/player cells.
+build_ios_sim() {
+    build_ios_sim_release
+}
+
+# Android Debug APK (assembleDebug via `make ge/android`).
+build_android_debug() {
+    echo "  … building Android debug (make ge/android) …"
     ( cd "$APP_DIR" && run make ge/android ) || return 1
 }
 
-find_ios_sim_app() {
-    find "$APP_DIR/ios/build" -name "*.app" -path "*iphonesimulator*" \
+# Android Release APK (assembleRelease via `make ge/android-release`).
+build_android_release() {
+    echo "  … building Android release (make ge/android-release) …"
+    ( cd "$APP_DIR" && run make ge/android-release ) || return 1
+}
+
+# Alias used by non-debug dist/player cells.
+build_android() {
+    build_android_release
+}
+
+find_ios_sim_app_debug() {
+    # Debug builds land in Debug-iphonesimulator
+    find "$APP_DIR/ios/build" -name "*.app" -path "*Debug-iphonesimulator*" \
         2>/dev/null | head -1
 }
 
-find_android_apk() {
+find_ios_sim_app_release() {
+    # Release builds land in Release-iphonesimulator
+    find "$APP_DIR/ios/build" -name "*.app" -path "*Release-iphonesimulator*" \
+        2>/dev/null | head -1
+}
+
+find_ios_sim_app() {
+    find_ios_sim_app_release
+}
+
+find_android_apk_debug() {
     echo "$APP_DIR/android/app/build/outputs/apk/debug/app-debug.apk"
+}
+
+find_android_apk_release() {
+    # assembleRelease produces an unsigned APK when no signing config is set.
+    local unsigned="$APP_DIR/android/app/build/outputs/apk/release/app-release-unsigned.apk"
+    local signed="$APP_DIR/android/app/build/outputs/apk/release/app-release.apk"
+    if [[ -f "$signed" ]]; then echo "$signed"; else echo "$unsigned"; fi
+}
+
+find_android_apk() {
+    find_android_apk_release
 }
 
 # ── Server management for player cells ──────────────────────────────
@@ -1270,7 +1343,8 @@ SERVER_PID=""
 
 start_server() {
     local logf="$ARTIFACTS/server.log"
-    ( cd "$APP_DIR" && exec "$APP_DIR/bin/$APP_NAME" > "$logf" 2>&1 ) &
+    local srv_bin="${DESKTOP_BIN:-$APP_DIR/bin/$APP_NAME}"
+    ( cd "$APP_DIR" && exec "$srv_bin" > "$logf" 2>&1 ) &
     SERVER_PID=$!
     sleep 2
 }
@@ -1314,10 +1388,10 @@ run_desktop_player() {
 run_ios_sim_dist() {
     require_cmd xcrun "xcrun not found — Xcode not installed"
     [[ -d "$APP_DIR/ios" ]] || { fail_check "cold-launch" "no ios/ project (run make ge/ios-init)"; return; }
-    build_ios_sim || { fail_check "cold-launch" "make ge/ios failed"; return; }
+    build_ios_sim_release || { fail_check "cold-launch" "make ge/ios-release failed"; return; }
     local app_path
-    app_path=$(find_ios_sim_app)
-    [[ -n "$app_path" ]] || { fail_check "cold-launch" ".app not found in ios/build"; return; }
+    app_path=$(find_ios_sim_app_release)
+    [[ -n "$app_path" ]] || { fail_check "cold-launch" ".app not found in ios/build/Release-iphonesimulator"; return; }
 
     cold_launch_ios_sim "$APP_ID" "$app_path" "$FORM_FACTOR" || return
     check_startup_flash_ios "$SIM_UDID" "$APP_ID" || true
@@ -1377,10 +1451,10 @@ run_ios_device_player() {
 run_android_emu_dist() {
     require_cmd adb "adb not found — install Android SDK platform-tools"
     [[ -d "$APP_DIR/android" ]] || { fail_check "cold-launch" "no android/ project (run make ge/android-init)"; return; }
-    build_android || { fail_check "cold-launch" "make ge/android failed"; return; }
+    build_android_release || { fail_check "cold-launch" "make ge/android-release failed"; return; }
     local apk
-    apk=$(find_android_apk)
-    [[ -f "$apk" ]] || { fail_check "cold-launch" "APK not found: $apk"; return; }
+    apk=$(find_android_apk_release)
+    [[ -f "$apk" ]] || { fail_check "cold-launch" "release APK not found: $apk"; return; }
     local activity
     activity=$(android_get_activity "$APP_ID")
 
@@ -1463,24 +1537,27 @@ run_android_device_player() {
 }
 
 run_debug_dist() {
-    # Short smoke: cold-launch + 10s soak + clean-exit.
-    # TODO: add debug build variant when Module.mk exposes a debug target;
-    # for now reuse the release build.
+    # Short smoke for debug builds: cold-launch + 10s soak + clean-exit.
+    # Desktop uses bin/$APP_NAME-debug (assertions enabled, -O0, -DDEBUG).
+    # iOS uses xcodebuild -configuration Debug (the default ge/ios target).
+    # Android uses assembleDebug (the default ge/android target).
     case "$PLATFORM" in
         desktop)
-            build_desktop || { fail_check "cold-launch" "build failed"; return; }
+            build_desktop_debug || { fail_check "cold-launch" "debug build failed"; return; }
+            DESKTOP_BIN="$APP_DIR/bin/$APP_NAME-debug"
             cold_launch_desktop || return
             check_soak_desktop "$LAUNCH_PID" || true
             check_clean_exit_desktop "$LAUNCH_PID"
             LAUNCH_PID=""
+            DESKTOP_BIN=""
             ;;
         ios)
             require_cmd xcrun "xcrun not found — Xcode not installed"
             [[ -d "$APP_DIR/ios" ]] || { fail_check "cold-launch" "no ios/ project"; return; }
-            build_ios_sim || { fail_check "cold-launch" "make ge/ios failed"; return; }
+            build_ios_sim_debug || { fail_check "cold-launch" "make ge/ios failed"; return; }
             local app_path
-            app_path=$(find_ios_sim_app)
-            [[ -n "$app_path" ]] || { fail_check "cold-launch" ".app not found"; return; }
+            app_path=$(find_ios_sim_app_debug)
+            [[ -n "$app_path" ]] || { fail_check "cold-launch" "debug .app not found in ios/build/Debug-iphonesimulator"; return; }
             cold_launch_ios_sim "$APP_ID" "$app_path" "phone" || return
             check_soak_ios_sim "$SIM_UDID" "$APP_ID" || true
             check_clean_exit_ios_sim "$SIM_UDID" "$APP_ID"
@@ -1488,10 +1565,10 @@ run_debug_dist() {
         android)
             require_cmd adb "adb not found"
             [[ -d "$APP_DIR/android" ]] || { fail_check "cold-launch" "no android/ project"; return; }
-            build_android || { fail_check "cold-launch" "make ge/android failed"; return; }
+            build_android_debug || { fail_check "cold-launch" "make ge/android failed"; return; }
             local apk
-            apk=$(find_android_apk)
-            [[ -f "$apk" ]] || { fail_check "cold-launch" "APK not found"; return; }
+            apk=$(find_android_apk_debug)
+            [[ -f "$apk" ]] || { fail_check "cold-launch" "debug APK not found: $apk"; return; }
             local activity
             activity=$(android_get_activity "$APP_ID")
             cold_launch_android_emu "$APP_ID" "$apk" "" "$activity" || return
@@ -1502,16 +1579,21 @@ run_debug_dist() {
 }
 
 run_debug_player() {
-    # Short smoke: cold-launch + 10s soak + clean-exit. No reconnect/bg-fg/rotation.
+    # Short smoke for debug builds: cold-launch + 10s soak + clean-exit.
+    # No reconnect/bg-fg/rotation — debug cells are a lightweight sanity check.
+    # Desktop server runs bin/$APP_NAME-debug; player is the standard release player.
+    # iOS/Android player builds use the Debug configuration / assembleDebug.
     case "$PLATFORM" in
         desktop)
-            build_player_desktop || { fail_check "cold-launch" "build failed"; return; }
+            build_player_desktop_debug || { fail_check "cold-launch" "debug build failed"; return; }
+            DESKTOP_BIN="$APP_DIR/bin/$APP_NAME-debug"
             ensure_ged
             start_server
-            cold_launch_player_desktop || { stop_server; return; }
+            cold_launch_player_desktop || { stop_server; DESKTOP_BIN=""; return; }
             check_soak_desktop "$LAUNCH_PID" || true
             check_clean_exit_desktop "$LAUNCH_PID"
             LAUNCH_PID=""
+            DESKTOP_BIN=""
             ;;
         ios)
             require_cmd xcrun "xcrun not found — Xcode not installed"
@@ -1520,35 +1602,40 @@ run_debug_player() {
                     -project build/xcode/Player.xcodeproj -scheme Player \
                     -configuration Debug -destination "generic/platform=iOS Simulator" \
                     build ); then
-                fail_check "cold-launch" "xcodebuild Player failed"
+                fail_check "cold-launch" "xcodebuild Player (Debug) failed"
                 return
             fi
             local app_path
-            app_path=$(find "$ios_proj/build" -name "Player.app" -path "*iphonesimulator*" 2>/dev/null | head -1)
-            [[ -n "$app_path" ]] || { fail_check "cold-launch" "Player.app not found"; return; }
-            ( cd "$APP_DIR" && run make ) || { fail_check "cold-launch" "build (server) failed"; return; }
+            app_path=$(find "$ios_proj/build" -name "Player.app" \
+                -path "*Debug-iphonesimulator*" 2>/dev/null | head -1)
+            [[ -n "$app_path" ]] || { fail_check "cold-launch" "Player.app not found in tools/ios/build/Debug-iphonesimulator"; return; }
+            build_desktop_debug || { fail_check "cold-launch" "debug server build failed"; return; }
+            DESKTOP_BIN="$APP_DIR/bin/$APP_NAME-debug"
             ensure_ged
             start_server
-            cold_launch_ios_sim "$PLAYER_BUNDLE_ID" "$app_path" "phone" || { stop_server; return; }
+            cold_launch_ios_sim "$PLAYER_BUNDLE_ID" "$app_path" "phone" || { stop_server; DESKTOP_BIN=""; return; }
             check_soak_ios_sim "$SIM_UDID" "$PLAYER_BUNDLE_ID" || true
             check_clean_exit_ios_sim "$SIM_UDID" "$PLAYER_BUNDLE_ID"
+            DESKTOP_BIN=""
             ;;
         android)
             require_cmd adb "adb not found"
             local android_player_dir="$GE_ROOT/tools/android"
             if ! ( cd "$android_player_dir" && run ./gradlew assembleDebug ); then
-                fail_check "cold-launch" "gradle assembleDebug failed"
+                fail_check "cold-launch" "gradle assembleDebug (player) failed"
                 return
             fi
             local apk="$android_player_dir/app/build/outputs/apk/debug/app-debug.apk"
-            [[ -f "$apk" ]] || { fail_check "cold-launch" "player APK not found"; return; }
-            ( cd "$APP_DIR" && run make ) || { fail_check "cold-launch" "build (server) failed"; return; }
+            [[ -f "$apk" ]] || { fail_check "cold-launch" "player debug APK not found"; return; }
+            build_desktop_debug || { fail_check "cold-launch" "debug server build failed"; return; }
+            DESKTOP_BIN="$APP_DIR/bin/$APP_NAME-debug"
             ensure_ged
             start_server
             cold_launch_android_emu "$PLAYER_ANDROID_PKG" "$apk" "" "$PLAYER_ANDROID_ACTIVITY" \
-                || { stop_server; return; }
+                || { stop_server; DESKTOP_BIN=""; return; }
             check_soak_android "$ANDROID_SERIAL" "$PLAYER_ANDROID_PKG" || true
             check_clean_exit_android "$ANDROID_SERIAL" "$PLAYER_ANDROID_PKG"
+            DESKTOP_BIN=""
             ;;
     esac
 }
