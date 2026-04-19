@@ -286,10 +286,11 @@ targets:
   T19:
     name: 'render-engine-bridge-split branch can be merged: the full mobile matrix of automated + device smokes runs clean'
     kind: verify
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     observable: true
+    actual_cost: 2.0
     acceptance:
     - 'All 6 automated matrix-test cells pass on current hardware: desktop-dist, desktop-player, ios-sim-dist, ios-sim-player, android-emu-dist, android-emu-player'
     - Physical-device smoke passes on iPhone (dist + player)
@@ -317,6 +318,7 @@ targets:
     - T18
     origin: manual
     discovered: 2026-04-19
+    achieved: 2026-04-19
   T2:
     name: Smoke test validates network connectivity between laptop and device
     status: identified
