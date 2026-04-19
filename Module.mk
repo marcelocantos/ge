@@ -668,6 +668,39 @@ ge/ios-release: $(APP_SHADERS) $(ge/RENDER_SHADERS)
 	    -configuration Release -destination "generic/platform=iOS Simulator" \
 	    build
 
+# ── iOS physical-device release build ─────────────────────────────────
+# `make ge/ios-device-release` builds the consuming app's iOS .app targeting
+# iphoneos (physical device) with Release configuration.
+# Requires ios/CMakeLists.txt to set DEVELOPMENT_TEAM (see ge/ios-init).
+
+.PHONY: ge/ios-device-release
+ge/ios-device-release: $(APP_SHADERS) $(ge/RENDER_SHADERS)
+	@if [ ! -d ios ]; then \
+	    echo "ios/ not found — run 'make ge/ios-init APP_ID=... APP_NAME=...' first"; \
+	    exit 1; \
+	fi
+	cd ios && cmake -G Xcode -B build/xcode-device \
+	    -DCMAKE_SYSTEM_NAME=iOS \
+	    -DCMAKE_OSX_ARCHITECTURES=arm64 \
+	    -DCMAKE_OSX_SYSROOT=iphoneos \
+	    -DCMAKE_OSX_DEPLOYMENT_TARGET=16.0
+	cd ios && xcodebuild \
+	    -project build/xcode-device/$(APP_DISPLAY_NAME).xcodeproj -scheme $(APP_DISPLAY_NAME) \
+	    -configuration Release -destination "generic/platform=iOS" \
+	    -allowProvisioningUpdates \
+	    build
+
+# ge player iOS physical-device build.
+# ge/player-ios generates the Xcode project with iphoneos sysroot.
+# This target builds a Debug .app from that project targeting a physical device.
+.PHONY: ge/player-ios-device
+ge/player-ios-device: ge/player-ios
+	cd $(ge)/tools/ios && xcodebuild \
+	    -project build/xcode/Player.xcodeproj -scheme Player \
+	    -configuration Debug -destination "generic/platform=iOS" \
+	    -allowProvisioningUpdates \
+	    build
+
 # ── Android release build ──────────────────────────────────────────────
 # `make ge/android-release` builds the consuming app's Android APK with
 # assembleRelease.  The regular `make ge/android` builds assembleDebug.
@@ -701,6 +734,13 @@ ge/android-release: $(ge/APP_SHADERS_GLES) $(ge/RENDER_SHADERS_GLES)
 # Set to empty to fall back to the heuristic name-matching logic.
 GE_ANDROID_TABLET_AVD ?= Pixel_Tablet
 
+# iOS physical device names/UDIDs for device cells (passed to ios_device_get_udid).
+# Set to a device name or UDID substring to prefer a specific device when multiple
+# iPads or iPhones are connected. Leave empty to auto-select (first connected device
+# of the right form factor).
+GE_IOS_TABLET_DEVICE ?= Pippa
+GE_IOS_PHONE_DEVICE ?=
+
 # Canonical 24-cell list. Cells are grouped for readability.
 ge/CELLS := \
     desktop-dist desktop-player \
@@ -732,10 +772,10 @@ cell.ios-sim-phone-dist:         ; $(ge)/tools/matrix-cell.sh ios-sim-phone-dist
 cell.ios-sim-phone-player:       ; $(ge)/tools/matrix-cell.sh ios-sim-phone-player
 cell.ios-sim-tablet-dist:        ; $(ge)/tools/matrix-cell.sh ios-sim-tablet-dist
 cell.ios-sim-tablet-player:      ; $(ge)/tools/matrix-cell.sh ios-sim-tablet-player
-cell.ios-device-phone-dist:      ; $(ge)/tools/matrix-cell.sh ios-device-phone-dist
-cell.ios-device-phone-player:    ; $(ge)/tools/matrix-cell.sh ios-device-phone-player
-cell.ios-device-tablet-dist:     ; $(ge)/tools/matrix-cell.sh ios-device-tablet-dist
-cell.ios-device-tablet-player:   ; $(ge)/tools/matrix-cell.sh ios-device-tablet-player
+cell.ios-device-phone-dist:      ; GE_IOS_PHONE_DEVICE=$(GE_IOS_PHONE_DEVICE) $(ge)/tools/matrix-cell.sh ios-device-phone-dist
+cell.ios-device-phone-player:    ; GE_IOS_PHONE_DEVICE=$(GE_IOS_PHONE_DEVICE) $(ge)/tools/matrix-cell.sh ios-device-phone-player
+cell.ios-device-tablet-dist:     ; GE_IOS_TABLET_DEVICE=$(GE_IOS_TABLET_DEVICE) $(ge)/tools/matrix-cell.sh ios-device-tablet-dist
+cell.ios-device-tablet-player:   ; GE_IOS_TABLET_DEVICE=$(GE_IOS_TABLET_DEVICE) $(ge)/tools/matrix-cell.sh ios-device-tablet-player
 cell.android-emu-phone-dist:     ; GE_ANDROID_TABLET_AVD=$(GE_ANDROID_TABLET_AVD) $(ge)/tools/matrix-cell.sh android-emu-phone-dist
 cell.android-emu-phone-player:   ; GE_ANDROID_TABLET_AVD=$(GE_ANDROID_TABLET_AVD) $(ge)/tools/matrix-cell.sh android-emu-phone-player
 cell.android-emu-tablet-dist:    ; GE_ANDROID_TABLET_AVD=$(GE_ANDROID_TABLET_AVD) $(ge)/tools/matrix-cell.sh android-emu-tablet-dist
