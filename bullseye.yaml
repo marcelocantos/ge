@@ -331,10 +331,11 @@ targets:
     discovered: 2026-04-12
   T20:
     name: rotation-stability-test correctly detects app liveness across orientation changes
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     observable: true
+    actual_cost: 1.0
     acceptance:
     - rotation-stability-test.sh --platform ios-sim --app-id com.squz.tiltbuggy --cycles 10 reports PASS end-to-end against the iPad Air M4 simulator
     - Liveness check is tolerant of the brief launchctl-list gap during iOS orientation transitions
@@ -342,6 +343,7 @@ targets:
     context: 'Current rotation-stability-test.sh reports "FAIL: app died after landscape rotation #1" even when the app is clearly alive (no fresh crash reports; `xcrun simctl spawn <udid> launchctl list` confirms the app process is present in rb-legacy state). The detection logic ran fine when tested manually from the shell (exit 0), so the issue is likely a timing/state race in the test''s is_running check — possibly during iOS''s mid-rotation suspension window the process briefly doesn''t appear in launchctl, and the test reads the snapshot at exactly that moment. The product-level rotation fix (drawable-as-truth patch, committed in squz/bgfx ge-fork-upgrade) was validated manually on Pippa earlier (see commit 1471f9d) and no fresh TiltBuggy crash reports appeared during today''s attempts, so this is purely a test-harness detection bug, not a product regression. Likely fix: replace the launchctl-based liveness probe with a retry loop, or use a more robust signal (e.g. successful screenshot implies alive).'
     origin: manual
     discovered: 2026-04-19
+    achieved: 2026-04-19
   T21:
     name: 'Physical-device smoke validation for render-engine-bridge-split: iPhone, iPad Pippa, Android phone'
     status: identified
