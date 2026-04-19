@@ -281,6 +281,40 @@ targets:
     context: 'The current init-ios.sh / init-android.sh templates generate ge-oriented scaffolds but the resulting builds fail at link time: Box2D, bgfx (amalgamated compiled for iOS/Android compat), and the not-yet-split SessionHost (which references ServerWireBridge unconditionally) all need port/refactor work. Module.mk''s bgfx variables currently hardcode include/compat/osx — iOS needs include/compat/ios and Android needs include/compat/android. Also bgfx Vulkan backend needs enabling for Android (currently only Metal is enabled). Likely split SessionHost into direct-only vs brokered pieces so distribution builds don''t pull in WebSocket/asio unnecessarily.'
     origin: gap surfaced by the new matrix-test's *-dist cells failing at build time
     discovered: 2026-04-18
+  T19:
+    name: 'render-engine-bridge-split branch can be merged: the full mobile matrix of automated + device smokes runs clean'
+    kind: verify
+    status: identified
+    value: 0.0
+    cost: 0.0
+    observable: true
+    acceptance:
+    - 'All 6 automated matrix-test cells pass on current hardware: desktop-dist, desktop-player, ios-sim-dist, ios-sim-player, android-emu-dist, android-emu-player'
+    - Physical-device smoke passes on iPhone (dist + player)
+    - Physical-device smoke passes on iPad Pippa (dist + player)
+    - Physical-device smoke passes on Android phone (dist + player)
+    - rotation-stability-test.sh passes on iOS sim and at least one iOS device
+    - '60s soak on each active cell: no crashes, no magenta frames, no Metal/Vulkan/GLES validation errors in logs'
+    - Clean app exit on all cells; crash-report fetch returns empty for the test window
+    - No unresolved regressions flagged by smoke-test.sh post-run
+    context: |-
+      Gate for merging the render-engine-bridge-split branch (15+ commits: engine/render/bridge split, RenderHost extraction, PlayerWireBridge + PlayerRender, AccelSynth, TiltBuggy stage 2 physics, bgfx port to iOS Metal + Android GLES, iOS rotation race fix, Android Adreno workaround via GLES pivot, matrix-test.sh, rotation-stability-test.sh).
+
+      User's explicit bar for merge: "games can pick this up and run with it without any concerns about weird edge case behaviour on different platforms, builds, remote/distribution."
+
+      Matrix (full, once all devices present):
+      - macOS × {dist, player} = 2
+      - iOS × {sim, device} × {phone, tablet} × {dist, player} = 8
+      - Android × {emu, device} × {phone, tablet} × {dist, player} = 8
+      Total: 18. With Android tablet device excluded (device on order): 16 active.
+
+      Plus a debug-build smoke cycle of 6 cells (platform × mode, one runtime).
+
+      matrix-test.sh currently covers 6 automatable cells (sim/emu, no form-factor split). Extending to the full matrix is follow-on work (form-factor split, device cells, debug cycle — each a sub-target). The minimum gate for THIS round is: all currently-implemented cells pass, physical devices hand-verified via ge/tools/smoke-test.sh, rotation-stability-test green on iOS.
+    verifies:
+    - T18
+    origin: manual
+    discovered: 2026-04-19
   T2:
     name: Smoke test validates network connectivity between laptop and device
     status: identified
