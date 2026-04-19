@@ -83,6 +83,12 @@ done
 [[ -z "$APP_NAME" ]]    && APP_NAME="$(basename "$APP_DIR")"
 [[ -z "$SERVER_NAME" ]] && SERVER_NAME="$APP_NAME"
 
+# Auto-detect APP_ID from the app's Makefile if not passed.
+if [[ -z "$APP_ID" && -f "$APP_DIR/Makefile" ]]; then
+    APP_ID=$(sed -nE 's/^[[:space:]]*APP_ID[[:space:]]*:?=[[:space:]]*([^[:space:]#]+).*/\1/p' \
+        "$APP_DIR/Makefile" | head -1)
+fi
+
 # Default cell list (all automatable).
 ALL_CELLS="desktop-dist desktop-player ios-sim-dist ios-sim-player android-emu-dist android-emu-player"
 if [[ -z "$CELLS" ]]; then
@@ -567,8 +573,19 @@ cell_android_emu_dist() {
     $adb_cmd shell am force-stop "$pkg" 2>/dev/null || true
     run $adb_cmd install -r "$apk" \
         || { record "$cell" FAIL "adb install"; return; }
-    # Activity name convention: package + "." + app-name-with-"Activity" suffix.
-    local activity="${pkg}/.${APP_NAME^}Activity"
+    # Derive activity name from the generated manifest — it's the
+    # ground truth and follows APP_DISPLAY_NAME casing (e.g. TiltBuggy),
+    # not the lowercase APP_NAME. Accept either short form ".Cls" or
+    # fully-qualified "pkg.sub.Cls"; feed the extracted value through
+    # `adb am start -n <pkg>/<value>` unchanged (adb accepts both).
+    local manifest="$APP_DIR/android/app/src/main/AndroidManifest.xml"
+    local activity_raw=""
+    if [[ -f "$manifest" ]]; then
+        activity_raw=$(grep -oE 'android:name="[A-Za-z0-9_.]+Activity"' "$manifest" \
+            | head -1 | sed -E 's/.*"([^"]+)".*/\1/' || true)
+    fi
+    [[ -z "$activity_raw" ]] && activity_raw=".${APP_NAME^}Activity"
+    local activity="${pkg}/${activity_raw}"
     run $adb_cmd shell am start -n "$activity" \
         || { record "$cell" FAIL "adb am start $activity"; return; }
 
