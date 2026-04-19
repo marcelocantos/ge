@@ -1,8 +1,11 @@
 // iOS ge player entry point.
 // Scans a QR code on startup to discover the game server, then runs the shared player core.
 //
-// Set GE_DAEMON_ADDR=host:port to skip QR scanning and connect directly.
-// Example: xcrun devicectl device process launch -e '{"GE_DAEMON_ADDR":"192.168.1.217:42069"}' ...
+// Pass -ged_addr host:port as a launch argument to connect directly (highest priority).
+// Set GE_DAEMON_ADDR=host:port to connect directly via environment variable.
+// Example (simulator):  xcrun simctl launch <udid> com.squz.player -ged_addr 192.168.1.217:42069
+// Example (device):     xcrun devicectl device process launch --console-pty -- com.squz.player -ged_addr 192.168.1.217:42069
+// Example (env var):    xcrun devicectl device process launch -e '{"GE_DAEMON_ADDR":"192.168.1.217:42069"}' ...
 
 #include <TargetConditionals.h>
 #include "player_core.h"
@@ -64,30 +67,49 @@ int main(int argc, char* argv[]) {
     std::string host;
     uint16_t port = kDefaultPort;
 
-    // Fast, non-blocking overrides first.
-    if (const char* addr = std::getenv("GE_DAEMON_ADDR")) {
-        std::string s(addr);
+    // Helper: parse "host:port" or "host" into host/port.
+    auto parseAddr = [&](const std::string& s) {
         host = s;
         if (auto colon = s.rfind(':'); colon != std::string::npos) {
             host = s.substr(0, colon);
             port = static_cast<uint16_t>(std::stoi(s.substr(colon + 1)));
         }
-        SPDLOG_INFO("GE_DAEMON_ADDR: {}:{}", host, port);
+    };
+
+    // Priority 1: -ged_addr launch argument (xcrun simctl launch … -ged_addr host:port).
+    // simctl stores launch args as NSUserDefaults. Read once and do not persist.
+    @autoreleasepool {
+        NSString* gedAddr = [[NSUserDefaults standardUserDefaults] stringForKey:@"ged_addr"];
+        if (gedAddr && gedAddr.length > 0) {
+            std::string s = gedAddr.UTF8String;
+            parseAddr(s);
+            SPDLOG_INFO("ged_addr launch arg: {}:{}", host, port);
+            // Remove the key so it doesn't persist across launches without the arg.
+            [[NSUserDefaults standardUserDefaults] removeObjectForKey:@"ged_addr"];
+        }
     }
+
+    // Priority 2: GE_DAEMON_ADDR environment variable.
+    if (host.empty()) {
+        if (const char* addr = std::getenv("GE_DAEMON_ADDR")) {
+            parseAddr(std::string(addr));
+            SPDLOG_INFO("GE_DAEMON_ADDR: {}:{}", host, port);
+        }
+    }
+
+    // Priority 3: Platform-specific fallback.
+    if (host.empty()) {
 #if TARGET_OS_SIMULATOR
-    else {
         SPDLOG_INFO("Simulator: using localhost:{}", kDefaultPort);
         host = "localhost";
         port = kDefaultPort;
-    }
 #else
-    else {
         // Blocking QR scan to discover the server.
         ge::ScanResult result = ge::scanQRCode();
         host = result.host;
         port = result.port;
-    }
 #endif
+    }
 
     return playerCore(host, port);
 }
