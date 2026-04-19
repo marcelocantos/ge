@@ -814,13 +814,17 @@ cold_launch_player_desktop() {
 cold_launch_ios_sim() {
     local subcheck="cold-launch"
     local bundle_id="$1"; local app_path="$2"; local ff="$3"
+    # $4: optional extra launch args forwarded verbatim to `simctl launch`
+    # (e.g. "-ged_addr localhost:42069" passes ged address as NSUserDefaults key)
+    local extra_launch_args="${4:-}"
 
     SIM_UDID=$(ios_sim_get_udid "$ff") || { fail_check "$subcheck" "no booted iOS sim for $ff"; return 1; }
 
     xcrun simctl terminate "$SIM_UDID" "$bundle_id" 2>/dev/null || true
     run xcrun simctl install "$SIM_UDID" "$app_path" \
         || { fail_check "$subcheck" "simctl install failed"; return 1; }
-    run xcrun simctl launch "$SIM_UDID" "$bundle_id" \
+    # shellcheck disable=SC2086
+    run xcrun simctl launch "$SIM_UDID" "$bundle_id" $extra_launch_args \
         || { fail_check "$subcheck" "simctl launch failed"; return 1; }
 
     sleep "$COLD_LAUNCH_TIMEOUT"
@@ -841,6 +845,8 @@ cold_launch_ios_sim() {
 cold_launch_android_emu() {
     local subcheck="cold-launch"
     local pkg="$1"; local apk="$2"; local ff="$3"; local activity="$4"
+    # $5: optional extra am start args (e.g. "--es ged_addr 10.0.2.2:42069")
+    local extra_am_args="${5:-}"
 
     ANDROID_SERIAL=$(android_get_serial "$ff") \
         || { fail_check "$subcheck" "no Android emulator for $ff"; return 1; }
@@ -848,7 +854,8 @@ cold_launch_android_emu() {
     adb -s "$ANDROID_SERIAL" shell am force-stop "$pkg" 2>/dev/null || true
     run adb -s "$ANDROID_SERIAL" install -r "$apk" \
         || { fail_check "$subcheck" "adb install failed"; return 1; }
-    run adb -s "$ANDROID_SERIAL" shell am start -n "$activity" \
+    # shellcheck disable=SC2086
+    run adb -s "$ANDROID_SERIAL" shell am start -n "$activity" $extra_am_args \
         || { fail_check "$subcheck" "adb am start failed ($activity)"; return 1; }
 
     sleep "$COLD_LAUNCH_TIMEOUT"
@@ -869,6 +876,8 @@ cold_launch_android_emu() {
 cold_launch_android_device() {
     local subcheck="cold-launch"
     local pkg="$1"; local apk="$2"; local ff="$3"; local activity="$4"
+    # $5: optional extra am start args (e.g. "--es ged_addr 192.168.1.100:42069")
+    local extra_am_args="${5:-}"
 
     ANDROID_SERIAL=$(android_device_get_serial "$ff") \
         || { fail_check "$subcheck" "no USB-connected Android device for $ff"; return 1; }
@@ -876,7 +885,8 @@ cold_launch_android_device() {
     adb -s "$ANDROID_SERIAL" shell am force-stop "$pkg" 2>/dev/null || true
     run adb -s "$ANDROID_SERIAL" install -r "$apk" \
         || { fail_check "$subcheck" "adb install failed"; return 1; }
-    run adb -s "$ANDROID_SERIAL" shell am start -n "$activity" \
+    # shellcheck disable=SC2086
+    run adb -s "$ANDROID_SERIAL" shell am start -n "$activity" $extra_am_args \
         || { fail_check "$subcheck" "adb am start failed ($activity)"; return 1; }
 
     sleep "$COLD_LAUNCH_TIMEOUT"
@@ -1352,7 +1362,10 @@ run_ios_sim_player() {
     ensure_ged
     start_server
 
-    cold_launch_ios_sim "$PLAYER_BUNDLE_ID" "$app_path" "$FORM_FACTOR" || { stop_server; return; }
+    # Pass ged address as launch arg so the player connects directly (no QR scan).
+    # The iOS simulator reaches the macOS host via localhost.
+    cold_launch_ios_sim "$PLAYER_BUNDLE_ID" "$app_path" "$FORM_FACTOR" \
+        "-ged_addr localhost:$GED_PORT" || { stop_server; return; }
     check_startup_flash_ios "$SIM_UDID" "$PLAYER_BUNDLE_ID" || true
     check_soak_ios_sim "$SIM_UDID" "$PLAYER_BUNDLE_ID" || true
     check_rotation_ios_sim "$SIM_UDID" "$PLAYER_BUNDLE_ID" || true
@@ -1407,8 +1420,10 @@ run_android_emu_player() {
     ensure_ged
     start_server
 
+    # Pass ged address as intent extra so the player connects directly (no QR scan).
+    # 10.0.2.2 is the Android emulator's alias for the macOS host loopback.
     cold_launch_android_emu "$PLAYER_ANDROID_PKG" "$apk" "$FORM_FACTOR" "$PLAYER_ANDROID_ACTIVITY" \
-        || { stop_server; return; }
+        "--es ged_addr 10.0.2.2:$GED_PORT" || { stop_server; return; }
     check_startup_flash_android "$ANDROID_SERIAL" || true
     check_soak_android "$ANDROID_SERIAL" "$PLAYER_ANDROID_PKG" || true
     check_rotation_android_emu "$ANDROID_SERIAL" "$PLAYER_ANDROID_PKG" || true
@@ -1451,6 +1466,9 @@ run_android_device_player() {
     ensure_ged
     start_server
 
+    # NOTE: physical device cells do not pass ged_addr automatically — the host
+    # LAN IP is not statically known here. Pass --es ged_addr "host:port" manually
+    # or set debug.ge.address via adb setprop for ad-hoc physical device testing.
     cold_launch_android_device "$PLAYER_ANDROID_PKG" "$apk" "$FORM_FACTOR" "$PLAYER_ANDROID_ACTIVITY" \
         || { stop_server; return; }
     check_startup_flash_android "$ANDROID_SERIAL" || true
@@ -1529,7 +1547,8 @@ run_debug_player() {
             ( cd "$APP_DIR" && run make ) || { fail_check "cold-launch" "build (server) failed"; return; }
             ensure_ged
             start_server
-            cold_launch_ios_sim "$PLAYER_BUNDLE_ID" "$app_path" "phone" || { stop_server; return; }
+            cold_launch_ios_sim "$PLAYER_BUNDLE_ID" "$app_path" "phone" \
+                "-ged_addr localhost:$GED_PORT" || { stop_server; return; }
             check_soak_ios_sim "$SIM_UDID" "$PLAYER_BUNDLE_ID" || true
             check_clean_exit_ios_sim "$SIM_UDID" "$PLAYER_BUNDLE_ID"
             ;;
@@ -1546,7 +1565,7 @@ run_debug_player() {
             ensure_ged
             start_server
             cold_launch_android_emu "$PLAYER_ANDROID_PKG" "$apk" "" "$PLAYER_ANDROID_ACTIVITY" \
-                || { stop_server; return; }
+                "--es ged_addr 10.0.2.2:$GED_PORT" || { stop_server; return; }
             check_soak_android "$ANDROID_SERIAL" "$PLAYER_ANDROID_PKG" || true
             check_clean_exit_android "$ANDROID_SERIAL" "$PLAYER_ANDROID_PKG"
             ;;
