@@ -403,6 +403,67 @@ targets:
     origin: manual
     discovered: 2026-04-19
     achieved: 2026-04-19
+  T24:
+    name: Android emulator dist cells render without bgfx GL-context crash on Pixel 9 Pro XL AVD
+    status: identified
+    value: 0.0
+    cost: 0.0
+    observable: true
+    acceptance:
+    - '`make cell.android-emu-phone-dist` and `make cell.android-debug-dist` both pass end-to-end on the current canonical phone AVD'
+    - Failure mode (GL-context error) either fixed at the bgfx config layer or worked around with a documented AVD requirement in Module.mk
+    - Same AVD that hit the crash now renders tiltbuggy's dist build without visual glitches for the full 60s soak
+    context: |-
+      Surfaced during 🎯T22's per-cell verification: `make cell.android-emu-phone-dist` (release build) and `android-debug-dist` (debug build) both crash on the Pixel 9 Pro XL AVD with a bgfx GL context failure. Player-mode cells (both release and debug) on the same AVD pass — so the crash is in the direct-render path (tiltbuggy rendering into its own bgfx/GLES context) and not in the player (which just decodes H.264 frames from the desktop server and blits them with SDL).
+
+      Pre-existing — matrix-cell.sh on master prior to the T22 work showed the same failure. Not a regression from T22, but now visible because `make check` runs all cells, and two of them consistently red.
+
+      Likely causes to investigate:
+      - Pixel 9 Pro XL AVD uses a newer GPU profile (Adreno-equivalent Vulkan/GLES path?) that hits the same family of bugs as the Adreno 830 crash we already worked around on physical devices.
+      - Our GLES 3.1 pivot was validated on generic "phone" AVDs — the Pro XL image may use a different emulator GPU backend (SwiftShader vs host GPU).
+      - bgfx's GLES init on Android may be failing in a way we haven't instrumented.
+
+      First diagnostic step: run `make cell.android-emu-phone-dist` with full adb logcat capture; look for bgfx's own error logging and any Gralloc / EGL errors. Second: try a different AVD (e.g. "Pixel 7", older GPU emulation) to see whether it's Pro-XL-specific or broader.
+    origin: manual
+    discovered: 2026-04-19
+  T25:
+    name: Player-mode cells pass the reconnect sub-check on iOS sim and Android emu
+    status: identified
+    value: 0.0
+    cost: 0.0
+    observable: true
+    acceptance:
+    - '`make cell.ios-sim-tablet-player` passes the reconnect sub-check end-to-end'
+    - '`make cell.android-emu-phone-player` passes the reconnect sub-check end-to-end'
+    - If the bug was in matrix-cell.sh, the fix explains what signal is actually reliable; if in the player, root cause is documented in the fix commit
+    context: |-
+      Both `ios-sim-tablet-player` and `android-emu-phone-player` fail the `reconnect` sub-check in matrix-cell.sh: kill the desktop server, wait 5s, verify the player reconnects by polling ged for a new session. Pre-existing — agents flagged this on both the 🎯T22 and 🎯T23 verification runs, and it's present on master prior to those PRs too.
+
+      Reconnect is an important property for the server/player architecture — games restart during development and the player should transparently pick up the new server. If this sub-check is broken but the underlying reconnect logic works, the bug is in the test. If the logic is broken, it's a real regression from the recent ged / pigeon / session-handshake work.
+
+      First diagnostic step: read `check_reconnect_ios_sim_player` / `check_reconnect_android_emu_player` in matrix-cell.sh and understand what signal it looks for. Second: manually test — start `bin/tiltbuggy`, launch the player, kill tiltbuggy, start a fresh `bin/tiltbuggy`, verify the player reconnects visually. If yes, the matrix-cell check is wrong. If no, there's a real reconnect bug.
+    origin: manual
+    discovered: 2026-04-19
+  T26:
+    name: Android player-mode cells pass the startup-flash check — no magenta pre-first-frame window
+    status: identified
+    value: 0.0
+    cost: 0.0
+    observable: true
+    acceptance:
+    - '`make cell.android-emu-phone-player` passes the startup-flash sub-check end-to-end with no false positive and no genuine flash'
+    - Root cause is either a false positive (fix the detection) or a real transient (fix the surface init)
+    context: |-
+      `android-emu-phone-player` fails the startup-flash sub-check in matrix-cell.sh: record video during launch, scan frames for magenta pixels before the first valid render. iOS sim passed (tested on iPad Air M4 during 🎯T22/T23 runs), Android emu did not. Pre-existing.
+
+      The startup-flash class of bug on iOS was root-caused to CAMetalLayer's default pink background showing pre-first-draw. We fixed it in the bgfx Metal backend (drawable-as-truth patch). Android has its own surface-init lifecycle (SurfaceView / SurfaceFlinger / GL context creation) — different mechanism, different default colour, but potentially the same class of bug: a transient frame of uninitialised / default-coloured pixels before the app's first draw lands.
+
+      Open questions:
+      - Is matrix-cell.sh's detection a false positive (magenta-like content in Tiltbuggy's actual render)? Check the captured mp4 in the cell's artifacts dir.
+      - Is there a genuine transient flash we'd want to eliminate?
+      - Does the Android player path differ from the dist path in surface setup? (Player mode decodes H.264 + blits via SDL_Renderer; dist mode uses bgfx GLES directly.)
+    origin: manual
+    discovered: 2026-04-19
   T3:
     name: Player sends mip cache manifest before rendering begins
     status: identified
