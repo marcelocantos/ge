@@ -11,3 +11,7 @@ ged/web/
 !/.claude/settings.json
 !/.claude/CLAUDE.md
 web/sqlite_mcp_server.db
+# Generated per-sample distribution projects (regenerated from templates
+# via `make ge/ios-init` / `make ge/android-init`). Do not hand-edit.
+/sample/*/ios/
+/sample/*/android/
