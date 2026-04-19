@@ -475,6 +475,13 @@ ios_sim_crash_count() {
 IOS_DEVICE_UDID=""
 ios_device_get_udid() {
     local ff="${1:-}"
+    # GE_IOS_TABLET_DEVICE / GE_IOS_PHONE_DEVICE: optional name/UDID preference
+    # passed in from Module.mk. If set, prefer that device when multiple are connected.
+    local pref_device=""
+    case "$ff" in
+        tablet) pref_device="${GE_IOS_TABLET_DEVICE:-}" ;;
+        phone)  pref_device="${GE_IOS_PHONE_DEVICE:-}" ;;
+    esac
 
     # List connected physical devices via devicectl JSON output.
     local tmpfile
@@ -486,12 +493,13 @@ ios_device_get_udid() {
     fi
 
     # Filter to connected devices and pick by form factor.
-    # Pass tmpfile and ff as positional args to avoid heredoc+stdin conflict.
+    # Pass tmpfile, ff, and pref_device as positional args.
     local udid
-    udid=$(python3 - "$tmpfile" "$ff" <<'PY'
+    udid=$(python3 - "$tmpfile" "$ff" "$pref_device" <<'PY'
 import sys, json
 datafile = sys.argv[1]
 ff = sys.argv[2] if len(sys.argv) > 2 else ""
+pref = sys.argv[3] if len(sys.argv) > 3 else ""
 with open(datafile) as f:
     data = json.load(f)
 devices = data.get("result", {}).get("devices", [])
@@ -508,13 +516,28 @@ if not ff:
     sys.exit(0)
 # Filter by form factor using device model name heuristic.
 # Use .identifier (CoreDevice UUID) — consistent with smoke-test.sh.
+form_matches = []
 for d in connected:
     model = d.get("hardwareProperties", {}).get("deviceType", "")
-    udid_val = d.get("identifier", "")
     if ff == "tablet" and "iPad" in model:
-        print(udid_val); sys.exit(0)
-    if ff == "phone" and "iPhone" in model:
-        print(udid_val); sys.exit(0)
+        form_matches.append(d)
+    elif ff == "phone" and "iPhone" in model:
+        form_matches.append(d)
+
+if not form_matches:
+    sys.exit(1)
+
+# If a preferred device is specified, try to match it by name or UDID substring.
+if pref:
+    for d in form_matches:
+        name = d.get("deviceProperties", {}).get("name", "")
+        udid_val = d.get("identifier", "")
+        hw_udid = d.get("hardwareProperties", {}).get("udid", "")
+        if pref.lower() in name.lower() or pref.lower() in udid_val.lower() or pref.lower() in hw_udid.lower():
+            print(udid_val); sys.exit(0)
+
+# No preference match or no preference set — pick first.
+print(form_matches[0]["identifier"]); sys.exit(0)
 PY
 2>/dev/null || true)
     rm -f "$tmpfile"

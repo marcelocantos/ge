@@ -447,10 +447,11 @@ targets:
     discovered: 2026-04-19
   T26:
     name: Android player-mode cells pass the startup-flash check — no magenta pre-first-frame window
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     observable: true
+    actual_cost: 3.0
     acceptance:
     - '`make cell.android-emu-phone-player` passes the startup-flash sub-check end-to-end with no false positive and no genuine flash'
     - Root cause is either a false positive (fix the detection) or a real transient (fix the surface init)
@@ -465,6 +466,7 @@ targets:
       - Does the Android player path differ from the dist path in surface setup? (Player mode decodes H.264 + blits via SDL_Renderer; dist mode uses bgfx GLES directly.)
     origin: manual
     discovered: 2026-04-19
+    achieved: 2026-04-19
   T3:
     name: Player sends mip cache manifest before rendering begins
     status: identified
