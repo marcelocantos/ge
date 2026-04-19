@@ -3,45 +3,45 @@ plugins {
 }
 
 android {
-    namespace "__PACKAGE__"
-    compileSdk 35
+    namespace = "__PACKAGE__"
+    compileSdk = 35
 
     defaultConfig {
-        applicationId "__PACKAGE__"
-        minSdk 26
-        targetSdk 35
-        versionCode 1
-        versionName "1.0"
+        applicationId = "__PACKAGE__"
+        minSdk = 26
+        targetSdk = 35
+        versionCode = 1
+        versionName = "1.0"
 
         ndk {
-            abiFilters 'arm64-v8a'
+            abiFilters += ['arm64-v8a']
         }
 
         externalNativeBuild {
             cmake {
-                arguments "-DANDROID_STL=c++_shared"
+                arguments += ["-DANDROID_STL=c++_shared"]
             }
         }
     }
 
     buildTypes {
         release {
-            minifyEnabled false
+            minifyEnabled = false
         }
     }
 
     externalNativeBuild {
         cmake {
-            path 'src/main/cpp/CMakeLists.txt'
+            path = file('src/main/cpp/CMakeLists.txt')
         }
     }
 
-    // Include SDL3 Java sources from vendor
+    // Include SDL3 Java sources from the ge engine's vendored SDL.
     sourceSets {
         main {
             java.srcDirs = [
                 'src/main/java',
-                "${rootDir}/../sq/vendor/github.com/libsdl-org/SDL/android-project/app/src/main/java"
+                "${rootDir}/__GE_REL__/vendor/github.com/libsdl-org/SDL/android-project/app/src/main/java"
             ]
         }
     }
@@ -51,10 +51,17 @@ android {
     }
 }
 
-// Sync game data into APK assets before building
+// Sync game data + compiled GLES shaders into APK assets before building.
+// The host-side build compiles shaders for multiple profiles:
+//   build/shaders/        — Metal bytecode (macOS / iOS)
+//   build/shaders-gles/   — OpenGL ES 3.1 (Android)
+// We consume the GLES variant but place it under assets/build/shaders/
+// so the runtime lookup via ge::resource("build/shaders/...") keeps
+// working unchanged across platforms.
 tasks.register('syncAssets', Sync) {
-    from("${rootDir}/../data") { into('data') }
-    from("${rootDir}/../shaders") { into('shaders') }
+    from("${rootDir}/../data")                  { into('data') }
+    from("${rootDir}/../build/shaders-gles")    { into('build/shaders') }
+    from("${rootDir}/../build/ge/shaders-gles") { into('build/ge/shaders') }
     into('src/main/assets')
 }
 preBuild.dependsOn('syncAssets')

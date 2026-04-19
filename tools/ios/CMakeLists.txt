@@ -12,8 +12,10 @@ set(SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/main.mm
     ${GE_ROOT}/tools/player_core.cpp
     ${GE_ROOT}/tools/AudioPlayer.cpp
-    ${GE_ROOT}/src/WebSocketClient.cpp
-    ${GE_ROOT}/src/VideoDecoder_apple.mm
+    ${GE_ROOT}/src/bridge/PlayerWireBridge.cpp
+    ${GE_ROOT}/src/bridge/WebSocketClient.cpp
+    ${GE_ROOT}/src/bridge/VideoDecoder_apple.mm
+    ${GE_ROOT}/src/render/PlayerRender.cpp
     ${GE_ROOT}/src/Signal.cpp
     ${GE_ROOT}/src/Resource.cpp
     ${GE_ROOT}/src/FileIO.cpp

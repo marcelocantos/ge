@@ -1,16 +1,35 @@
 # ge engine module
-# Included by the project Makefile. Expects BUILD_DIR and CXX to be defined.
+# Included by a consuming project's Makefile.
 #
-# The `ge` variable is the relative path from the Makefile to the ge
-# repository root. Parent projects (ge as submodule) use the default
-# `ge := ge`. In-tree builds (e.g. samples that live inside the ge repo)
-# set it themselves before the include, e.g.:
-#   ge := ..
+# Typical usage — a minimal app Makefile looks like:
+#
+#   ge          := ge
+#   APP_NAME    := mygame
+#   APP_SRC     := src/main.cpp src/Scene.cpp
+#   APP_SHADERS := build/shaders/simple_vs.bin build/shaders/simple_fs.bin
+#
 #   -include $(ge)/Module.mk
+#   $(ge)/Module.mk:
+#           git submodule update --init --recursive
 #
-# Output paths (under $(BUILD_DIR)) always use a literal `ge/` namespace
+# Module.mk derives the binary path ($(APP)=bin/$(APP_NAME)), object list,
+# link rule, compile rule, default `all` target and `run`/`clean`.
+#
+# The `ge` variable is the relative path from the app Makefile to the ge
+# repository root. Submodule apps use the default `ge := ge`. In-tree
+# samples that live inside the ge repo set it to `../..` etc.
+#
+# Output paths under $(BUILD_DIR) always use a literal `ge/` namespace
 # so objects land in sane locations regardless of where `$(ge)` points.
 ge ?= ge
+
+# ────────────────────────────────────────────────
+# Build configuration (app-overridable)
+# ────────────────────────────────────────────────
+
+BUILD_DIR ?= build
+CXX       ?= clang++
+CC        ?= clang
 
 # ────────────────────────────────────────────────
 # make controls
@@ -70,17 +89,40 @@ ge/PLUTOSVG_LIB = $(ge)/vendor/sdl3/lib/macos-arm64/libplutosvg.a
 ge/PLUTOVG_LIB = $(ge)/vendor/sdl3/lib/macos-arm64/libplutovg.a
 ge/SDL_LIBS = $(ge/SDL3_LIB) $(ge/SDL3_IMAGE_LIB) $(ge/SDL3_TTF_LIB) $(ge/FREETYPE_LIB) $(ge/HARFBUZZ_LIB) $(ge/PLUTOSVG_LIB) $(ge/PLUTOVG_LIB)
 
-ge/SRC = \
+# macOS frameworks needed by any ge desktop app (SDL3 + bgfx + VideoToolbox +
+# CoreMotion). Apps can extend via FRAMEWORKS += ... after the include.
+ge/FRAMEWORKS = \
+    -framework Metal -framework MetalKit -framework QuartzCore \
+    -framework Cocoa -framework IOKit -framework CoreFoundation \
+    -framework Carbon -framework CoreAudio -framework AudioToolbox \
+    -framework CoreHaptics -framework GameController -framework CoreVideo \
+    -framework ForceFeedback -framework AVFoundation -framework CoreMedia \
+    -framework UniformTypeIdentifiers -framework CoreGraphics \
+    -framework VideoToolbox -framework CoreMotion
+
+# Core engine sources — always needed. Split into "direct-only" (runs on
+# any platform / modality) and "brokered" (only the server-side of the
+# ged-paired modality) so mobile distribution builds can omit the latter.
+ge/SRC_DIRECT = \
 	$(ge)/src/Context.cpp \
 	$(ge)/src/Resource.cpp \
 	$(ge)/src/FileIO.cpp \
 	$(ge)/src/FontLoader_apple.mm \
-	$(ge)/src/WebSocketClient.cpp \
 	$(ge)/src/BgfxContext.mm \
 	$(ge)/src/Signal.cpp \
 	$(ge)/src/SessionHost.mm \
-	$(ge)/src/VideoEncoder_apple.mm \
-	$(ge)/src/VideoDecoder_apple.mm
+	$(ge)/src/render/DirectRenderHost.mm
+
+ge/SRC_BROKERED = \
+	$(ge)/src/bridge/SessionHost_brokered.mm \
+	$(ge)/src/render/PlayerRender.cpp \
+	$(ge)/src/bridge/ServerWireBridge.mm \
+	$(ge)/src/bridge/PlayerWireBridge.cpp \
+	$(ge)/src/bridge/WebSocketClient.cpp \
+	$(ge)/src/bridge/VideoEncoder_apple.mm \
+	$(ge)/src/bridge/VideoDecoder_apple.mm
+
+ge/SRC = $(ge/SRC_DIRECT) $(ge/SRC_BROKERED)
 
 ge/OBJ = $(patsubst $(ge)/src/%.cpp,$(BUILD_DIR)/ge/src/%.o,$(filter %.cpp,$(ge/SRC))) \
          $(patsubst $(ge)/src/%.mm,$(BUILD_DIR)/ge/src/%.o,$(filter %.mm,$(ge/SRC)))
@@ -89,6 +131,9 @@ ge/LIB = $(BUILD_DIR)/libge.a
 # Desktop player (H.264 receiver). Built on demand via `make player`.
 ge/PLAYER_SRC = $(ge)/tools/player.cpp $(ge)/tools/player_core.cpp $(ge)/tools/player_orientation_stub.cpp
 ge/PLAYER = bin/player
+
+# Small helper CLIs, built on demand.
+ge/IMGDIFF = bin/imgdiff
 
 # bgfx shader compiler (vendored binaries for common hosts).
 # Parent lists desired `.bin` outputs (e.g. `$(BUILD_DIR)/shaders/foo_vs.bin`);
@@ -106,6 +151,21 @@ ge/SHADERC_PLATFORM ?= osx
 # Parent defines its shader source directory (default `shaders`) and varying def.
 ge/SHADER_DIR ?= shaders
 ge/SHADERC_VARYINGDEF ?= $(ge/SHADER_DIR)/varying.def.sc
+
+# ge's own internal render shaders (compose pass for viewport tilt).
+# Consumers depend on $(ge/RENDER_SHADERS) so the binaries exist on
+# disk at runtime. DirectRenderHost loads them from "build/ge/shaders/".
+ge/RENDER_SHADER_DIR = $(ge)/src/render/shaders
+ge/RENDER_SHADERS = \
+	$(BUILD_DIR)/ge/shaders/ge_compose_vs.bin \
+	$(BUILD_DIR)/ge/shaders/ge_compose_fs.bin
+
+# OpenGL ES 3.1 variants of the app's and ge's shaders, for Android.
+# Consumed by the Android Gradle build's syncAssets task; deposited
+# into the APK under assets/build/shaders/ at the same paths so the
+# runtime lookup via ge::resource("build/shaders/*.bin") works.
+ge/APP_SHADERS_GLES    = $(patsubst $(BUILD_DIR)/$(ge/SHADER_DIR)/%.bin,$(BUILD_DIR)/$(ge/SHADER_DIR)-gles/%.bin,$(APP_SHADERS))
+ge/RENDER_SHADERS_GLES = $(patsubst $(BUILD_DIR)/ge/shaders/%.bin,$(BUILD_DIR)/ge/shaders-gles/%.bin,$(ge/RENDER_SHADERS))
 
 # Texture encoder (used by precompute tools, NOT part of libge.a)
 ge/TEXTURE_ENCODER_SRC = $(ge)/src/TextureEncoder.cpp
@@ -147,19 +207,72 @@ ge/TEST_OBJ = $(patsubst $(ge)/src/%.cpp,$(BUILD_DIR)/ge/src/%.o,$(ge/TEST_SRC))
 
 # Shared variables (parent can += to extend)
 CLEAN = bin build deps.dot deps.svg deps.png $(ge)/ged/web
-COMPILE_DB_DEPS = $(ge/SRC) $(ge/TEST_SRC) $(ge)/Module.mk
+COMPILE_DB_DEPS = $(ge/SRC) $(ge/TEST_SRC) $(ge)/Module.mk $(APP_SRC) Makefile
 ge/DEPGRAPH_DEPS = $(ge/SRC) $(wildcard $(ge)/include/ge/*.h) $(ge)/tools/depgraph.py
+
+# ────────────────────────────────────────────────
+# Default compile/link flags (app-overridable)
+# ────────────────────────────────────────────────
+
+# Engine-managed base flags. Apps that want to extend CXXFLAGS keep these by
+# default (via `CXXFLAGS ?=` below) or reference $(ge/CXXFLAGS_BASE) explicitly
+# when constructing their own.
+ge/CXXFLAGS_BASE = -std=c++20 -O2 -g $(ge/INCLUDES) $(ge/BGFX_ALL_INCLUDES) -DBX_CONFIG_DEBUG=0
+
+CXXFLAGS   ?= $(ge/CXXFLAGS_BASE) -Isrc
+SDL_CFLAGS ?= -I$(ge)/vendor/sdl3/include
+FRAMEWORKS ?= $(ge/FRAMEWORKS)
+
+# ────────────────────────────────────────────────
+# App convention — parent declares APP_NAME / APP_SRC / APP_SHADERS
+# ────────────────────────────────────────────────
+
+# Derived from the parent's APP_NAME and APP_SRC. The parent can override
+# $(APP) (e.g. to change the binary location) or $(APP_OBJ) (unusual) before
+# the include.
+APP         ?= bin/$(APP_NAME)
+APP_OBJ     ?= $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(APP_SRC))
+
+# Display name used for iOS / Android bundles and Xcode targets/schemes.
+# Defaults to APP_NAME; set to a Pascal-cased variant if you want a pretty
+# string on the home screen while keeping a lowercase binary name.
+APP_DISPLAY_NAME ?= $(APP_NAME)
+
+# Extra static libs/objects the app needs beyond the ge engine (e.g. ship a
+# specialised third-party library). Defaults to Box2D since many ge apps use
+# it and its link cost is negligible for those that don't.
+APP_LIBS    ?= $(ge/BOX2D_OBJ)
 
 # ────────────────────────────────────────────────
 # Rules
 # ────────────────────────────────────────────────
 
-# Engine objects
+# Default target — `make` with no args builds the app. Parent can declare its
+# own `all:` BEFORE the include to win (the first target make sees is the
+# default).
+.PHONY: all run
+all: $(APP)
+
+# Default link rule. Parent can override by declaring its own $(APP) rule.
+$(APP): $(APP_OBJ) $(APP_SHADERS) $(ge/RENDER_SHADERS) $(ge/LIB) $(ge/BGFX_LIBS) $(APP_LIBS)
+	@mkdir -p $(@D)
+	$(CXX) $(APP_OBJ) $(APP_LIBS) $(ge/LIB) $(ge/BGFX_LIBS) $(ge/SDL_LIBS) $(FRAMEWORKS) -o $@
+
+# App objects — .cpp files under src/ compile into $(BUILD_DIR)/src/*.o.
+$(BUILD_DIR)/src/%.o: src/%.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) $(SDL_CFLAGS) -MMD -MP -c $< -o $@
+
+# Convenience: build and run.
+run: $(APP)
+	./$(APP)
+
+# Engine + render + bridge objects (.cpp)
 $(BUILD_DIR)/ge/src/%.o: $(ge)/src/%.cpp
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) $(SDL_CFLAGS) -MMD -MP -c $< -o $@
 
-# Engine ObjC++ objects (.mm)
+# Engine + render + bridge objects (.mm)
 $(BUILD_DIR)/ge/src/%.o: $(ge)/src/%.mm
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) $(SDL_CFLAGS) -MMD -MP -c $< -o $@
@@ -260,6 +373,53 @@ $(BUILD_DIR)/$(ge/SHADER_DIR)/%_cs.bin: $(ge/SHADER_DIR)/%_cs.sc $(ge/SHADERC)
 	    --platform $(ge/SHADERC_PLATFORM) -p $(ge/SHADERC_PROFILE) \
 	    -i $(ge/SHADERC_BGFX_INCLUDE) -i $(ge/SHADER_DIR)
 
+# Engine-internal render shaders (compose pass for viewport tilt).
+$(BUILD_DIR)/ge/shaders/%_vs.bin: $(ge/RENDER_SHADER_DIR)/%_vs.sc $(ge/RENDER_SHADER_DIR)/varying.def.sc $(ge/SHADERC)
+	@mkdir -p $(dir $@)
+	$(ge/SHADERC) -f $< -o $@ --type vertex \
+	    --platform $(ge/SHADERC_PLATFORM) -p $(ge/SHADERC_PROFILE) \
+	    --varyingdef $(ge/RENDER_SHADER_DIR)/varying.def.sc \
+	    -i $(ge/SHADERC_BGFX_INCLUDE) -i $(ge/RENDER_SHADER_DIR)
+
+$(BUILD_DIR)/ge/shaders/%_fs.bin: $(ge/RENDER_SHADER_DIR)/%_fs.sc $(ge/RENDER_SHADER_DIR)/varying.def.sc $(ge/SHADERC)
+	@mkdir -p $(dir $@)
+	$(ge/SHADERC) -f $< -o $@ --type fragment \
+	    --platform $(ge/SHADERC_PLATFORM) -p $(ge/SHADERC_PROFILE) \
+	    --varyingdef $(ge/RENDER_SHADER_DIR)/varying.def.sc \
+	    -i $(ge/SHADERC_BGFX_INCLUDE) -i $(ge/RENDER_SHADER_DIR)
+
+# OpenGL ES 3.1 variants — for the Android GLES backend. Output lives
+# in $(BUILD_DIR)/shaders-gles/ and $(BUILD_DIR)/ge/shaders-gles/. The
+# Android Gradle syncAssets task flattens these into assets/build/shaders/
+# so runtime lookups continue to work via ge::resource("build/shaders/...").
+$(BUILD_DIR)/$(ge/SHADER_DIR)-gles/%_vs.bin: $(ge/SHADER_DIR)/%_vs.sc $(ge/SHADERC_VARYINGDEF) $(ge/SHADERC)
+	@mkdir -p $(dir $@)
+	$(ge/SHADERC) -f $< -o $@ --type vertex \
+	    --platform android -p 310_es \
+	    --varyingdef $(ge/SHADERC_VARYINGDEF) \
+	    -i $(ge/SHADERC_BGFX_INCLUDE) -i $(ge/SHADER_DIR)
+
+$(BUILD_DIR)/$(ge/SHADER_DIR)-gles/%_fs.bin: $(ge/SHADER_DIR)/%_fs.sc $(ge/SHADERC_VARYINGDEF) $(ge/SHADERC)
+	@mkdir -p $(dir $@)
+	$(ge/SHADERC) -f $< -o $@ --type fragment \
+	    --platform android -p 310_es \
+	    --varyingdef $(ge/SHADERC_VARYINGDEF) \
+	    -i $(ge/SHADERC_BGFX_INCLUDE) -i $(ge/SHADER_DIR)
+
+$(BUILD_DIR)/ge/shaders-gles/%_vs.bin: $(ge/RENDER_SHADER_DIR)/%_vs.sc $(ge/RENDER_SHADER_DIR)/varying.def.sc $(ge/SHADERC)
+	@mkdir -p $(dir $@)
+	$(ge/SHADERC) -f $< -o $@ --type vertex \
+	    --platform android -p 310_es \
+	    --varyingdef $(ge/RENDER_SHADER_DIR)/varying.def.sc \
+	    -i $(ge/SHADERC_BGFX_INCLUDE) -i $(ge/RENDER_SHADER_DIR)
+
+$(BUILD_DIR)/ge/shaders-gles/%_fs.bin: $(ge/RENDER_SHADER_DIR)/%_fs.sc $(ge/RENDER_SHADER_DIR)/varying.def.sc $(ge/SHADERC)
+	@mkdir -p $(dir $@)
+	$(ge/SHADERC) -f $< -o $@ --type fragment \
+	    --platform android -p 310_es \
+	    --varyingdef $(ge/RENDER_SHADER_DIR)/varying.def.sc \
+	    -i $(ge/SHADERC_BGFX_INCLUDE) -i $(ge/RENDER_SHADER_DIR)
+
 # Desktop player binary (symmetry with ge/ios and ge/android).
 .PHONY: ge/player
 ge/player: $(ge/PLAYER)
@@ -268,9 +428,70 @@ $(ge/PLAYER): $(ge/PLAYER_SRC) $(ge/LIB) $(ge/BGFX_LIBS)
 	@mkdir -p $(@D)
 	$(CXX) -std=c++20 -DGE_DESKTOP $(ge/INCLUDES) $(ge/BGFX_ALL_INCLUDES) $(ge/PLAYER_SRC) $(ge/LIB) $(ge/BGFX_LIBS) $(ge/SDL_LIBS) $(FRAMEWORKS) -o $@
 
-# iOS Xcode project generation
+# imgdiff helper — used by matrix-test.sh for reference-image checks.
+.PHONY: ge/imgdiff
+ge/imgdiff: $(ge/IMGDIFF)
+
+$(ge/IMGDIFF): $(ge)/tools/imgdiff.cpp
+	@mkdir -p $(@D)
+	$(CXX) -std=c++20 -O2 -I$(ge)/include -I$(ge)/vendor/include $< -o $@
+
+# ────────────────────────────────────────────────
+# Mobile targets
+#
+#   ge/ios, ge/android — build the *consuming app's* mobile distribution
+#     project (the `ios/` or `android/` directory produced by ge/ios-init /
+#     ge/android-init). These are the usual entry points for app authors.
+#
+#   ge/player-ios, ge/player-android — build the brokered ge *player* binary
+#     for iOS / Android. Used for remote-rendering (ged + server) setups, and
+#     by matrix-test.sh's player cells. Independent of the consuming app.
+#
+#   ge/ios-init, ge/android-init — generate the app-side ios/ or android/
+#     scaffolding from ge/tools/{ios,android}-template. Parent passes APP_ID
+#     and APP_NAME.
+# ────────────────────────────────────────────────
+
+# ── Consuming app's iOS build ──────────────────────────────────────
+
+# Generate the Xcode project (if not already generated) and build the .app
+# into ios/build/xcode/Debug-iphonesimulator/ (or the device equivalent).
+# Expects ios/CMakeLists.txt to exist — run `make ge/ios-init` first.
+#
+# We depend on $(APP_SHADERS) and $(ge/RENDER_SHADERS) so they exist on disk
+# when CMake's file(GLOB ...) for the bundle Resources runs.
 .PHONY: ge/ios
-ge/ios:
+ge/ios: $(APP_SHADERS) $(ge/RENDER_SHADERS)
+	@if [ ! -d ios ]; then \
+	    echo "ios/ not found — run 'make ge/ios-init APP_ID=... APP_NAME=...' first"; \
+	    exit 1; \
+	fi
+	cd ios && cmake -G Xcode -B build/xcode \
+	    -DCMAKE_SYSTEM_NAME=iOS \
+	    -DCMAKE_OSX_ARCHITECTURES=arm64 \
+	    -DCMAKE_OSX_SYSROOT=iphonesimulator \
+	    -DCMAKE_OSX_DEPLOYMENT_TARGET=16.0
+	cd ios && xcodebuild \
+	    -project build/xcode/$(APP_DISPLAY_NAME).xcodeproj -scheme $(APP_DISPLAY_NAME) \
+	    -configuration Debug -destination "generic/platform=iOS Simulator" \
+	    build
+
+# ── Consuming app's Android build ──────────────────────────────────
+
+.PHONY: ge/android
+ge/android: $(ge/APP_SHADERS_GLES) $(ge/RENDER_SHADERS_GLES)
+	@if [ ! -d android ]; then \
+	    echo "android/ not found — run 'make ge/android-init APP_ID=... APP_NAME=...' first"; \
+	    exit 1; \
+	fi
+	cd android && ./gradlew assembleDebug
+	@echo "APK: android/app/build/outputs/apk/debug/app-debug.apk"
+
+# ── ge player for iOS / Android ────────────────────────────────────
+
+# Generate the Xcode project for the ge player binary (tools/ios/).
+.PHONY: ge/player-ios
+ge/player-ios:
 	cd $(ge)/tools/ios && cmake -G Xcode -B build/xcode \
 	    -DCMAKE_SYSTEM_NAME=iOS \
 	    -DCMAKE_OSX_ARCHITECTURES=arm64 \
@@ -278,9 +499,9 @@ ge/ios:
 	    -DCMAKE_OSX_DEPLOYMENT_TARGET=16.0
 	@echo "Open $(ge)/tools/ios/build/xcode/Player.xcodeproj in Xcode"
 
-# iOS player archive (generate Xcode project + xcodebuild archive)
-.PHONY: ge/ios-archive
-ge/ios-archive: ge/ios
+# ge player iOS archive (generate project + xcodebuild archive)
+.PHONY: ge/player-ios-archive
+ge/player-ios-archive: ge/player-ios
 	cd $(ge)/tools/ios && xcodebuild \
 	    -project build/xcode/Player.xcodeproj \
 	    -scheme Player \
@@ -289,9 +510,9 @@ ge/ios-archive: ge/ios
 	    -allowProvisioningUpdates \
 	    archive
 
-# iOS player TestFlight upload (archive + export/upload to App Store Connect)
-.PHONY: ge/ios-testflight
-ge/ios-testflight: ge/ios-archive
+# ge player TestFlight upload (archive + export/upload to App Store Connect)
+.PHONY: ge/player-ios-testflight
+ge/player-ios-testflight: ge/player-ios-archive
 	cd $(ge)/tools/ios && xcodebuild -exportArchive \
 	    -archivePath build/Player.xcarchive \
 	    -exportOptionsPlist ExportOptions.plist \
@@ -299,31 +520,34 @@ ge/ios-testflight: ge/ios-archive
 	    -allowProvisioningUpdates
 	@echo "Uploaded to App Store Connect — check TestFlight in https://appstoreconnect.apple.com"
 
-# Android debug APK (player)
-.PHONY: ge/android
-ge/android:
+# ge player Android debug APK
+.PHONY: ge/player-android
+ge/player-android:
 	cd $(ge)/tools/android && ./gradlew assembleDebug
 	@echo "APK: $(ge)/tools/android/app/build/outputs/apk/debug/app-debug.apk"
 
-# Android release AAB for Play Store upload
-.PHONY: ge/android-release
-ge/android-release:
+# ge player Android release AAB for Play Store upload
+.PHONY: ge/player-android-release
+ge/player-android-release:
 	cd $(ge)/tools/android && ./gradlew bundleRelease
 	@echo "AAB: $(ge)/tools/android/app/build/outputs/bundle/release/app-release.aab"
 
-# Direct-mode project generation
-# Parent Makefile sets APP_ID and APP_NAME before calling.
+# ── Mobile project scaffolding (consuming app) ─────────────────────
+
+# Parent Makefile sets APP_ID (bundle id / package) and APP_NAME before
+# calling. APP_DISPLAY_NAME defaults to APP_NAME; override for a prettier
+# on-device name while keeping APP_NAME as the lowercase binary name.
 .PHONY: ge/android-init
 ge/android-init:
 	@if [ -z "$(APP_ID)" ] || [ -z "$(APP_NAME)" ]; then \
 		echo "Error: set APP_ID and APP_NAME"; exit 1; fi
-	$(ge)/tools/init-android.sh "$(APP_ID)" "$(APP_NAME)"
+	$(ge)/tools/init-android.sh "$(APP_ID)" "$(APP_DISPLAY_NAME)"
 
 .PHONY: ge/ios-init
 ge/ios-init:
 	@if [ -z "$(APP_ID)" ] || [ -z "$(APP_NAME)" ]; then \
 		echo "Error: set APP_ID and APP_NAME"; exit 1; fi
-	$(ge)/tools/init-ios.sh "$(APP_ID)" "$(APP_NAME)" "$(IOS_DEVELOPMENT_TEAM)"
+	$(ge)/tools/init-ios.sh "$(APP_ID)" "$(APP_DISPLAY_NAME)" "$(IOS_DEVELOPMENT_TEAM)"
 
 # ────────────────────────────────────────────────
 # Generic targets (use CLEAN, COMPILE_DB_DEPS)
@@ -398,6 +622,86 @@ ged-test:
 	fi
 	cd $(ge)/ged && go test ./...
 
+# ────────────────────────────────────────────────
+# End-to-end test matrix
+# ────────────────────────────────────────────────
+#
+# `make check` runs the full mobile/desktop test matrix — each cell is its
+# own make rule (cell.<name>) that shells out to ge/tools/matrix-cell.sh.
+# Cells fail loudly if they can't run (missing device, missing pipeline,
+# etc.). Consumers silence known-impossible cells with CHECK_EXCLUDE:
+#
+#     make check CHECK_EXCLUDE='android-device-tablet-*'
+#
+# Glob syntax: `*` matches any run of characters within a cell name.
+# Multiple patterns: space-separated.
+
+# Canonical 24-cell list. Cells are grouped for readability.
+ge/CELLS := \
+    desktop-dist desktop-player \
+    ios-sim-phone-dist ios-sim-phone-player \
+    ios-sim-tablet-dist ios-sim-tablet-player \
+    ios-device-phone-dist ios-device-phone-player \
+    ios-device-tablet-dist ios-device-tablet-player \
+    android-emu-phone-dist android-emu-phone-player \
+    android-emu-tablet-dist android-emu-tablet-player \
+    android-device-phone-dist android-device-phone-player \
+    android-device-tablet-dist android-device-tablet-player \
+    desktop-debug-dist desktop-debug-player \
+    ios-debug-dist ios-debug-player \
+    android-debug-dist android-debug-player
+
+# Translate shell-style globs in CHECK_EXCLUDE to make's `%` syntax and
+# filter them out of the cell list. Accepts space-separated patterns.
+ge/CHECK_EXCLUDE_PATTERNS := $(subst *,%,$(CHECK_EXCLUDE))
+ge/CHECK_CELLS := $(filter-out $(ge/CHECK_EXCLUDE_PATTERNS),$(ge/CELLS))
+
+# Per-cell rule — every cell name is its own make target prefixed `cell.`.
+# Boilerplate enumeration is deliberate: the spec calls for explicit
+# enumeration so `make cell.ios-sim-tablet-dist` works and `make -n check`
+# prints a readable dep list.
+.PHONY: $(addprefix cell.,$(ge/CELLS))
+cell.desktop-dist:               ; $(ge)/tools/matrix-cell.sh desktop-dist
+cell.desktop-player:             ; $(ge)/tools/matrix-cell.sh desktop-player
+cell.ios-sim-phone-dist:         ; $(ge)/tools/matrix-cell.sh ios-sim-phone-dist
+cell.ios-sim-phone-player:       ; $(ge)/tools/matrix-cell.sh ios-sim-phone-player
+cell.ios-sim-tablet-dist:        ; $(ge)/tools/matrix-cell.sh ios-sim-tablet-dist
+cell.ios-sim-tablet-player:      ; $(ge)/tools/matrix-cell.sh ios-sim-tablet-player
+cell.ios-device-phone-dist:      ; $(ge)/tools/matrix-cell.sh ios-device-phone-dist
+cell.ios-device-phone-player:    ; $(ge)/tools/matrix-cell.sh ios-device-phone-player
+cell.ios-device-tablet-dist:     ; $(ge)/tools/matrix-cell.sh ios-device-tablet-dist
+cell.ios-device-tablet-player:   ; $(ge)/tools/matrix-cell.sh ios-device-tablet-player
+cell.android-emu-phone-dist:     ; $(ge)/tools/matrix-cell.sh android-emu-phone-dist
+cell.android-emu-phone-player:   ; $(ge)/tools/matrix-cell.sh android-emu-phone-player
+cell.android-emu-tablet-dist:    ; $(ge)/tools/matrix-cell.sh android-emu-tablet-dist
+cell.android-emu-tablet-player:  ; $(ge)/tools/matrix-cell.sh android-emu-tablet-player
+cell.android-device-phone-dist:  ; $(ge)/tools/matrix-cell.sh android-device-phone-dist
+cell.android-device-phone-player: ; $(ge)/tools/matrix-cell.sh android-device-phone-player
+cell.android-device-tablet-dist: ; $(ge)/tools/matrix-cell.sh android-device-tablet-dist
+cell.android-device-tablet-player: ; $(ge)/tools/matrix-cell.sh android-device-tablet-player
+cell.desktop-debug-dist:         ; $(ge)/tools/matrix-cell.sh desktop-debug-dist
+cell.desktop-debug-player:       ; $(ge)/tools/matrix-cell.sh desktop-debug-player
+cell.ios-debug-dist:             ; $(ge)/tools/matrix-cell.sh ios-debug-dist
+cell.ios-debug-player:           ; $(ge)/tools/matrix-cell.sh ios-debug-player
+cell.android-debug-dist:         ; $(ge)/tools/matrix-cell.sh android-debug-dist
+cell.android-debug-player:       ; $(ge)/tools/matrix-cell.sh android-debug-player
+
+.PHONY: check matrix-test
+check matrix-test: $(addprefix cell.,$(ge/CHECK_CELLS))
+	@echo "── Matrix summary ──"
+	@printf '  %-40s %s\n' "Cells run:" "$(words $(ge/CHECK_CELLS))"
+	@printf '  %-40s %s\n' "Cells excluded via CHECK_EXCLUDE:" "$(words $(filter-out $(ge/CHECK_CELLS),$(ge/CELLS)))"
+	@[ -z "$(filter-out $(ge/CHECK_CELLS),$(ge/CELLS))" ] || \
+	    printf '  %-40s %s\n' "  Excluded:" "$(filter-out $(ge/CHECK_CELLS),$(ge/CELLS))"
+
+# Report the resolved cell list without running anything.
+.PHONY: check-list
+check-list:
+	@echo "Cells that would run:"
+	@printf '  %s\n' $(ge/CHECK_CELLS)
+	@echo "Cells excluded:"
+	@printf '  %s\n' $(filter-out $(ge/CHECK_CELLS),$(ge/CELLS))
+
 # Canned recipe for the parent to expand at the end of its init target.
 define ge/INIT_DONE
 	@echo ""
@@ -406,3 +710,7 @@ define ge/INIT_DONE
 	@echo "  make run          # Build and run"
 	@echo "  make test         # Run all tests"
 endef
+
+# Dep-file include for the app's own objects. Engine object .d files are
+# already picked up by their own implicit pattern-rule dep tracking.
+-include $(APP_OBJ:.o=.d)

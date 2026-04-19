@@ -25,94 +25,6 @@ targets:
         event loop.
     origin: migrated from docs/targets.md
     discovered: 2026-04-12
-  T2:
-    name: Smoke test validates network connectivity between laptop and device
-    status: identified
-    value: 1.0
-    cost: 2.0
-    acceptance:
-    - '`smoke-test.sh` detects when the device cannot reach ged over the network, before any player launch or code debugging begins. Reports the specific failure (no WiFi IP, firewall blocking, device unreachable, or device→laptop path broken) with actionable remediation.'
-    context: 'Lost 2+ hours debugging code when the actual problem was laptop WiFi silently stopped accepting incoming connections. All local checks passed (ged listening, device registered via USB). The device→laptop network path was broken but nothing detected it. Need two layers: local network sanity checks (WiFi IP, firewall, ping device) and a `ge-probe` iOS app for definitive device→laptop HTTP connectivity testing.'
-    origin: discovered while using smoke-test.sh during yourworld 🎯T8 debugging
-    discovered: 2026-04-12
-  T3:
-    name: Player sends mip cache manifest before rendering begins
-    status: identified
-    value: 8.0
-    cost: 5.0
-    acceptance:
-    - On connect, player sends all cached mip hash values to the server (via ge) before the first wire command. Server skips texture upload commands for any mip already cached on the device. Rendering pipeline is only mutated for uncached textures. Reconnection with a fully-cached device produces no texture upload wire commands.
-    context: Currently the server sends all texture data and the player reactively checks its local mip cache (hit/miss). This still mutates the rendering pipeline with large WriteTexture commands even when the player already has the data. For ~270MB of initial textures, this dominates reconnection time. A preemptive cache manifest exchange would let the server skip cached uploads entirely.
-    origin: migrated from docs/targets.md
-    discovered: 2026-04-12
-  T4:
-    name: playerLoop takes a config struct with named fields
-    status: identified
-    value: 3.0
-    cost: 2.0
-    acceptance:
-    - '`playerLoop()` accepts a single `PlayerLoopConfig` struct (or similar) instead of positional parameters. Call sites use designated initializers (`.checkOverride = ...`, `.discover = ...`, `.name = ...`). The `Player` constructor may also be refactored to a config struct if touched.'
-    context: '`playerLoop` accumulated parameters across iterations (discover → checkOverride + discover + name). Positional args are opaque at call sites. Named fields via a config struct make the API self-documenting and easier to extend.'
-    origin: migrated from docs/targets.md
-    discovered: 2026-04-12
-  T5:
-    name: Player has a connection management screen
-    status: identified
-    value: 3.0
-    cost: 3.0
-    acceptance:
-    - Player has a gesture-accessible screen to scan a new QR code, manually enter a server address, or forget the saved address. Accessible from the connected state (not just on startup).
-    context: The persistence mechanism works (player remembers server address), but there's no UI for the user to manage saved connections.
-    origin: migrated from docs/targets.md
-    discovered: 2026-04-12
-  T6:
-    name: Player can switch between active servers without QR
-    status: identified
-    value: 2.0
-    cost: 2.0
-    acceptance:
-    - Dashboard has a "move player to server" control. Player switches seamlessly via `kServerAssignedMagic`. No disconnect/reconnect visible to user.
-    context: With persistent address, player auto-connects to saved server. If two servers are on the same network, player has no reason to fall back to QR. Dashboard is the natural control plane.
-    origin: migrated from docs/targets.md
-    discovered: 2026-04-12
-  T7:
-    name: Audio pauses when the app is backgrounded
-    status: identified
-    value: 5.0
-    cost: 2.0
-    acceptance:
-    - On iOS and Android, backgrounding the app silences all ge audio. Foregrounding resumes it. Works in both wire mode (player) and direct mode (standalone app). No game code changes required. Desktop platforms are unaffected.
-    context: User reported music keeps playing when the iOS app is backgrounded. Currently `ge::Audio` (server-side) sends play/stop/volume commands, and `AudioPlayer` (player-side, wire mode) or equivalent direct-mode playback handles them. Neither layer responds to app lifecycle events. The engine should intercept `SDL_EVENT_DID_ENTER_BACKGROUND` / `SDL_EVENT_DID_ENTER_FOREGROUND` and pause/resume audio automatically. In wire mode this means the player pauses its `AudioPlayer`; in direct mode the session or audio subsystem does it directly.
-    origin: manual (user-reported from yourworld)
-    discovered: 2026-04-12
-  T8:
-    name: Distribution iOS builds support accelerometer simulation in the simulator
-    status: identified
-    value: 3.0
-    cost: 5.0
-    acceptance:
-    - ⌥+WASD tilts the simulated device's accelerometer in distribution/release iOS Simulator builds (not just Debug builds)
-    - Test on a Release-configuration iOS Simulator build of any ge-based app
-    context: iOS Simulator's accelerometer emulation (⌥+WASD keyboard shortcut) only works in Debug-configuration builds by default. Distribution/Release builds disable it, which makes it impossible to test tilt-based input on the simulator without a physical device. Likely caused by an Info.plist key, build flag, or entitlement that's stripped in Release configurations. Investigate and document the fix in ge so all consumer apps benefit.
-    origin: manual
-    discovered: 2026-04-15
-  T9:
-    name: ge exposes device tilt as optional parallax input to games
-    status: identified
-    value: 5.0
-    cost: 5.0
-    acceptance:
-    - RunConfig has a parallaxFactor field (float, default 0)
-    - When parallaxFactor > 0, the player captures Core Motion attitude and sends deltas to the server
-    - Context exposes the current parallax delta (axis-angle or quaternion)
-    - Baseline auto-settles via EMA so sustained tilts become the new neutral
-    - A sample game demonstrates the effect
-    context: |-
-      Reproduce the Apple Spatial Scenes effect: games can tilt their scene in response to device tilt. The player reads Core Motion attitude (quaternion), maintains a baseline via exponential moving average (lerp with α = 1 - exp(-dt/τ), no normalisation needed — tiny steps keep magnitude near unit), and sends the delta between current and baseline to the server.
-
-      Games opt in via RunConfig.parallaxFactor (float, 0 = off, >0 scales the effect). Context exposes the current parallax via ctx.parallax(). The game decides which parts of the scene to adjust — typically camera or world layers, not UI. Gyroscope-derived attitude is used (not gravity alone) so twisting around the vertical axis also works.
-    origin: user request
-    discovered: 2026-04-15
   T10:
     name: ge has a sample app that exercises engine features
     status: identified
@@ -231,3 +143,292 @@ targets:
     - T11.5
     origin: decomposed from T11
     discovered: 2026-04-12
+  T12:
+    name: ge's render subsystem synthesises ⌥WASD accelerometer events uniformly across all host contexts
+    status: identified
+    value: 5.0
+    cost: 5.0
+    acceptance:
+    - ⌥WASD synthesis code lives in a single ge translation unit, called from both player_core.cpp and ge's direct-mode render path
+    - 'Runs correctly in: desktop player, iOS simulator (player & distribution), Android emulator (player & distribution)'
+    - Tilt-driven game (e.g. tiltbuggy) compiled as a distribution build runs on the iOS simulator and responds to ⌥WASD exactly as it does against the desktop player
+    - Engine-side code is unchanged — games only ever handle SDL_EVENT_SENSOR_UPDATE
+    context: |-
+      ge has two logical subsystems: render (pixels + input) and engine (game logic). In player scenarios they live in separate processes bridged by ged; in distribution builds they live in the same process with the wire short-circuited. In all cases the engine subsystem should only see SDL_EVENT_SENSOR_UPDATE — it does not know or care whether the sensor is real hardware or synthesised.
+
+      Currently ⌥WASD synthesis is implemented inline in tools/player_core.cpp (desktop player, iOS simulator, Android emulator running player). It's NOT implemented in the in-process render subsystem used by distribution builds, so a tilt-driven game compiled as a standalone iOS/Android app running on a simulator/emulator gets no input.
+
+      Fix: extract the synthesis logic (detect-no-accel + keyboard-to-SDL_EVENT_SENSOR_UPDATE + orientation rotation) into a reusable ge helper, and invoke it from every render-subsystem host: player_core.cpp AND ge's direct-mode render path. "No accelerometer" detection should be programmatic — SDL sensor enumeration plus runtime platform check for simulator/emulator.
+    origin: discovered during 🎯T10 tiltbuggy work when writing main.cpp input handling
+    discovered: 2026-04-16
+  T13:
+    name: ⌥-gated mouse movement simulates accelerometer (replaces or supplements ⌥WASD)
+    status: identified
+    value: 3.0
+    cost: 2.0
+    acceptance:
+    - Holding ⌥ and moving the mouse inside the ge window produces SDL_EVENT_SENSOR_UPDATE events with sensor data proportional to mouse position relative to window centre
+    - Releasing ⌥ zeros the tilt
+    - Works in the desktop player and in DirectRenderHost (distribution mode)
+    - Game code is unchanged — only the render subsystem is affected
+    context: |-
+      ⌥WASD gives 8-direction quantised tilt — fine for directional input but a poor analog of a real accelerometer. ⌥-gated mouse gives a continuous 2D signal that directly mirrors device tilt: position within the window = tilt magnitude and direction (centre = neutral, edge = max). Natural dead-zone at centre, no chording for diagonals, feels intuitive (hold a modifier and "tilt" by aiming).
+
+      Position-based, not delta-based — no cursor drift, no re-centre needed, matches the "where is the device tilted right now" model.
+
+      Implementation: when ⌥ is held, sample mouse position each frame; emit SDL_EVENT_SENSOR_UPDATE with axes = (mouseX − windowCentreX) / scale and (mouseY − windowCentreY) / scale, capped at ±1.0 × g. When ⌥ is released, emit one final event with (0, 0) and stop sampling.
+
+      Lives in the render subsystem (alongside the ⌥WASD synthesis or replacing it), in both the desktop player and DirectRenderHost. Game code unchanged — still just sees SDL_EVENT_SENSOR_UPDATE.
+    depends_on:
+    - T12
+    origin: user suggestion during tiltbuggy architecture validation
+    discovered: 2026-04-16
+  T14:
+    name: Render subsystem visibly tilts the viewport in response to synthesised accelerometer input
+    status: identified
+    value: 3.0
+    cost: 3.0
+    acceptance:
+    - When synthesised accelerometer input is non-zero, the rendered viewport is visibly tilted in 3D (perspective quad transform matching the tilt angles)
+    - Works in direct mode (render-to-texture → composite) and player mode (decoded H.264 texture presented on tilted quad)
+    - Zero tilt produces pixel-exact identity presentation (no regression for static content)
+    - No game-code changes — purely a render-subsystem effect
+    context: |-
+      On a real device, a tilt-driven game's screen tilts naturally with the physical device. On desktop/simulator/emulator where the accelerometer is synthesised (⌥WASD or ⌥-mouse), there's no physical tilt cue — the user only sees the game's reaction to the simulated gravity. Making the viewport itself visibly tilt mimics the real experience and makes the synthesis mechanism immediately intuitive.
+
+      Implementation: after the game renders, the render subsystem composites the final image onto a quad in 3D space rotated by the current synthesised tilt. In direct mode this means adding an intermediate render-to-texture pass. In player mode the decoded H.264 texture is presented on a tilted quad instead of blitted straight.
+
+      Concerns:
+      - Extra RTT pass in direct mode adds cost (negligible for phone-class content).
+      - 2D orthographic games will show perspective distortion at the viewport edges when tilted. That's arguably a feature — it IS being tilted.
+      - Pure UI or menu screens may look jarring; games that want a static view while in menus should toggle the effect off (it's implicitly off when tilt input is zero — the identity transform).
+
+      Depends on 🎯T12 (synthesis plumbing) being in place first.
+    depends_on:
+    - T12
+    origin: user suggestion during tiltbuggy architecture validation
+    discovered: 2026-04-16
+  T15:
+    name: Player binary restructured around named PlayerWireBridge + PlayerRender classes
+    status: achieved
+    value: 3.0
+    cost: 5.0
+    acceptance:
+    - tools/player_core.cpp is gone (or reduced to a thin shim)
+    - src/bridge/PlayerWireBridge.{h,cpp} exists, exposing typed wire operations symmetric to ServerWireBridge
+    - Player binary uses AccelSynth from src/render/ rather than duplicating the synthesis code
+    - Player + tiltbuggy --brokered round-trip still works
+    context: |-
+      tools/player_core.cpp is currently a single 605-line `playerCore()` function that mixes wire transport (WebSocket connection, SessionConfig RX, DeviceInfo TX, SDL event TX, H.264 RX) with local rendering (SDL window, SDL_Renderer, SDL_Texture, decoder, AVCC parser, present loop) and ⌥-mouse synthesis (now duplicated against the AccelSynth helper in the engine binary).
+
+      Refactor into:
+      - src/bridge/PlayerWireBridge.{h,cpp} — owns WsConnection, exposes typed helpers (sendSdlEvent, sendDeviceInfo, waitForSessionConfig, onVideoFrame, pumpWire). Symmetric to ServerWireBridge.
+      - tools/PlayerRender.{h,cpp} or similar — owns SDL window + SDL_Renderer + SDL_Texture + decoder + AccelSynth + main loop. Consumes a PlayerWireBridge.
+      - tools/player.cpp — main(): build PlayerRender + PlayerWireBridge, wire them together, run.
+
+      Lets us delete the duplicated ⌥-mouse synthesis code (use AccelSynth from src/render/) and gives the player binary the same architectural clarity as the engine.
+    origin: 'deferred from PR #11 (subsystem split)'
+    discovered: 2026-04-16
+    achieved: 2026-04-17
+  T16:
+    name: TiltBuggy vehicle dynamics feel right
+    status: identified
+    value: 3.0
+    cost: 3.0
+    acceptance:
+    - Tilting in a steady direction produces a smooth predictable arc with no oscillation
+    - Releasing tilt lets the buggy decelerate without strange angular spinning
+    - Quick tilt changes feel responsive but not jittery
+    - Tuning constants are exposed via tweaks or at least clearly named in Scene.cpp
+    context: Current arcade implementation in Scene::step uses chassis as the only body, killing lateral velocity (kGrip = 0.85) and applying torque proportional to angle between heading and velocity (5.0 * deltaAngle * speed). It works but feels slightly wonky. Iterate on the constants, or escalate to real vehicle dynamics with wheel bodies if the simple model can't feel right.
+    origin: discovered while testing tiltbuggy stage 2
+    discovered: 2026-04-16
+  T17:
+    name: Player binary applies viewport tilt composite symmetric to DirectRenderHost
+    status: achieved
+    value: 3.0
+    cost: 5.0
+    acceptance:
+    - Player binary's display of decoded H.264 frames tilts in 3D based on its local sensor input (real accelerometer or AccelSynth synthesis)
+    - 'Visible effect is equivalent to DirectRenderHost''s viewport composite: rendered image as a tilted 3D quad'
+    - Server-side rendering remains untilted — tilt is purely a display-time effect on the player side
+    - Works on desktop player, iOS simulator player, iOS device player, Android emulator player, Android device player
+    context: |-
+      DirectRenderHost (distribution mode) already applies viewport tilt via an offscreen FB + composite quad pass. In brokered mode the render subsystem is the player binary, which currently decodes H.264 to an SDL_Texture and blits flat via SDL_Renderer.
+
+      The architectural principle is symmetric: any render subsystem in any modality should apply the same visual tilt when sensor input is non-zero. Without this, brokered-mode playback misses the "device tilting in hands" feedback that makes ⌥-mouse synthesis intuitive — and physical devices streaming a game from a laptop lose a feature they'd have if the game were bundled (distribution mode).
+
+      Implementation options:
+      1. SDL_RenderGeometryRaw with CPU-computed tilted corners. Simple, works inside existing player_core.cpp, but limited perspective correctness (linear UV interpolation). Tessellate the quad into a grid to approximate.
+      2. Replace SDL_Renderer path with bgfx (like DirectRenderHost). More code change but gives identical composite pipeline.
+
+      Naturally pairs with 🎯T15 (player restructure). Doing them together lets the tilt logic live in a clean place (PlayerWireBridge + a local render module that mirrors DirectRenderHost).
+    depends_on:
+    - T15
+    origin: 'gap discovered during mobile validation of PR #11 architecture'
+    discovered: 2026-04-16
+    achieved: 2026-04-17
+  T18:
+    name: bgfx builds and renders on iOS + Android for distribution apps
+    status: achieved
+    value: 4.0
+    cost: 8.0
+    actual_cost: 13.0
+    acceptance:
+    - ge/ios-init and ge/android-init generate scaffolds that compile and link via Module.mk
+    - '`make ge/ios` produces a runnable .app for iOS simulator that renders a ge::run-based game (verified with tiltbuggy)'
+    - '`make ge/android` produces a runnable APK that renders via bgfx/Vulkan on an Android emulator'
+    - ios-sim-dist and android-emu-dist matrix-test cells go green
+    context: 'The current init-ios.sh / init-android.sh templates generate ge-oriented scaffolds but the resulting builds fail at link time: Box2D, bgfx (amalgamated compiled for iOS/Android compat), and the not-yet-split SessionHost (which references ServerWireBridge unconditionally) all need port/refactor work. Module.mk''s bgfx variables currently hardcode include/compat/osx — iOS needs include/compat/ios and Android needs include/compat/android. Also bgfx Vulkan backend needs enabling for Android (currently only Metal is enabled). Likely split SessionHost into direct-only vs brokered pieces so distribution builds don''t pull in WebSocket/asio unnecessarily.'
+    origin: gap surfaced by the new matrix-test's *-dist cells failing at build time
+    discovered: 2026-04-18
+    achieved: 2026-04-19
+  T19:
+    name: 'render-engine-bridge-split branch can be merged: the full mobile matrix of automated + device smokes runs clean'
+    kind: verify
+    status: identified
+    value: 0.0
+    cost: 0.0
+    observable: true
+    acceptance:
+    - 'All 6 automated matrix-test cells pass on current hardware: desktop-dist, desktop-player, ios-sim-dist, ios-sim-player, android-emu-dist, android-emu-player'
+    - Physical-device smoke passes on iPhone (dist + player)
+    - Physical-device smoke passes on iPad Pippa (dist + player)
+    - Physical-device smoke passes on Android phone (dist + player)
+    - rotation-stability-test.sh passes on iOS sim and at least one iOS device
+    - '60s soak on each active cell: no crashes, no magenta frames, no Metal/Vulkan/GLES validation errors in logs'
+    - Clean app exit on all cells; crash-report fetch returns empty for the test window
+    - No unresolved regressions flagged by smoke-test.sh post-run
+    context: |-
+      Gate for merging the render-engine-bridge-split branch (15+ commits: engine/render/bridge split, RenderHost extraction, PlayerWireBridge + PlayerRender, AccelSynth, TiltBuggy stage 2 physics, bgfx port to iOS Metal + Android GLES, iOS rotation race fix, Android Adreno workaround via GLES pivot, matrix-test.sh, rotation-stability-test.sh).
+
+      User's explicit bar for merge: "games can pick this up and run with it without any concerns about weird edge case behaviour on different platforms, builds, remote/distribution."
+
+      Matrix (full, once all devices present):
+      - macOS × {dist, player} = 2
+      - iOS × {sim, device} × {phone, tablet} × {dist, player} = 8
+      - Android × {emu, device} × {phone, tablet} × {dist, player} = 8
+      Total: 18. With Android tablet device excluded (device on order): 16 active.
+
+      Plus a debug-build smoke cycle of 6 cells (platform × mode, one runtime).
+
+      matrix-test.sh currently covers 6 automatable cells (sim/emu, no form-factor split). Extending to the full matrix is follow-on work (form-factor split, device cells, debug cycle — each a sub-target). The minimum gate for THIS round is: all currently-implemented cells pass, physical devices hand-verified via ge/tools/smoke-test.sh, rotation-stability-test green on iOS.
+    verifies:
+    - T18
+    origin: manual
+    discovered: 2026-04-19
+  T2:
+    name: Smoke test validates network connectivity between laptop and device
+    status: identified
+    value: 1.0
+    cost: 2.0
+    acceptance:
+    - '`smoke-test.sh` detects when the device cannot reach ged over the network, before any player launch or code debugging begins. Reports the specific failure (no WiFi IP, firewall blocking, device unreachable, or device→laptop path broken) with actionable remediation.'
+    context: 'Lost 2+ hours debugging code when the actual problem was laptop WiFi silently stopped accepting incoming connections. All local checks passed (ged listening, device registered via USB). The device→laptop network path was broken but nothing detected it. Need two layers: local network sanity checks (WiFi IP, firewall, ping device) and a `ge-probe` iOS app for definitive device→laptop HTTP connectivity testing.'
+    origin: discovered while using smoke-test.sh during yourworld 🎯T8 debugging
+    discovered: 2026-04-12
+  T20:
+    name: rotation-stability-test correctly detects app liveness across orientation changes
+    status: identified
+    value: 0.0
+    cost: 0.0
+    observable: true
+    acceptance:
+    - rotation-stability-test.sh --platform ios-sim --app-id com.squz.tiltbuggy --cycles 10 reports PASS end-to-end against the iPad Air M4 simulator
+    - Liveness check is tolerant of the brief launchctl-list gap during iOS orientation transitions
+    - Android-emu path of the same script is similarly validated and passes
+    context: 'Current rotation-stability-test.sh reports "FAIL: app died after landscape rotation #1" even when the app is clearly alive (no fresh crash reports; `xcrun simctl spawn <udid> launchctl list` confirms the app process is present in rb-legacy state). The detection logic ran fine when tested manually from the shell (exit 0), so the issue is likely a timing/state race in the test''s is_running check — possibly during iOS''s mid-rotation suspension window the process briefly doesn''t appear in launchctl, and the test reads the snapshot at exactly that moment. The product-level rotation fix (drawable-as-truth patch, committed in squz/bgfx ge-fork-upgrade) was validated manually on Pippa earlier (see commit 1471f9d) and no fresh TiltBuggy crash reports appeared during today''s attempts, so this is purely a test-harness detection bug, not a product regression. Likely fix: replace the launchctl-based liveness probe with a retry loop, or use a more robust signal (e.g. successful screenshot implies alive).'
+    origin: manual
+    discovered: 2026-04-19
+  T21:
+    name: 'Physical-device smoke validation for render-engine-bridge-split: iPhone, iPad Pippa, Android phone'
+    status: identified
+    value: 0.0
+    cost: 0.0
+    observable: true
+    acceptance:
+    - 'iPhone: dist + player smoke pass (cold launch, 60s soak, no crashes)'
+    - 'iPad Pippa: dist + player smoke pass, including one manual rotation cycle'
+    - 'Android phone: dist + player smoke pass (requires a USB-connected Android phone; emulator-only is insufficient)'
+    - 'For each device: ge/tools/smoke-test.sh exits 0 and crash-report fetch returns empty for the test window'
+    context: 'Automated matrix-test covers sim/emu only (6 cells, all green as of this commit). 🎯T19''s acceptance includes physical device smokes on iPhone, iPad Pippa, and Android phone × dist/player, but these weren''t run in the session that pushed the branch because: (a) device-signed iOS builds require a different xcodebuild invocation + provisioning, (b) Android device build + install + smoke requires switching adb context to USB device (emulator was the only Android target available mid-session), (c) the user''s priority was shipping the known-good state quickly so downstream games can start. The rotation fix was specifically validated on Pippa in a prior session (commit 1471f9d), giving device-side confidence. To satisfy this target: build signed dist .app / .apk for each device, install, run ge/tools/smoke-test.sh --platform ios-device|android-device --device name per cell, confirm no crash reports, confirm player/dist modes both render.'
+    origin: manual
+    discovered: 2026-04-19
+  T3:
+    name: Player sends mip cache manifest before rendering begins
+    status: identified
+    value: 8.0
+    cost: 5.0
+    acceptance:
+    - On connect, player sends all cached mip hash values to the server (via ge) before the first wire command. Server skips texture upload commands for any mip already cached on the device. Rendering pipeline is only mutated for uncached textures. Reconnection with a fully-cached device produces no texture upload wire commands.
+    context: Currently the server sends all texture data and the player reactively checks its local mip cache (hit/miss). This still mutates the rendering pipeline with large WriteTexture commands even when the player already has the data. For ~270MB of initial textures, this dominates reconnection time. A preemptive cache manifest exchange would let the server skip cached uploads entirely.
+    origin: migrated from docs/targets.md
+    discovered: 2026-04-12
+  T4:
+    name: playerLoop takes a config struct with named fields
+    status: identified
+    value: 3.0
+    cost: 2.0
+    acceptance:
+    - '`playerLoop()` accepts a single `PlayerLoopConfig` struct (or similar) instead of positional parameters. Call sites use designated initializers (`.checkOverride = ...`, `.discover = ...`, `.name = ...`). The `Player` constructor may also be refactored to a config struct if touched.'
+    context: '`playerLoop` accumulated parameters across iterations (discover → checkOverride + discover + name). Positional args are opaque at call sites. Named fields via a config struct make the API self-documenting and easier to extend.'
+    origin: migrated from docs/targets.md
+    discovered: 2026-04-12
+  T5:
+    name: Player has a connection management screen
+    status: identified
+    value: 3.0
+    cost: 3.0
+    acceptance:
+    - Player has a gesture-accessible screen to scan a new QR code, manually enter a server address, or forget the saved address. Accessible from the connected state (not just on startup).
+    context: The persistence mechanism works (player remembers server address), but there's no UI for the user to manage saved connections.
+    origin: migrated from docs/targets.md
+    discovered: 2026-04-12
+  T6:
+    name: Player can switch between active servers without QR
+    status: identified
+    value: 2.0
+    cost: 2.0
+    acceptance:
+    - Dashboard has a "move player to server" control. Player switches seamlessly via `kServerAssignedMagic`. No disconnect/reconnect visible to user.
+    context: With persistent address, player auto-connects to saved server. If two servers are on the same network, player has no reason to fall back to QR. Dashboard is the natural control plane.
+    origin: migrated from docs/targets.md
+    discovered: 2026-04-12
+  T7:
+    name: Audio pauses when the app is backgrounded
+    status: identified
+    value: 5.0
+    cost: 2.0
+    acceptance:
+    - On iOS and Android, backgrounding the app silences all ge audio. Foregrounding resumes it. Works in both wire mode (player) and direct mode (standalone app). No game code changes required. Desktop platforms are unaffected.
+    context: User reported music keeps playing when the iOS app is backgrounded. Currently `ge::Audio` (server-side) sends play/stop/volume commands, and `AudioPlayer` (player-side, wire mode) or equivalent direct-mode playback handles them. Neither layer responds to app lifecycle events. The engine should intercept `SDL_EVENT_DID_ENTER_BACKGROUND` / `SDL_EVENT_DID_ENTER_FOREGROUND` and pause/resume audio automatically. In wire mode this means the player pauses its `AudioPlayer`; in direct mode the session or audio subsystem does it directly.
+    origin: manual (user-reported from yourworld)
+    discovered: 2026-04-12
+  T8:
+    name: Distribution iOS builds support accelerometer simulation in the simulator
+    status: identified
+    value: 3.0
+    cost: 5.0
+    acceptance:
+    - ⌥+WASD tilts the simulated device's accelerometer in distribution/release iOS Simulator builds (not just Debug builds)
+    - Test on a Release-configuration iOS Simulator build of any ge-based app
+    context: iOS Simulator's accelerometer emulation (⌥+WASD keyboard shortcut) only works in Debug-configuration builds by default. Distribution/Release builds disable it, which makes it impossible to test tilt-based input on the simulator without a physical device. Likely caused by an Info.plist key, build flag, or entitlement that's stripped in Release configurations. Investigate and document the fix in ge so all consumer apps benefit.
+    origin: manual
+    discovered: 2026-04-15
+  T9:
+    name: ge exposes device tilt as optional parallax input to games
+    status: identified
+    value: 5.0
+    cost: 5.0
+    acceptance:
+    - RunConfig has a parallaxFactor field (float, default 0)
+    - When parallaxFactor > 0, the player captures Core Motion attitude and sends deltas to the server
+    - Context exposes the current parallax delta (axis-angle or quaternion)
+    - Baseline auto-settles via EMA so sustained tilts become the new neutral
+    - A sample game demonstrates the effect
+    context: |-
+      Reproduce the Apple Spatial Scenes effect: games can tilt their scene in response to device tilt. The player reads Core Motion attitude (quaternion), maintains a baseline via exponential moving average (lerp with α = 1 - exp(-dt/τ), no normalisation needed — tiny steps keep magnitude near unit), and sends the delta between current and baseline to the server.
+
+      Games opt in via RunConfig.parallaxFactor (float, 0 = off, >0 scales the effect). Context exposes the current parallax via ctx.parallax(). The game decides which parts of the scene to adjust — typically camera or world layers, not UI. Gyroscope-derived attitude is used (not gravity alone) so twisting around the vertical axis also works.
+    origin: user request
+    discovered: 2026-04-15

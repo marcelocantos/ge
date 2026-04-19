@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Generate an Android direct-mode project for an ge game.
+# Generate an Android direct-mode project for a ge app.
 #
 # Usage:
 #   ge/tools/init-android.sh <package> <app-name>
@@ -8,8 +8,9 @@
 # Example:
 #   ge/tools/init-android.sh com.squz.mygame "My Game"
 #
-# Creates android/ at the project root with a complete Gradle project
-# that builds a standalone APK (direct rendering via Vulkan/Dawn).
+# Creates $APP_DIR/android/ (where $APP_DIR is the current working directory)
+# with a complete Gradle project that builds a standalone APK (direct
+# rendering via bgfx/Vulkan).
 
 set -euo pipefail
 
@@ -23,20 +24,25 @@ fi
 PACKAGE="$1"
 APP_NAME="$2"
 
-# Derive names from app name (strip spaces for class/project names)
+# Derive names from app name (strip spaces for class/project names).
 STRIPPED="$(echo "$APP_NAME" | tr -d ' ')"
 ACTIVITY="${STRIPPED}Activity"
 CMAKE_PROJECT="$STRIPPED"
-# Java source directory: package dots → slashes
+# Java source directory: package dots → slashes.
 JAVA_DIR="$(echo "$PACKAGE" | tr '.' '/')"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TEMPLATE_DIR="$SCRIPT_DIR/android-template"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-OUT_DIR="$PROJECT_ROOT/android"
+GE_ROOT_ABS="$(cd "$SCRIPT_DIR/.." && pwd)"
+OUT_DIR="$(pwd)/android"
+
+# GE_ROOT reference (relative to $OUT_DIR) so the template works whether ge
+# is a submodule or the consumer is an in-tree sample.
+GE_REL="$(python3 -c "import os,sys; print(os.path.relpath(sys.argv[1], sys.argv[2]))" \
+    "$GE_ROOT_ABS" "$OUT_DIR")"
 
 if [ -d "$OUT_DIR" ]; then
-    echo "Error: android/ already exists. Remove it first to regenerate."
+    echo "Error: $OUT_DIR already exists. Remove it first to regenerate."
     exit 1
 fi
 
@@ -45,25 +51,27 @@ echo "  Package:  $PACKAGE"
 echo "  App name: $APP_NAME"
 echo "  Activity: $PACKAGE.$ACTIVITY"
 echo "  Output:   $OUT_DIR"
+echo "  ge:       $GE_REL (from android/)"
 echo
 
-# Copy static files
+# Static file copy.
 mkdir -p "$OUT_DIR"
-cp -r "$TEMPLATE_DIR/gradle" "$OUT_DIR/"
-cp "$TEMPLATE_DIR/gradlew" "$OUT_DIR/"
-cp "$TEMPLATE_DIR/gradlew.bat" "$OUT_DIR/"
+cp -r "$TEMPLATE_DIR/gradle"       "$OUT_DIR/"
+cp     "$TEMPLATE_DIR/gradlew"     "$OUT_DIR/"
+cp     "$TEMPLATE_DIR/gradlew.bat" "$OUT_DIR/" 2>/dev/null || true
 chmod +x "$OUT_DIR/gradlew"
-cp "$TEMPLATE_DIR/build.gradle" "$OUT_DIR/"
-cp "$TEMPLATE_DIR/settings.gradle" "$OUT_DIR/"
-cp "$TEMPLATE_DIR/gradle.properties" "$OUT_DIR/"
-cp "$TEMPLATE_DIR/.gitignore" "$OUT_DIR/"
+cp "$TEMPLATE_DIR/build.gradle"       "$OUT_DIR/"
+cp "$TEMPLATE_DIR/settings.gradle"    "$OUT_DIR/" 2>/dev/null || true
+cp "$TEMPLATE_DIR/gradle.properties"  "$OUT_DIR/"
+cp "$TEMPLATE_DIR/.gitignore"         "$OUT_DIR/" 2>/dev/null || true
 
-# Generate templated files
+# Templated file generation.
 subst() {
     sed -e "s|__PACKAGE__|$PACKAGE|g" \
         -e "s|__APP_NAME__|$APP_NAME|g" \
         -e "s|__ACTIVITY__|$ACTIVITY|g" \
         -e "s|__CMAKE_PROJECT__|$CMAKE_PROJECT|g" \
+        -e "s|__GE_REL__|$GE_REL|g" \
         "$1"
 }
 
@@ -82,7 +90,7 @@ subst "$TEMPLATE_DIR/app/src/main/res/values/strings.xml.in" > "$OUT_DIR/app/src
 mkdir -p "$OUT_DIR/app/src/main/java/$JAVA_DIR"
 subst "$TEMPLATE_DIR/app/src/main/java/Activity.java.in" > "$OUT_DIR/app/src/main/java/$JAVA_DIR/$ACTIVITY.java"
 
-# Auto-detect Android SDK
+# Auto-detect Android SDK.
 if [ -d "$HOME/Library/Android/sdk" ]; then
     echo "sdk.dir=$HOME/Library/Android/sdk" > "$OUT_DIR/local.properties"
 elif [ -n "${ANDROID_HOME:-}" ]; then
@@ -90,4 +98,4 @@ elif [ -n "${ANDROID_HOME:-}" ]; then
 fi
 
 echo "Done. Build with:"
-echo "  cd android && ./gradlew assembleDebug"
+echo "  make ge/android"

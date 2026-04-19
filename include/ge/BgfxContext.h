@@ -14,6 +14,7 @@ struct BgfxConfig {
     int width  = 820;
     int height = 1180;
     bool headless = false;
+    const char* title = nullptr;  // window title (non-headless only)
 };
 
 class BgfxContext {
