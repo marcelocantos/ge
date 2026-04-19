@@ -748,9 +748,26 @@ GE_ANDROID_TABLET_AVD ?= Pixel_Tablet
 GE_IOS_TABLET_DEVICE ?= Pippa
 GE_IOS_PHONE_DEVICE ?=
 
-# Canonical 24-cell list. Cells are grouped for readability.
+# Per-cell iOS simulator UDID pins for parallelism.
+# When set, matrix-cell.sh uses the specified simulator directly instead of
+# auto-selecting, allowing two cells of the same form factor to run concurrently
+# on distinct simulators under `make -j check`.
+# Override with e.g.: make check GE_IOS_SIM_PHONE_UDID=<UDID> GE_IOS_SIM_TABLET_UDID=<UDID>
+GE_IOS_SIM_PHONE_UDID  ?=
+GE_IOS_SIM_TABLET_UDID ?=
+
+# Per-cell Android emulator serial pins for parallelism.
+# When set, matrix-cell.sh targets the given emulator serial instead of
+# auto-selecting, allowing phone and tablet cells to run concurrently.
+# Override with e.g.: make check GE_ANDROID_EMU_PHONE_SERIAL=emulator-5554 GE_ANDROID_EMU_TABLET_SERIAL=emulator-5556
+GE_ANDROID_EMU_PHONE_SERIAL  ?=
+GE_ANDROID_EMU_TABLET_SERIAL ?=
+
+# Canonical 25-cell list. Cells are grouped for readability.
+# desktop-long-soak is the dedicated 60s reliability sweep; all other cells
+# use the default 10s soak for speed.
 ge/CELLS := \
-    desktop-dist desktop-player \
+    desktop-dist desktop-player desktop-long-soak \
     ios-sim-phone-dist ios-sim-phone-player \
     ios-sim-tablet-dist ios-sim-tablet-player \
     ios-device-phone-dist ios-device-phone-player \
@@ -775,18 +792,19 @@ ge/CHECK_CELLS := $(filter-out $(ge/CHECK_EXCLUDE_PATTERNS),$(ge/CELLS))
 .PHONY: $(addprefix cell.,$(ge/CELLS))
 cell.desktop-dist:               ; $(ge)/tools/matrix-cell.sh desktop-dist
 cell.desktop-player:             ; $(ge)/tools/matrix-cell.sh desktop-player
-cell.ios-sim-phone-dist:         ; $(ge)/tools/matrix-cell.sh ios-sim-phone-dist
-cell.ios-sim-phone-player:       ; $(ge)/tools/matrix-cell.sh ios-sim-phone-player
-cell.ios-sim-tablet-dist:        ; $(ge)/tools/matrix-cell.sh ios-sim-tablet-dist
-cell.ios-sim-tablet-player:      ; $(ge)/tools/matrix-cell.sh ios-sim-tablet-player
+cell.desktop-long-soak:          ; $(ge)/tools/matrix-cell.sh desktop-long-soak
+cell.ios-sim-phone-dist:         ; GE_IOS_SIM_UDID=$(GE_IOS_SIM_PHONE_UDID) $(ge)/tools/matrix-cell.sh ios-sim-phone-dist
+cell.ios-sim-phone-player:       ; GE_IOS_SIM_UDID=$(GE_IOS_SIM_PHONE_UDID) $(ge)/tools/matrix-cell.sh ios-sim-phone-player
+cell.ios-sim-tablet-dist:        ; GE_IOS_SIM_UDID=$(GE_IOS_SIM_TABLET_UDID) $(ge)/tools/matrix-cell.sh ios-sim-tablet-dist
+cell.ios-sim-tablet-player:      ; GE_IOS_SIM_UDID=$(GE_IOS_SIM_TABLET_UDID) $(ge)/tools/matrix-cell.sh ios-sim-tablet-player
 cell.ios-device-phone-dist:      ; GE_IOS_PHONE_DEVICE=$(GE_IOS_PHONE_DEVICE) $(ge)/tools/matrix-cell.sh ios-device-phone-dist
 cell.ios-device-phone-player:    ; GE_IOS_PHONE_DEVICE=$(GE_IOS_PHONE_DEVICE) $(ge)/tools/matrix-cell.sh ios-device-phone-player
 cell.ios-device-tablet-dist:     ; GE_IOS_TABLET_DEVICE=$(GE_IOS_TABLET_DEVICE) $(ge)/tools/matrix-cell.sh ios-device-tablet-dist
 cell.ios-device-tablet-player:   ; GE_IOS_TABLET_DEVICE=$(GE_IOS_TABLET_DEVICE) $(ge)/tools/matrix-cell.sh ios-device-tablet-player
-cell.android-emu-phone-dist:     ; GE_ANDROID_TABLET_AVD=$(GE_ANDROID_TABLET_AVD) $(ge)/tools/matrix-cell.sh android-emu-phone-dist
-cell.android-emu-phone-player:   ; GE_ANDROID_TABLET_AVD=$(GE_ANDROID_TABLET_AVD) $(ge)/tools/matrix-cell.sh android-emu-phone-player
-cell.android-emu-tablet-dist:    ; GE_ANDROID_TABLET_AVD=$(GE_ANDROID_TABLET_AVD) $(ge)/tools/matrix-cell.sh android-emu-tablet-dist
-cell.android-emu-tablet-player:  ; GE_ANDROID_TABLET_AVD=$(GE_ANDROID_TABLET_AVD) $(ge)/tools/matrix-cell.sh android-emu-tablet-player
+cell.android-emu-phone-dist:     ; GE_ANDROID_TABLET_AVD=$(GE_ANDROID_TABLET_AVD) GE_ANDROID_EMU_SERIAL=$(GE_ANDROID_EMU_PHONE_SERIAL) $(ge)/tools/matrix-cell.sh android-emu-phone-dist
+cell.android-emu-phone-player:   ; GE_ANDROID_TABLET_AVD=$(GE_ANDROID_TABLET_AVD) GE_ANDROID_EMU_SERIAL=$(GE_ANDROID_EMU_PHONE_SERIAL) $(ge)/tools/matrix-cell.sh android-emu-phone-player
+cell.android-emu-tablet-dist:    ; GE_ANDROID_TABLET_AVD=$(GE_ANDROID_TABLET_AVD) GE_ANDROID_EMU_SERIAL=$(GE_ANDROID_EMU_TABLET_SERIAL) $(ge)/tools/matrix-cell.sh android-emu-tablet-dist
+cell.android-emu-tablet-player:  ; GE_ANDROID_TABLET_AVD=$(GE_ANDROID_TABLET_AVD) GE_ANDROID_EMU_SERIAL=$(GE_ANDROID_EMU_TABLET_SERIAL) $(ge)/tools/matrix-cell.sh android-emu-tablet-player
 cell.android-device-phone-dist:  ; GE_ANDROID_TABLET_AVD=$(GE_ANDROID_TABLET_AVD) $(ge)/tools/matrix-cell.sh android-device-phone-dist
 cell.android-device-phone-player: ; GE_ANDROID_TABLET_AVD=$(GE_ANDROID_TABLET_AVD) $(ge)/tools/matrix-cell.sh android-device-phone-player
 cell.android-device-tablet-dist: ; GE_ANDROID_TABLET_AVD=$(GE_ANDROID_TABLET_AVD) $(ge)/tools/matrix-cell.sh android-device-tablet-dist

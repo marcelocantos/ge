@@ -12,7 +12,7 @@
 SAMPLE ?= sample/tiltbuggy
 
 # Specific targets the delegator should proxy. `check` is the big one:
-# runs the 24-cell e2e matrix via the sample's Module.mk integration.
+# runs the 25-cell e2e matrix via the sample's Module.mk integration.
 .PHONY: all check matrix-test check-list unit-test init clean ged run
 
 all check matrix-test check-list unit-test clean run:

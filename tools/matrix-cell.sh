@@ -15,13 +15,13 @@
 # Options:
 #   --app <dir>       App root dir (default: current dir).
 #   --timeout <s>     Sub-check timeout override.
-#                     Defaults: cold-launch=8s, soak=60s, debug-soak=10s.
+#                     Defaults: cold-launch=8s, soak=10s, long-soak=60s, debug-soak=10s.
 #   --capture-refs    Record reference screenshots instead of comparing.
 #   --rms <f>         Image-diff RMS threshold (default 0.08).
 #   --verbose         Echo sub-command output.
 #
 # Canonical cell names:
-#   desktop-dist  desktop-player
+#   desktop-dist  desktop-player  desktop-long-soak
 #   ios-sim-phone-dist  ios-sim-phone-player
 #   ios-sim-tablet-dist  ios-sim-tablet-player
 #   ios-device-phone-dist  ios-device-phone-player
@@ -33,6 +33,10 @@
 #   desktop-debug-dist  desktop-debug-player
 #   ios-debug-dist  ios-debug-player
 #   android-debug-dist  android-debug-player
+#
+# Environment variables for parallelism:
+#   GE_IOS_SIM_UDID        Pin a specific iOS simulator UDID for this cell.
+#   GE_ANDROID_EMU_SERIAL  Pin a specific Android emulator serial for this cell.
 #
 # Exit codes:
 #   0 — cell passed all applicable sub-checks
@@ -51,7 +55,8 @@ GE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 CELL=""
 APP_DIR="$(pwd)"
 COLD_LAUNCH_TIMEOUT=8
-SOAK_TIMEOUT=60
+SOAK_TIMEOUT=10
+LONG_SOAK_TIMEOUT=60
 DEBUG_SOAK_TIMEOUT=10
 CAPTURE_REFS=0
 RMS=0.08
@@ -71,7 +76,7 @@ CELL="$1"; shift
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --app)          APP_DIR="$(cd "$2" && pwd)"; shift 2 ;;
-        --timeout)      COLD_LAUNCH_TIMEOUT="$2"; SOAK_TIMEOUT="$2"; shift 2 ;;
+        --timeout)      COLD_LAUNCH_TIMEOUT="$2"; SOAK_TIMEOUT="$2"; LONG_SOAK_TIMEOUT="$2"; shift 2 ;;
         --capture-refs) CAPTURE_REFS=1; shift ;;
         --rms)          RMS="$2"; shift 2 ;;
         --verbose)      VERBOSE=1; shift ;;
@@ -86,7 +91,7 @@ done
 # ── Validate cell name ───────────────────────────────────────────────
 
 ALL_CELLS=(
-    desktop-dist desktop-player
+    desktop-dist desktop-player desktop-long-soak
     ios-sim-phone-dist ios-sim-phone-player
     ios-sim-tablet-dist ios-sim-tablet-player
     ios-device-phone-dist ios-device-phone-player
@@ -121,9 +126,10 @@ FORM_FACTOR=""
 MODE=""
 
 case "$CELL" in
-    desktop-dist)         PLATFORM=desktop;  RUNTIME=release; FORM_FACTOR=none; MODE=dist   ;;
-    desktop-player)       PLATFORM=desktop;  RUNTIME=release; FORM_FACTOR=none; MODE=player ;;
-    desktop-debug-dist)   PLATFORM=desktop;  RUNTIME=debug;   FORM_FACTOR=none; MODE=dist   ;;
+    desktop-dist)         PLATFORM=desktop;  RUNTIME=release;   FORM_FACTOR=none; MODE=dist      ;;
+    desktop-player)       PLATFORM=desktop;  RUNTIME=release;   FORM_FACTOR=none; MODE=player    ;;
+    desktop-long-soak)    PLATFORM=desktop;  RUNTIME=long-soak; FORM_FACTOR=none; MODE=dist      ;;
+    desktop-debug-dist)   PLATFORM=desktop;  RUNTIME=debug;     FORM_FACTOR=none; MODE=dist      ;;
     desktop-debug-player) PLATFORM=desktop;  RUNTIME=debug;   FORM_FACTOR=none; MODE=player ;;
     ios-sim-phone-dist)   PLATFORM=ios;      RUNTIME=sim;     FORM_FACTOR=phone; MODE=dist   ;;
     ios-sim-phone-player) PLATFORM=ios;      RUNTIME=sim;     FORM_FACTOR=phone; MODE=player ;;
@@ -147,15 +153,17 @@ case "$CELL" in
     android-debug-player) PLATFORM=android;  RUNTIME=debug;   FORM_FACTOR=none; MODE=player ;;
 esac
 
-IS_DEBUG=0; [[ "$RUNTIME" == "debug" ]] && IS_DEBUG=1
-IS_SIM=0;   [[ "$RUNTIME" == "sim" ]]   && IS_SIM=1
-IS_EMU=0;   [[ "$RUNTIME" == "emu" ]]   && IS_EMU=1
-IS_DEVICE=0;[[ "$RUNTIME" == "device" ]] && IS_DEVICE=1
+IS_DEBUG=0;     [[ "$RUNTIME" == "debug" ]]     && IS_DEBUG=1
+IS_LONG_SOAK=0; [[ "$RUNTIME" == "long-soak" ]] && IS_LONG_SOAK=1
+IS_SIM=0;       [[ "$RUNTIME" == "sim" ]]        && IS_SIM=1
+IS_EMU=0;       [[ "$RUNTIME" == "emu" ]]        && IS_EMU=1
+IS_DEVICE=0;    [[ "$RUNTIME" == "device" ]]     && IS_DEVICE=1
 IS_MOBILE=0; [[ "$PLATFORM" == "ios" || "$PLATFORM" == "android" ]] && IS_MOBILE=1
 IS_PLAYER=0; [[ "$MODE" == "player" ]] && IS_PLAYER=1
 
 SOAK_TIME=$SOAK_TIMEOUT
-[[ $IS_DEBUG -eq 1 ]] && SOAK_TIME=$DEBUG_SOAK_TIMEOUT
+[[ $IS_DEBUG -eq 1 ]]     && SOAK_TIME=$DEBUG_SOAK_TIMEOUT
+[[ $IS_LONG_SOAK -eq 1 ]] && SOAK_TIME=$LONG_SOAK_TIMEOUT
 
 # ── Auto-detect app vars ─────────────────────────────────────────────
 
@@ -411,6 +419,13 @@ check_or_capture_ref() {
 # Writes UDID to stdout. Returns 1 if not available.
 ios_sim_get_udid() {
     local ff="${1:-}"   # phone or tablet
+
+    # If a specific UDID is pinned via environment (for parallelism), use it directly.
+    if [[ -n "${GE_IOS_SIM_UDID:-}" ]]; then
+        echo "$GE_IOS_SIM_UDID"
+        return 0
+    fi
+
     local filter=""
     case "$ff" in
         phone)  filter='test("iPhone"; "i")' ;;
@@ -631,6 +646,12 @@ host_lan_ip() {
 
 android_get_serial() {
     local ff="${1:-}"  # phone or tablet; empty = any emulator
+
+    # If a specific serial is pinned via environment (for parallelism), use it directly.
+    if [[ -n "${GE_ANDROID_EMU_SERIAL:-}" ]]; then
+        echo "$GE_ANDROID_EMU_SERIAL"
+        return 0
+    fi
 
     # Determine connected emulator serials.
     local serials
@@ -1796,6 +1817,16 @@ run_desktop_player() {
     LAUNCH_PID=""
 }
 
+run_desktop_long_soak() {
+    # Dedicated 60s soak cell: same as desktop-dist but with the long soak.
+    # SOAK_TIME is already set to LONG_SOAK_TIMEOUT for this cell.
+    build_desktop || { fail_check "cold-launch" "build failed"; return; }
+    cold_launch_desktop || return
+    check_soak_desktop "$LAUNCH_PID" || true
+    check_clean_exit_desktop "$LAUNCH_PID"
+    LAUNCH_PID=""
+}
+
 run_ios_sim_dist() {
     require_cmd xcrun "xcrun not found — Xcode not installed"
     [[ -d "$APP_DIR/ios" ]] || { fail_check "cold-launch" "no ios/ project (run make ge/ios-init)"; return; }
@@ -2130,6 +2161,7 @@ fi
 case "$CELL" in
     desktop-dist)              run_desktop_dist ;;
     desktop-player)            run_desktop_player ;;
+    desktop-long-soak)         run_desktop_long_soak ;;
     ios-sim-phone-dist)        run_ios_sim_dist ;;
     ios-sim-phone-player)      run_ios_sim_player ;;
     ios-sim-tablet-dist)       run_ios_sim_dist ;;
