@@ -356,6 +356,8 @@ targets:
     - 'Android phone: dist + player smoke pass (requires a USB-connected Android phone; emulator-only is insufficient)'
     - 'For each device: ge/tools/smoke-test.sh exits 0 and crash-report fetch returns empty for the test window'
     context: 'Automated matrix-test covers sim/emu only (6 cells, all green as of this commit). 🎯T19''s acceptance includes physical device smokes on iPhone, iPad Pippa, and Android phone × dist/player, but these weren''t run in the session that pushed the branch because: (a) device-signed iOS builds require a different xcodebuild invocation + provisioning, (b) Android device build + install + smoke requires switching adb context to USB device (emulator was the only Android target available mid-session), (c) the user''s priority was shipping the known-good state quickly so downstream games can start. The rotation fix was specifically validated on Pippa in a prior session (commit 1471f9d), giving device-side confidence. To satisfy this target: build signed dist .app / .apk for each device, install, run ge/tools/smoke-test.sh --platform ios-device|android-device --device name per cell, confirm no crash reports, confirm player/dist modes both render.'
+    depends_on:
+    - T23
     origin: manual
     discovered: 2026-04-19
   T22:
@@ -370,6 +372,31 @@ targets:
     - make cell.desktop-debug-dist, ios-debug-dist, android-debug-dist each pass cold-launch + 10s soak + clean-exit
     - Android tablet AVD name is documented (e.g. as a Module.mk variable with a sensible default) and the form-factor detection in matrix-cell.sh prefers it over heuristic matching
     context: 'The six *-debug-* cells (desktop-debug-dist, desktop-debug-player, ios-debug-dist, ios-debug-player, android-debug-dist, android-debug-player) were added to the canonical 24-cell matrix for scaffolding, but their implementations in tools/matrix-cell.sh currently reuse the release build. That makes them redundant with the release cells. Real value from a debug-cycle cell comes from exercising the debug build (assertions enabled, debug symbols, BX_CONFIG_DEBUG=1) so debug-only regressions are caught by `make check` before release. Short ~10s smoke per cell is enough. Related: the Android form-factor split uses an AVD-name heuristic; a canonical tablet AVD name should be documented in Module.mk.'
+    origin: manual
+    discovered: 2026-04-19
+  T23:
+    name: Player accepts server connection params from the host launcher — no QR scan required for automated launches
+    status: identified
+    value: 0.0
+    cost: 0.0
+    observable: true
+    acceptance:
+    - Android player reads a `ged_addr` intent extra (e.g. `adb shell am start -n com.squz.player/.GeActivity --es ged_addr host:port`) and connects directly, skipping QR onboarding
+    - iOS player reads a `ged_addr` launch argument (`xcrun simctl launch <udid> com.squz.player -ged_addr host:port`, or equivalent for devicectl on physical devices) and connects directly
+    - If the param is absent, player falls through to existing behaviour (saved server → QR)
+    - matrix-cell.sh's run_ios_sim_player / run_ios_device_player / run_android_emu_player / run_android_device_player functions pass the ged address at launch; no QR interaction required
+    - 'Documented in the player''s agents-guide and README: automated / scripted launches pass the address via the host launcher'
+    context: |-
+      Surfaced during 🎯T21 physical-device work: the Android player, when launched via `adb shell am start`, falls through to the QR-code scan flow because there's no other way to tell it where to connect. That's fine for end-user onboarding but breaks automated tests — matrix-cell.sh can install and launch the APK, but the player then sits waiting for a QR code that the test harness can't provide. The iOS player has the same issue under `xcrun simctl launch`.
+
+      The fix is host-controlled launch parameters: when the launcher (adb / simctl / devicectl) passes a server address at launch time, the player skips QR onboarding and connects directly. Standard mechanisms:
+
+      - Android: intent extras via `adb shell am start ... --es ged_addr "host:port"`; read via `getIntent().getStringExtra(...)` in the activity.
+      - iOS: launch arguments via `xcrun simctl launch <udid> <bundle> -ged_addr "host:port"`; read via `NSUserDefaults.standardUserDefaults().stringForKey(...)` (simctl launch arguments materialise as defaults).
+
+      Player logic: if a launch param is present, use it; otherwise fall through to existing QR / saved-server behaviour. Matrix-cell.sh's `run_*_player` functions should then pass ged's address (already known — it's the daemon the test harness started) at launch.
+
+      Blocks both 🎯T21 (device-cell player smokes can't run without this) and any future automated player testing.
     origin: manual
     discovered: 2026-04-19
   T3:
