@@ -622,6 +622,86 @@ ged-test:
 	fi
 	cd $(ge)/ged && go test ./...
 
+# ────────────────────────────────────────────────
+# End-to-end test matrix
+# ────────────────────────────────────────────────
+#
+# `make check` runs the full mobile/desktop test matrix — each cell is its
+# own make rule (cell.<name>) that shells out to ge/tools/matrix-cell.sh.
+# Cells fail loudly if they can't run (missing device, missing pipeline,
+# etc.). Consumers silence known-impossible cells with CHECK_EXCLUDE:
+#
+#     make check CHECK_EXCLUDE='android-device-tablet-*'
+#
+# Glob syntax: `*` matches any run of characters within a cell name.
+# Multiple patterns: space-separated.
+
+# Canonical 24-cell list. Cells are grouped for readability.
+ge/CELLS := \
+    desktop-dist desktop-player \
+    ios-sim-phone-dist ios-sim-phone-player \
+    ios-sim-tablet-dist ios-sim-tablet-player \
+    ios-device-phone-dist ios-device-phone-player \
+    ios-device-tablet-dist ios-device-tablet-player \
+    android-emu-phone-dist android-emu-phone-player \
+    android-emu-tablet-dist android-emu-tablet-player \
+    android-device-phone-dist android-device-phone-player \
+    android-device-tablet-dist android-device-tablet-player \
+    desktop-debug-dist desktop-debug-player \
+    ios-debug-dist ios-debug-player \
+    android-debug-dist android-debug-player
+
+# Translate shell-style globs in CHECK_EXCLUDE to make's `%` syntax and
+# filter them out of the cell list. Accepts space-separated patterns.
+ge/CHECK_EXCLUDE_PATTERNS := $(subst *,%,$(CHECK_EXCLUDE))
+ge/CHECK_CELLS := $(filter-out $(ge/CHECK_EXCLUDE_PATTERNS),$(ge/CELLS))
+
+# Per-cell rule — every cell name is its own make target prefixed `cell.`.
+# Boilerplate enumeration is deliberate: the spec calls for explicit
+# enumeration so `make cell.ios-sim-tablet-dist` works and `make -n check`
+# prints a readable dep list.
+.PHONY: $(addprefix cell.,$(ge/CELLS))
+cell.desktop-dist:               ; $(ge)/tools/matrix-cell.sh desktop-dist
+cell.desktop-player:             ; $(ge)/tools/matrix-cell.sh desktop-player
+cell.ios-sim-phone-dist:         ; $(ge)/tools/matrix-cell.sh ios-sim-phone-dist
+cell.ios-sim-phone-player:       ; $(ge)/tools/matrix-cell.sh ios-sim-phone-player
+cell.ios-sim-tablet-dist:        ; $(ge)/tools/matrix-cell.sh ios-sim-tablet-dist
+cell.ios-sim-tablet-player:      ; $(ge)/tools/matrix-cell.sh ios-sim-tablet-player
+cell.ios-device-phone-dist:      ; $(ge)/tools/matrix-cell.sh ios-device-phone-dist
+cell.ios-device-phone-player:    ; $(ge)/tools/matrix-cell.sh ios-device-phone-player
+cell.ios-device-tablet-dist:     ; $(ge)/tools/matrix-cell.sh ios-device-tablet-dist
+cell.ios-device-tablet-player:   ; $(ge)/tools/matrix-cell.sh ios-device-tablet-player
+cell.android-emu-phone-dist:     ; $(ge)/tools/matrix-cell.sh android-emu-phone-dist
+cell.android-emu-phone-player:   ; $(ge)/tools/matrix-cell.sh android-emu-phone-player
+cell.android-emu-tablet-dist:    ; $(ge)/tools/matrix-cell.sh android-emu-tablet-dist
+cell.android-emu-tablet-player:  ; $(ge)/tools/matrix-cell.sh android-emu-tablet-player
+cell.android-device-phone-dist:  ; $(ge)/tools/matrix-cell.sh android-device-phone-dist
+cell.android-device-phone-player: ; $(ge)/tools/matrix-cell.sh android-device-phone-player
+cell.android-device-tablet-dist: ; $(ge)/tools/matrix-cell.sh android-device-tablet-dist
+cell.android-device-tablet-player: ; $(ge)/tools/matrix-cell.sh android-device-tablet-player
+cell.desktop-debug-dist:         ; $(ge)/tools/matrix-cell.sh desktop-debug-dist
+cell.desktop-debug-player:       ; $(ge)/tools/matrix-cell.sh desktop-debug-player
+cell.ios-debug-dist:             ; $(ge)/tools/matrix-cell.sh ios-debug-dist
+cell.ios-debug-player:           ; $(ge)/tools/matrix-cell.sh ios-debug-player
+cell.android-debug-dist:         ; $(ge)/tools/matrix-cell.sh android-debug-dist
+cell.android-debug-player:       ; $(ge)/tools/matrix-cell.sh android-debug-player
+
+.PHONY: check matrix-test
+check matrix-test: $(addprefix cell.,$(ge/CHECK_CELLS))
+	@echo "── Matrix summary ──"
+	@printf '  %-40s %s\n' "Cells run:" "$(words $(ge/CHECK_CELLS))"
+	@printf '  %-40s %s\n' "Cells excluded via CHECK_EXCLUDE:" "$(words $(filter-out $(ge/CHECK_CELLS),$(ge/CELLS)))"
+	@[ -z "$(filter-out $(ge/CHECK_CELLS),$(ge/CELLS))" ] || \
+	    printf '  %-40s %s\n' "  Excluded:" "$(filter-out $(ge/CHECK_CELLS),$(ge/CELLS))"
+
+# Report the resolved cell list without running anything.
+.PHONY: check-list
+check-list:
+	@echo "Cells that would run:"
+	@printf '  %s\n' $(ge/CHECK_CELLS)
+	@echo "Cells excluded:"
+	@printf '  %s\n' $(filter-out $(ge/CHECK_CELLS),$(ge/CELLS))
+
 # Canned recipe for the parent to expand at the end of its init target.
 define ge/INIT_DONE
 	@echo ""
