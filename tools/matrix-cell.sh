@@ -277,12 +277,44 @@ current_sessions() {
         2>/dev/null || echo 0
 }
 
+# Returns the total number of player sessions that are attached to any server.
+# Differs from current_sessions(): that counts all players connected to ged
+# (regardless of server assignment), while this counts only bridged sessions.
+# Use this for the reconnect check — a player session stays in ged's session
+# map across a server restart, so current_sessions() never drops/rises.
+server_attached_sessions() {
+    curl -sf --max-time 1 "http://localhost:$GED_PORT/api/info" 2>/dev/null \
+        | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+total = sum(s.get('sessions', 0) for s in d.get('servers', []))
+print(total)
+" 2>/dev/null || echo 0
+}
+
 wait_for_sessions() {
     local min="$1"
     local deadline=$(($(date +%s) + COLD_LAUNCH_TIMEOUT))
     while [[ $(date +%s) -lt $deadline ]]; do
         local sess
         sess=$(current_sessions)
+        if [[ "$sess" -ge "$min" ]]; then return 0; fi
+        sleep 0.5
+    done
+    return 1
+}
+
+# Waits until at least $1 sessions are attached to a server (bridged).
+# Used for the reconnect sub-check: during a server restart the player stays
+# connected to ged (session count doesn't change) but sessions temporarily
+# lose their server assignment, so current_sessions()/wait_for_sessions()
+# would never fire. This polls server_attached_sessions() instead.
+wait_for_server_sessions() {
+    local min="$1"
+    local deadline=$(($(date +%s) + COLD_LAUNCH_TIMEOUT))
+    while [[ $(date +%s) -lt $deadline ]]; do
+        local sess
+        sess=$(server_attached_sessions)
         if [[ "$sess" -ge "$min" ]]; then return 0; fi
         sleep 0.5
     done
@@ -1055,13 +1087,14 @@ check_reconnect_desktop_player() {
 
     # Restart server.
     local serverlog="$ARTIFACTS/server-reconnect.log"
-    local baseline
-    baseline=$(current_sessions)
     local srv_bin="${DESKTOP_BIN:-$APP_DIR/bin/$APP_NAME}"
     ( cd "$APP_DIR" && exec "$srv_bin" > "$serverlog" 2>&1 ) &
     local new_srv_pid=$!
 
-    if ! wait_for_sessions $((baseline + 1)); then
+    # Wait for at least one session to be bridged to the new server.
+    # (session count in ged stays constant across server restart since the
+    # player remains connected to ged; only bridged-session count changes.)
+    if ! wait_for_server_sessions 1; then
         fail_check "$subcheck" "player did not reconnect within ${COLD_LAUNCH_TIMEOUT}s"
         kill_bg "$new_srv_pid"
         return 1
@@ -1087,13 +1120,14 @@ check_reconnect_ios_sim_player() {
     sleep 5
 
     local serverlog="$ARTIFACTS/server-reconnect.log"
-    local baseline
-    baseline=$(current_sessions)
     local srv_bin="${DESKTOP_BIN:-$APP_DIR/bin/$APP_NAME}"
     ( cd "$APP_DIR" && exec "$srv_bin" > "$serverlog" 2>&1 ) &
     local new_srv_pid=$!
 
-    if ! wait_for_sessions $((baseline + 1)); then
+    # Wait for at least one session to be bridged to the new server.
+    # (session count in ged stays constant across server restart since the
+    # player remains connected to ged; only bridged-session count changes.)
+    if ! wait_for_server_sessions 1; then
         fail_check "$subcheck" "iOS player did not reconnect within ${COLD_LAUNCH_TIMEOUT}s"
         kill_bg "$new_srv_pid"
         return 1
@@ -1118,13 +1152,14 @@ check_reconnect_android_player() {
     sleep 5
 
     local serverlog="$ARTIFACTS/server-reconnect.log"
-    local baseline
-    baseline=$(current_sessions)
     local srv_bin="${DESKTOP_BIN:-$APP_DIR/bin/$APP_NAME}"
     ( cd "$APP_DIR" && exec "$srv_bin" > "$serverlog" 2>&1 ) &
     local new_srv_pid=$!
 
-    if ! wait_for_sessions $((baseline + 1)); then
+    # Wait for at least one session to be bridged to the new server.
+    # (session count in ged stays constant across server restart since the
+    # player remains connected to ged; only bridged-session count changes.)
+    if ! wait_for_server_sessions 1; then
         fail_check "$subcheck" "Android player did not reconnect within ${COLD_LAUNCH_TIMEOUT}s"
         kill_bg "$new_srv_pid"
         return 1
