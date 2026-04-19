@@ -431,7 +431,7 @@ targets:
     achieved: 2026-04-19
   T25:
     name: Player-mode cells pass the reconnect sub-check on iOS sim and Android emu
-    status: identified
+    status: converging
     value: 0.0
     cost: 0.0
     observable: true
@@ -439,12 +439,7 @@ targets:
     - '`make cell.ios-sim-tablet-player` passes the reconnect sub-check end-to-end'
     - '`make cell.android-emu-phone-player` passes the reconnect sub-check end-to-end'
     - If the bug was in matrix-cell.sh, the fix explains what signal is actually reliable; if in the player, root cause is documented in the fix commit
-    context: |-
-      Both `ios-sim-tablet-player` and `android-emu-phone-player` fail the `reconnect` sub-check in matrix-cell.sh: kill the desktop server, wait 5s, verify the player reconnects by polling ged for a new session. Pre-existing — agents flagged this on both the 🎯T22 and 🎯T23 verification runs, and it's present on master prior to those PRs too.
-
-      Reconnect is an important property for the server/player architecture — games restart during development and the player should transparently pick up the new server. If this sub-check is broken but the underlying reconnect logic works, the bug is in the test. If the logic is broken, it's a real regression from the recent ged / pigeon / session-handshake work.
-
-      First diagnostic step: read `check_reconnect_ios_sim_player` / `check_reconnect_android_emu_player` in matrix-cell.sh and understand what signal it looks for. Second: manually test — start `bin/tiltbuggy`, launch the player, kill tiltbuggy, start a fresh `bin/tiltbuggy`, verify the player reconnects visually. If yes, the matrix-cell check is wrong. If no, there's a real reconnect bug.
+    context: 'Root cause found: player cells start the desktop server without --brokered, so tiltbuggy runs in direct/standalone mode and never connects to ged. server_attached_sessions() always returns 0, so wait_for_server_sessions never fires. Fix: add SERVER_ARGS global, set to --brokered in all player cell runners (run_desktop_player, run_ios_sim_player, run_android_emu_player, run_ios_device_player, run_android_device_player, run_debug_player), and thread it through start_server and all reconnect helpers. This is a pure test/matrix-cell.sh fix — the player reconnect logic itself works correctly.'
     origin: manual
     discovered: 2026-04-19
   T26:
