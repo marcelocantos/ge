@@ -270,9 +270,10 @@ targets:
     achieved: 2026-04-17
   T18:
     name: bgfx builds and renders on iOS + Android for distribution apps
-    status: identified
+    status: achieved
     value: 4.0
     cost: 8.0
+    actual_cost: 13.0
     acceptance:
     - ge/ios-init and ge/android-init generate scaffolds that compile and link via Module.mk
     - '`make ge/ios` produces a runnable .app for iOS simulator that renders a ge::run-based game (verified with tiltbuggy)'
@@ -281,6 +282,7 @@ targets:
     context: 'The current init-ios.sh / init-android.sh templates generate ge-oriented scaffolds but the resulting builds fail at link time: Box2D, bgfx (amalgamated compiled for iOS/Android compat), and the not-yet-split SessionHost (which references ServerWireBridge unconditionally) all need port/refactor work. Module.mk''s bgfx variables currently hardcode include/compat/osx — iOS needs include/compat/ios and Android needs include/compat/android. Also bgfx Vulkan backend needs enabling for Android (currently only Metal is enabled). Likely split SessionHost into direct-only vs brokered pieces so distribution builds don''t pull in WebSocket/asio unnecessarily.'
     origin: gap surfaced by the new matrix-test's *-dist cells failing at build time
     discovered: 2026-04-18
+    achieved: 2026-04-19
   T19:
     name: 'render-engine-bridge-split branch can be merged: the full mobile matrix of automated + device smokes runs clean'
     kind: verify
@@ -325,6 +327,33 @@ targets:
     context: 'Lost 2+ hours debugging code when the actual problem was laptop WiFi silently stopped accepting incoming connections. All local checks passed (ged listening, device registered via USB). The device→laptop network path was broken but nothing detected it. Need two layers: local network sanity checks (WiFi IP, firewall, ping device) and a `ge-probe` iOS app for definitive device→laptop HTTP connectivity testing.'
     origin: discovered while using smoke-test.sh during yourworld 🎯T8 debugging
     discovered: 2026-04-12
+  T20:
+    name: rotation-stability-test correctly detects app liveness across orientation changes
+    status: identified
+    value: 0.0
+    cost: 0.0
+    observable: true
+    acceptance:
+    - rotation-stability-test.sh --platform ios-sim --app-id com.squz.tiltbuggy --cycles 10 reports PASS end-to-end against the iPad Air M4 simulator
+    - Liveness check is tolerant of the brief launchctl-list gap during iOS orientation transitions
+    - Android-emu path of the same script is similarly validated and passes
+    context: 'Current rotation-stability-test.sh reports "FAIL: app died after landscape rotation #1" even when the app is clearly alive (no fresh crash reports; `xcrun simctl spawn <udid> launchctl list` confirms the app process is present in rb-legacy state). The detection logic ran fine when tested manually from the shell (exit 0), so the issue is likely a timing/state race in the test''s is_running check — possibly during iOS''s mid-rotation suspension window the process briefly doesn''t appear in launchctl, and the test reads the snapshot at exactly that moment. The product-level rotation fix (drawable-as-truth patch, committed in squz/bgfx ge-fork-upgrade) was validated manually on Pippa earlier (see commit 1471f9d) and no fresh TiltBuggy crash reports appeared during today''s attempts, so this is purely a test-harness detection bug, not a product regression. Likely fix: replace the launchctl-based liveness probe with a retry loop, or use a more robust signal (e.g. successful screenshot implies alive).'
+    origin: manual
+    discovered: 2026-04-19
+  T21:
+    name: 'Physical-device smoke validation for render-engine-bridge-split: iPhone, iPad Pippa, Android phone'
+    status: identified
+    value: 0.0
+    cost: 0.0
+    observable: true
+    acceptance:
+    - 'iPhone: dist + player smoke pass (cold launch, 60s soak, no crashes)'
+    - 'iPad Pippa: dist + player smoke pass, including one manual rotation cycle'
+    - 'Android phone: dist + player smoke pass (requires a USB-connected Android phone; emulator-only is insufficient)'
+    - 'For each device: ge/tools/smoke-test.sh exits 0 and crash-report fetch returns empty for the test window'
+    context: 'Automated matrix-test covers sim/emu only (6 cells, all green as of this commit). 🎯T19''s acceptance includes physical device smokes on iPhone, iPad Pippa, and Android phone × dist/player, but these weren''t run in the session that pushed the branch because: (a) device-signed iOS builds require a different xcodebuild invocation + provisioning, (b) Android device build + install + smoke requires switching adb context to USB device (emulator was the only Android target available mid-session), (c) the user''s priority was shipping the known-good state quickly so downstream games can start. The rotation fix was specifically validated on Pippa in a prior session (commit 1471f9d), giving device-side confidence. To satisfy this target: build signed dist .app / .apk for each device, install, run ge/tools/smoke-test.sh --platform ios-device|android-device --device name per cell, confirm no crash reports, confirm player/dist modes both render.'
+    origin: manual
+    discovered: 2026-04-19
   T3:
     name: Player sends mip cache manifest before rendering begins
     status: identified
