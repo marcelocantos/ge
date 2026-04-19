@@ -1,0 +1,103 @@
+diff --git a/src/renderer_mtl.cpp b/src/renderer_mtl.cpp
+index caaa1ebc8..aaeec400a 100644
+--- a/src/renderer_mtl.cpp
++++ b/src/renderer_mtl.cpp
+@@ -4260,8 +4260,98 @@ static_assert(BX_COUNTOF(s_accessNames) == Access::Count, "Invalid s_accessNames
+ 			m_blitCommandEncoder = 0;
+ 		}
+ 
++		// ge-patch: drawable-as-truth for iOS orientation handling.
++		//
++		// When UIKit rotates the device, it mutates CAMetalLayer.drawableSize
++		// from the main thread at any moment — including between bgfx's
++		// API-thread submit and the render thread's processing of that
++		// submit. The submit buffer's m_resolution / m_view[].m_rect then
++		// lag the actual drawable and the render pass bgfx opens uses the
++		// new drawable's texture dims while view scissor/viewport come
++		// from the old — Metal validation fails with "scissor > pass".
++		// On release builds it presents a sub-region of the drawable,
++		// leaving the rest of it as uninitialised GPU memory (magenta).
++		//
++		// The fix has two parts:
++		//
++		// 1. Acquire the drawable *now* (before any render pass is built)
++		//    and adopt its texture dimensions as the canonical render
++		//    resolution for this submit. Only acquire when there are draws
++		//    to submit — acquiring on an idle/init frame forces flip() to
++		//    present an undrawn (magenta) drawable.
++		//
++		// 2. For any swap-chain view whose rect disagrees with the real
++		//    drawable, replace the rect with the full drawable dims. This
++		//    is the right default for a top-level view: stretches one
++		//    transition frame's content across the new drawable (masked
++		//    by UIKit's rotate/crossfade animation) instead of leaving a
++		//    strip of uncleared GPU memory. Framebuffer-backed views
++		//    clamp to their own framebuffer instead.
++		const bool hasDraws = _render->m_numRenderItems > 0;
++		if (hasDraws
++		&&  NULL != m_mainFrameBuffer.m_swapChain
++		&&  NULL != m_mainFrameBuffer.m_swapChain->m_metalLayer)
++		{
++			uint32_t drawW = 0;
++			uint32_t drawH = 0;
++			MTL::Texture* dt = m_mainFrameBuffer.m_swapChain->currentDrawableTexture();
++			if (NULL != dt)
++			{
++				drawW = uint32_t(dt->width());
++				drawH = uint32_t(dt->height());
++			}
++			else
++			{
++				CGSize sz = m_mainFrameBuffer.m_swapChain->m_metalLayer->drawableSize();
++				drawW = uint32_t(sz.width);
++				drawH = uint32_t(sz.height);
++			}
++			if (drawW > 0 && drawH > 0)
++			{
++				_render->m_resolution.width  = drawW;
++				_render->m_resolution.height = drawH;
++			}
++		}
++
+ 		updateResolution(_render->m_resolution);
+ 
++		for (uint16_t vv = 0; vv < BGFX_CONFIG_MAX_VIEWS; ++vv)
++		{
++			Rect& r = _render->m_view[vv].m_rect;
++			uint32_t rtW = m_resolution.width;
++			uint32_t rtH = m_resolution.height;
++			const FrameBufferHandle vfbh = _render->m_view[vv].m_fbh;
++			const bool swapChainView = !isValid(vfbh);
++			if (!swapChainView)
++			{
++				FrameBufferMtl& fb = m_frameBuffers[vfbh.idx];
++				rtW = fb.m_width;
++				rtH = fb.m_height;
++			}
++			// Skip the (0,0,1,1) default from View::reset — bgfx::init's
++			// internal frames use it before the app has called setViewRect.
++			// Expanding it to full-screen would open an encoder with no
++			// clear set, presenting uninitialised drawable memory.
++			const bool rectIsDefault =
++				(r.m_x == 0 && r.m_y == 0 && r.m_width == 1 && r.m_height == 1);
++			if (swapChainView
++			&&  !rectIsDefault
++			&&  (r.m_x != 0 || r.m_y != 0
++			  || r.m_width != rtW || r.m_height != rtH))
++			{
++				r.m_x = 0; r.m_y = 0;
++				r.m_width  = uint16_t(rtW);
++				r.m_height = uint16_t(rtH);
++				continue;
++			}
++			if (r.m_x >= rtW) r.m_x = 0;
++			if (r.m_y >= rtH) r.m_y = 0;
++			const uint32_t maxW = rtW - r.m_x;
++			const uint32_t maxH = rtH - r.m_y;
++			if (r.m_width  > maxW) r.m_width  = uint16_t(maxW);
++			if (r.m_height > maxH) r.m_height = uint16_t(maxH);
++		}
++
+ 		if (0 != _render->m_numScreenShots
+ 		||  NULL != m_capture)
+ 		{

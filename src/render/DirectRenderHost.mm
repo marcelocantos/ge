@@ -75,6 +75,7 @@ struct DirectRenderHost::Impl {
 
     // Offscreen pipeline — lazily created on first non-zero tilt.
     bool offscreenReady = false;
+    int  offscreenW = 0, offscreenH = 0;
     bgfx::FrameBufferHandle offFB    = BGFX_INVALID_HANDLE;
     bgfx::TextureHandle     colorTex = BGFX_INVALID_HANDLE;
     bgfx::TextureHandle     depthTex = BGFX_INVALID_HANDLE;
@@ -85,8 +86,21 @@ struct DirectRenderHost::Impl {
     // Per-frame flag: is tilt active on this frame?
     bool tiltActiveThisFrame = false;
 
+    // Resize handling: events fire on the main thread before frame
+    // commands are encoded, but bgfx::reset must be paired with all
+    // resize-dependent work (destroyOffscreen, setViewRect) at a
+    // frame boundary. We stage the new dims here and apply them at
+    // the top of beginFrame, then clear the flag.
+    bool     pendingResize = false;
+    int      pendingW = 0;
+    int      pendingH = 0;
+
     void ensureOffscreen() {
-        if (offscreenReady) return;
+        if (offscreenReady && offscreenW == width && offscreenH == height)
+            return;
+        // Stale offscreen (size mismatch after a resize that wasn't
+        // cleanly torn down): rebuild at current dims.
+        if (offscreenReady) destroyOffscreen();
         layout = composeLayout();
         colorTex = bgfx::createTexture2D(
             width, height, false, 1, bgfx::TextureFormat::BGRA8,
@@ -106,6 +120,8 @@ struct DirectRenderHost::Impl {
         compose = bgfx::createProgram(vs, fs, /*destroyShaders=*/true);
         sampler = bgfx::createUniform("s_tex", bgfx::UniformType::Sampler);
         offscreenReady = true;
+        offscreenW = width;
+        offscreenH = height;
         SPDLOG_INFO("DirectRenderHost: offscreen pipeline created ({}x{})", width, height);
     }
 
@@ -129,6 +145,13 @@ DirectRenderHost::DirectRenderHost(const SessionHostConfig& config)
 
     i_->bgfxCtx = std::make_unique<BgfxContext>(
         BgfxConfig{i_->width, i_->height, /*headless=*/false, config.appName});
+
+    // On platforms where the actual surface size differs from the
+    // caller's hint (notably Android fullscreen), BgfxContext picks up
+    // the true native dimensions — adopt them so our offscreen
+    // pipeline and per-frame viewports match.
+    if (i_->bgfxCtx->width()  > 0) i_->width  = i_->bgfxCtx->width();
+    if (i_->bgfxCtx->height() > 0) i_->height = i_->bgfxCtx->height();
 
     if ((config.sensors & wire::kSensorAccelerometer) &&
         !AccelSynth::realSensorAvailable()) {
@@ -164,12 +187,44 @@ void DirectRenderHost::pumpEvents() {
             i_->quit = true;
             continue;
         }
+        // Any event that could signal a drawable-size change. On iOS the
+        // definitive one is SDL_EVENT_WINDOW_METAL_VIEW_RESIZED — the
+        // CAMetalLayer's drawableSize is only guaranteed current by then.
+        // Stage the new size; apply at frame boundary.
+        if (e.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED ||
+            e.type == SDL_EVENT_WINDOW_RESIZED ||
+            e.type == SDL_EVENT_WINDOW_METAL_VIEW_RESIZED) {
+            int newW = 0, newH = 0;
+            SDL_GetWindowSizeInPixels(i_->bgfxCtx->window(), &newW, &newH);
+            if (newW > 0 && newH > 0 &&
+                (newW != i_->width || newH != i_->height)) {
+                i_->pendingResize = true;
+                i_->pendingW = newW;
+                i_->pendingH = newH;
+            }
+            continue;
+        }
         if (i_->synth && i_->synth->handle(e)) continue;
         if (i_->eventHandler) i_->eventHandler(e);
     }
 }
 
 void DirectRenderHost::beginFrame() {
+    // Apply any staged resize at the frame boundary so all bgfx state
+    // (backbuffer, offscreen RT, view rects) moves together.
+    if (i_->pendingResize) {
+        SPDLOG_INFO("DirectRenderHost: resize {}x{} -> {}x{}",
+                    i_->width, i_->height, i_->pendingW, i_->pendingH);
+        i_->width = i_->pendingW;
+        i_->height = i_->pendingH;
+        i_->pendingResize = false;
+        bgfx::reset(uint32_t(i_->width), uint32_t(i_->height),
+                    BGFX_RESET_VSYNC);
+        // Offscreen pipeline tied to old size — tear down; it will be
+        // recreated below if this frame needs the composited path.
+        i_->destroyOffscreen();
+    }
+
     // Decide for this frame: is tilt non-zero? If so, use the composited
     // path (render game into offscreen FB, compose a tilted quad onto the
     // swap chain). Otherwise, render straight to the swap chain.
@@ -187,22 +242,30 @@ void DirectRenderHost::beginFrame() {
         bgfx::setViewFrameBuffer(kGameView, BGFX_INVALID_HANDLE);
     }
     bgfx::setViewRect(kGameView, 0, 0, uint16_t(i_->width), uint16_t(i_->height));
+
+    // Submit the compose pass in the same frame as the game render.
+    // bgfx executes views in ID order, so view 0 (game) writes to offFB
+    // before view 1 (compose) samples it. Submitting in endFrame instead
+    // would queue compose into the *next* frame's buffer — a handle
+    // referenced by that pending draw could then be freed during a
+    // resize-triggered destroyOffscreen, flashing magenta.
+    if (i_->tiltActiveThisFrame && i_->offscreenReady) {
+        submitCompose(t.x, t.y);
+    }
 }
 
 void DirectRenderHost::endFrame(uint32_t /*bgfxFrameNumber*/) {
-    if (!(i_->tiltActiveThisFrame && i_->offscreenReady)) return;
+    // Direct mode has nothing to do post-frame; brokered mode reads
+    // the backbuffer here for video encoding.
+}
 
-    // Composite pass: draw a single textured quad at z=0 in a perspective
-    // frustum, tilted by (tilt.x, tilt.y) about the perpendicular axis.
-    // The quad's dimensions and camera distance are chosen so zero tilt
-    // maps the quad exactly to NDC.
-    Tilt t = i_->synth->current();
-    float mag = std::sqrt(t.x * t.x + t.y * t.y);
+void DirectRenderHost::submitCompose(float tx, float ty) {
+    float mag = std::sqrt(tx * tx + ty * ty);
     float angle = mag * kTiltRadPerPixel;
 
     // Rotation axis in screen plane, perpendicular to displacement.
-    float axX =  (mag > 0.f) ? (-t.y / mag) : 0.f;
-    float axY =  (mag > 0.f) ? ( t.x / mag) : 0.f;
+    float axX =  (mag > 0.f) ? (-ty / mag) : 0.f;
+    float axY =  (mag > 0.f) ? ( tx / mag) : 0.f;
     float axZ = 0.f;
 
     // Set up view 1 targeting the swap chain.
@@ -232,13 +295,23 @@ void DirectRenderHost::endFrame(uint32_t /*bgfxFrameNumber*/) {
     // horizontally as well as vertically at zero tilt).
     const float halfW = aspect;
     const float halfH = 1.f;
+    // bx::mtxLookAt defaults to left-handed, which flips X in view space
+    // (eye at +Z looking at origin → side = up×forward = -X). Sampling u=1
+    // at the quad's -X edge compensates so world-space orientation on the
+    // render target maps back correctly on the composited quad.
+    //
+    // Render-target texel origin is top-left on Metal/Vulkan, bottom-left
+    // on GLES — bgfx reports this via caps so we flip V only when needed.
+    const bool  flipV = bgfx::getCaps()->originBottomLeft;
+    const float v0 = flipV ? 1.f : 0.f;  // world +Y (top) → texel v
+    const float v1 = flipV ? 0.f : 1.f;  // world -Y (bottom) → texel v
     ComposeVertex verts[6] = {
-        { -halfW, -halfH, 0.f, 1.f, 1.f },
-        {  halfW, -halfH, 0.f, 0.f, 1.f },
-        {  halfW,  halfH, 0.f, 0.f, 0.f },
-        { -halfW, -halfH, 0.f, 1.f, 1.f },
-        {  halfW,  halfH, 0.f, 0.f, 0.f },
-        { -halfW,  halfH, 0.f, 1.f, 0.f },
+        { -halfW, -halfH, 0.f, 1.f, v1 },
+        {  halfW, -halfH, 0.f, 0.f, v1 },
+        {  halfW,  halfH, 0.f, 0.f, v0 },
+        { -halfW, -halfH, 0.f, 1.f, v1 },
+        {  halfW,  halfH, 0.f, 0.f, v0 },
+        { -halfW,  halfH, 0.f, 1.f, v0 },
     };
 
     bgfx::TransientVertexBuffer tvb;

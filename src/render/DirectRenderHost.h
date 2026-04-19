@@ -35,6 +35,8 @@ public:
     bool shouldQuit() const override;
 
 private:
+    void submitCompose(float tx, float ty);
+
     struct Impl;
     std::unique_ptr<Impl> i_;
 };
