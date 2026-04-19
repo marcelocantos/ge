@@ -18,7 +18,7 @@
 	url = https://github.com/erincatto/box2d.git
 [submodule "vendor/github.com/bkaradzic/bgfx"]
 	path = vendor/github.com/bkaradzic/bgfx
-	url = https://github.com/bkaradzic/bgfx.git
+	url = https://github.com/squz/bgfx.git
 [submodule "vendor/github.com/bkaradzic/bx"]
 	path = vendor/github.com/bkaradzic/bx
 	url = https://github.com/bkaradzic/bx.git

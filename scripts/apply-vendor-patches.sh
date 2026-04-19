@@ -2,6 +2,12 @@
 # Apply patches from vendor/patches/ to the corresponding vendored
 # submodules. Idempotent: patches that already apply cleanly are
 # considered already-applied and skipped.
+#
+# This script exists for patches carried against upstream-pinned
+# submodules. Patches that apply to forks we maintain (e.g.
+# squz/bgfx) should instead be committed to the fork branch; the
+# submodule SHA then captures them automatically, no apply step
+# needed.
 
 set -eu
 
@@ -10,11 +16,16 @@ cd "$(dirname "$0")/.."
 # Map patch file → submodule path where it applies.
 # Keep this in sync with vendor/patches/README.md.
 declare -A TARGETS=(
-    [bgfx-drawable-as-truth.patch]="vendor/github.com/bkaradzic/bgfx"
 )
+
+if (( ${#TARGETS[@]} == 0 )); then
+    echo "  OK    no patches registered"
+    exit 0
+fi
 
 status=0
 for patch in vendor/patches/*.patch; do
+    [[ -e "$patch" ]] || continue
     name=$(basename "$patch")
     target=${TARGETS[$name]:-}
     if [[ -z "$target" ]]; then
