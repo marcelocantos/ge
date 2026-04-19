@@ -469,6 +469,32 @@ targets:
     origin: manual
     discovered: 2026-04-19
     achieved: 2026-04-19
+  T27:
+    name: make check completes in under 8 minutes — per-cell soak cut to 10s + multi-sim/emu parallelism
+    status: identified
+    value: 0.0
+    cost: 0.0
+    observable: true
+    acceptance:
+    - Per-cell soak sub-check runs for ~10s by default (configurable via matrix-cell.sh flag and Module.mk variable)
+    - A single dedicated long-soak cell runs the 60s sweep (e.g. `make cell.desktop-soak-long`)
+    - Cells of the same platform/form-factor can run in parallel via distinct simulators/emulators when available
+    - '`make -j check CHECK_EXCLUDE=''android-device-tablet-*''` wall-clock under 8 minutes on an M4 Max with primed caches'
+    context: |-
+      `make check` currently budgets ~60s soak per cell × 22 active cells ≈ 22 min of mostly-idle wall time. Total wall-clock is estimated 10-20 min. Target: under 8 min.
+
+      Two levers:
+
+      1. **Cut per-cell soak to 10s**, keep one dedicated long-soak cell (e.g. `desktop-soak-60s` or reuse an existing cell with a `--soak-seconds 60` flag) for the reliability sweep. Per-cell soak as currently implemented wasn't catching slow-growing regressions anyway — those are a separate class of test.
+
+      2. **Multi-sim/emu parallelism.** Today cells on the same platform serialise through one sim/emu. Booting multiple sims concurrently (iPad Air M4 + iPad Pro M4 for two iOS tablet cells; Pixel 7 + Pixel 9 Pro XL for two Android cells) lets `make -j check` exercise both in parallel. M4 Max has the RAM headroom (128 GB); simulator CPU cost is modest.
+
+      Implementation notes:
+      - matrix-cell.sh already takes the soak timeout as a parameter; exposing it per-cell in Module.mk is straightforward.
+      - The ios_sim_get_udid / android_get_serial functions currently pick ONE sim per form factor. Extend to allow reserving a specific sim per cell (via env var or cell-name-derived) so two cells of the same form factor can claim different sims.
+      - ged already multiplexes sessions — no change there.
+    origin: manual
+    discovered: 2026-04-19
   T3:
     name: Player sends mip cache manifest before rendering begins
     status: identified
