@@ -14,6 +14,7 @@
 #pragma once
 
 #include <ge/Protocol.h>
+#include <ge/VideoDecoder.h>
 
 #include <SDL3/SDL_events.h>
 
@@ -34,12 +35,36 @@ public:
         int connectTimeoutMs = 2000;
     };
 
-    // A decoded BGRA video frame ready for display.
+    // A decoded video frame ready for display. Owns its plane data so it
+    // remains valid after the decoder callback returns. Plane count and
+    // stride layout depend on `format` — see ge/VideoDecoder.h's VideoFrame
+    // for the contract; DecodedFrame is the owned counterpart.
     struct DecodedFrame {
-        std::vector<uint8_t> bgra;
+        VideoFrame::Format format = VideoFrame::Format::BGRA;
         int width = 0;
         int height = 0;
-        size_t bytesPerRow = 0;
+        std::vector<uint8_t> plane0;
+        std::vector<uint8_t> plane1;
+        std::vector<uint8_t> plane2;
+        int stride0 = 0;
+        int stride1 = 0;
+        int stride2 = 0;
+
+        // View this owned frame as a VideoFrame with raw plane pointers.
+        // Pointers are valid until the next mutation of *this.
+        VideoFrame view() const {
+            VideoFrame f;
+            f.format = format;
+            f.width = width;
+            f.height = height;
+            f.planes[0] = plane0.empty() ? nullptr : plane0.data();
+            f.planes[1] = plane1.empty() ? nullptr : plane1.data();
+            f.planes[2] = plane2.empty() ? nullptr : plane2.data();
+            f.strides[0] = stride0;
+            f.strides[1] = stride1;
+            f.strides[2] = stride2;
+            return f;
+        }
     };
 
     explicit PlayerWireBridge(Config);

@@ -14,6 +14,8 @@
 // This keeps mobile player builds small and avoids a bgfx port there.
 #pragma once
 
+#include <ge/VideoDecoder.h>
+
 #include <SDL3/SDL.h>
 
 #include <cstddef>
@@ -47,9 +49,11 @@ public:
     // Accounts for requested orientation (portrait/landscape swap).
     void getDeviceDimensions(int& w, int& h, int& pixelRatio) const;
 
-    // Replace the video texture with a newly decoded BGRA frame.
-    // (Re)allocates the texture if dimensions change.
-    void updateVideoTexture(const uint8_t* bgra, int w, int h, size_t bytesPerRow);
+    // Replace the video texture with a newly decoded frame. The texture is
+    // (re)allocated whenever dimensions or pixel format change. SDL handles
+    // YUV→RGB conversion internally for NV12/IYUV formats (GPU-side on
+    // Metal/Vulkan, software fallback elsewhere).
+    void updateVideoTexture(const VideoFrame& frame);
 
     // Drain SDL events. Returns:
     //   quit           — SDL_EVENT_QUIT received

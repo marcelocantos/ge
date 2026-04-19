@@ -112,8 +112,7 @@ int playerCore(const std::string& host, int port, const std::string& serverName)
 
         ge::PlayerWireBridge::DecodedFrame df;
         if (wire.pollFrame(df)) {
-            render.updateVideoTexture(df.bgra.data(), df.width, df.height,
-                                      df.bytesPerRow);
+            render.updateVideoTexture(df.view());
             frameCount++;
         }
 

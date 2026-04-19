@@ -87,6 +87,7 @@ struct PlayerRender::Impl {
     SDL_Renderer* renderer = nullptr;
     SDL_Texture* videoTex = nullptr;
     int texW = 0, texH = 0;
+    SDL_PixelFormat texFormat = SDL_PIXELFORMAT_UNKNOWN;
 
     uint8_t requestedOrientation = 0;
 
@@ -219,17 +220,47 @@ void PlayerRender::getDeviceDimensions(int& w, int& h, int& pixelRatio) const {
     if (wantLandscape && h > w) std::swap(w, h);
 }
 
-void PlayerRender::updateVideoTexture(const uint8_t* bgra, int w, int h, size_t bpr) {
+void PlayerRender::updateVideoTexture(const VideoFrame& frame) {
     if (!i_->renderer) return;
-    if (!i_->videoTex || i_->texW != w || i_->texH != h) {
-        if (i_->videoTex) SDL_DestroyTexture(i_->videoTex);
-        i_->videoTex = SDL_CreateTexture(i_->renderer,
-            SDL_PIXELFORMAT_BGRA32, SDL_TEXTUREACCESS_STREAMING, w, h);
-        i_->texW = w;
-        i_->texH = h;
-        SPDLOG_INFO("PlayerRender: video texture created {}x{}", w, h);
+
+    SDL_PixelFormat sdlFormat = SDL_PIXELFORMAT_UNKNOWN;
+    switch (frame.format) {
+    case VideoFrame::Format::BGRA: sdlFormat = SDL_PIXELFORMAT_BGRA32; break;
+    case VideoFrame::Format::NV12: sdlFormat = SDL_PIXELFORMAT_NV12;   break;
+    case VideoFrame::Format::IYUV: sdlFormat = SDL_PIXELFORMAT_IYUV;   break;
     }
-    SDL_UpdateTexture(i_->videoTex, nullptr, bgra, static_cast<int>(bpr));
+    if (sdlFormat == SDL_PIXELFORMAT_UNKNOWN) return;
+
+    if (!i_->videoTex || i_->texW != frame.width ||
+        i_->texH != frame.height || i_->texFormat != sdlFormat) {
+        if (i_->videoTex) SDL_DestroyTexture(i_->videoTex);
+        i_->videoTex = SDL_CreateTexture(i_->renderer, sdlFormat,
+            SDL_TEXTUREACCESS_STREAMING, frame.width, frame.height);
+        i_->texW = frame.width;
+        i_->texH = frame.height;
+        i_->texFormat = sdlFormat;
+        SPDLOG_INFO("PlayerRender: video texture created {}x{} format={}",
+                    frame.width, frame.height, SDL_GetPixelFormatName(sdlFormat));
+    }
+
+    switch (frame.format) {
+    case VideoFrame::Format::BGRA:
+        SDL_UpdateTexture(i_->videoTex, nullptr, frame.planes[0], frame.strides[0]);
+        break;
+    case VideoFrame::Format::NV12:
+        // Y plane + interleaved UV plane.
+        SDL_UpdateNVTexture(i_->videoTex, nullptr,
+                            frame.planes[0], frame.strides[0],
+                            frame.planes[1], frame.strides[1]);
+        break;
+    case VideoFrame::Format::IYUV:
+        // Separate Y, U, V planes.
+        SDL_UpdateYUVTexture(i_->videoTex, nullptr,
+                             frame.planes[0], frame.strides[0],
+                             frame.planes[1], frame.strides[1],
+                             frame.planes[2], frame.strides[2]);
+        break;
+    }
 }
 
 PlayerRender::PumpResult PlayerRender::pumpEvents() {

@@ -25,36 +25,6 @@ static constexpr int kColorFormatBGRA = 0x7F00A000;
 static constexpr int64_t kInputTimeoutUs = 10000;  // 10ms — wait for input buffer
 static constexpr int64_t kOutputTimeoutUs = 0;     // non-blocking output drain
 
-// Convert NV12 (YUV 4:2:0 semi-planar) to BGRA.
-// Y plane: w*h bytes.
-// UV plane: w*(h/2) bytes, interleaved U then V per pair.
-static void nv12ToBgra(const uint8_t* y, const uint8_t* uv,
-                        int width, int height,
-                        int yStride, int uvStride,
-                        uint8_t* bgra, int bgraStride) {
-    for (int row = 0; row < height; ++row) {
-        const uint8_t* yRow  = y  + row * yStride;
-        const uint8_t* uvRow = uv + (row / 2) * uvStride;
-        uint8_t*       out   = bgra + row * bgraStride;
-
-        for (int col = 0; col < width; ++col) {
-            int yVal = static_cast<int>(yRow[col]);
-            int uVal = static_cast<int>(uvRow[(col & ~1)])     - 128;
-            int vVal = static_cast<int>(uvRow[(col & ~1) + 1]) - 128;
-
-            int r = yVal + (vVal * 1436 >> 10);
-            int g = yVal - (uVal *  352 >> 10) - (vVal * 731 >> 10);
-            int b = yVal + (uVal * 1814 >> 10);
-
-            out[0] = static_cast<uint8_t>(b < 0 ? 0 : b > 255 ? 255 : b);
-            out[1] = static_cast<uint8_t>(g < 0 ? 0 : g > 255 ? 255 : g);
-            out[2] = static_cast<uint8_t>(r < 0 ? 0 : r > 255 ? 255 : r);
-            out[3] = 0xFF;
-            out += 4;
-        }
-    }
-}
-
 struct VideoDecoder::M {
     FrameCallback callback;
 
@@ -69,10 +39,6 @@ struct VideoDecoder::M {
 
     // Protect concurrent drain calls from decode() vs flush().
     std::mutex drainMutex;
-
-    // Reusable BGRA conversion buffer.
-    std::mutex        frameMutex;
-    std::vector<uint8_t> frameBuffer;
 
     ~M() {
         if (codec) {
@@ -252,40 +218,42 @@ void VideoDecoder::M::deliverFrame(uint8_t* buf, size_t bufSize,
                                     AMediaCodecBufferInfo& info) {
     if (info.size <= 0 || !buf) return;
 
-    // Detect whether the actual output color format is BGRA or NV12.
-    // On some devices the codec ignores the requested format and outputs NV12
-    // regardless. We use a simple size heuristic: BGRA = 4*w*h bytes.
+    // We always request NV12 at configure time. Some devices nonetheless
+    // return BGRA; detect by buffer size and forward in either format
+    // without conversion — the renderer (SDL_PIXELFORMAT_NV12 /
+    // SDL_PIXELFORMAT_BGRA32) handles colour-space conversion on the GPU.
     const size_t expectedBgra = static_cast<size_t>(width) * height * 4;
     const size_t expectedNv12 = static_cast<size_t>(width) * height * 3 / 2;
     const size_t frameBytes   = static_cast<size_t>(info.size);
 
+    uint8_t* src = buf + info.offset;
+
+    VideoFrame f;
+    f.width = width;
+    f.height = height;
+
     if (frameBytes >= expectedBgra) {
-        // Treat as BGRA (or RGBA — trust what the codec promised at configure).
-        std::lock_guard<std::mutex> lock(frameMutex);
-        callback(buf + info.offset, width, height,
-                 static_cast<size_t>(width) * 4);
+        f.format = VideoFrame::Format::BGRA;
+        f.planes[0] = src;
+        f.strides[0] = width * 4;
     } else if (frameBytes >= expectedNv12) {
-        // NV12: convert to BGRA.
-        const size_t bgraStride = static_cast<size_t>(width) * 4;
-        const size_t bgraBytes  = bgraStride * height;
-
-        std::lock_guard<std::mutex> lock(frameMutex);
-        frameBuffer.resize(bgraBytes);
-
-        const uint8_t* src = buf + info.offset;
-        nv12ToBgra(src,                          // Y plane
-                   src + width * height,         // UV plane
-                   width, height,
-                   width,                        // Y stride
-                   width,                        // UV stride (interleaved)
-                   frameBuffer.data(), static_cast<int>(bgraStride));
-
-        callback(frameBuffer.data(), width, height, bgraStride);
+        // NV12 layout: Y plane (width*height bytes) followed by interleaved
+        // UV plane (width*height/2 bytes). Stride==width is the universal
+        // assumption matching the existing code; codecs that use different
+        // strides would require querying AMEDIAFORMAT_KEY_STRIDE.
+        f.format = VideoFrame::Format::NV12;
+        f.planes[0] = src;
+        f.planes[1] = src + width * height;
+        f.strides[0] = width;
+        f.strides[1] = width;
     } else {
         SPDLOG_WARN("VideoDecoder: unexpected output buffer size {} "
                     "(expected BGRA={} or NV12={})",
                     frameBytes, expectedBgra, expectedNv12);
+        return;
     }
+
+    callback(f);
 }
 
 void VideoDecoder::M::drainOutput() {
