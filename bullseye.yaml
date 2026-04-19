@@ -405,7 +405,7 @@ targets:
     achieved: 2026-04-19
   T24:
     name: Android emulator dist cells render without bgfx GL-context crash on Pixel 9 Pro XL AVD
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     observable: true
@@ -426,6 +426,7 @@ targets:
       First diagnostic step: run `make cell.android-emu-phone-dist` with full adb logcat capture; look for bgfx's own error logging and any Gralloc / EGL errors. Second: try a different AVD (e.g. "Pixel 7", older GPU emulation) to see whether it's Pro-XL-specific or broader.
     origin: manual
     discovered: 2026-04-19
+    achieved: 2026-04-19
   T25:
     name: Player-mode cells pass the reconnect sub-check on iOS sim and Android emu
     status: identified

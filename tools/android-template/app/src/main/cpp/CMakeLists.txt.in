@@ -55,9 +55,15 @@ target_include_directories(bgfx PRIVATE
     ${BGFX_DIR}/src
 )
 target_link_libraries(bgfx PUBLIC bx bimg)
-target_compile_definitions(bgfx PUBLIC
-    BGFX_CONFIG_RENDERER_OPENGLES=31
-)
+# Vulkan-only build: explicitly select Vulkan so bgfx skips the auto-detect
+# block that would otherwise enable both GLES (=30) and Vulkan together.
+# With BGFX_CONFIG_RENDERER_VULKAN=1 defined, the entire auto-detect block
+# (lines 22-120 of config.h) is bypassed; GLES defaults to 0, so no EGL/GLES
+# symbols are compiled in and we don't need to link against EGL or GLESv3.
+# Do NOT add BGFX_CONFIG_RENDERER_OPENGLES — the Android emulator's
+# Apple-Metal-backed EGL translator only exposes GLES 3.0, so any GLES 3.1
+# context request triggers EGL_BAD_CONFIG → bgfx fatal.
+target_compile_definitions(bgfx PUBLIC BGFX_CONFIG_RENDERER_VULKAN=1)
 
 # ── Box2D (vendored C code) ─────────────────────────────────────────────
 set(BOX2D_DIR ${GE_ROOT}/vendor/github.com/erincatto/box2d)
@@ -116,7 +122,6 @@ target_compile_definitions(main PRIVATE
     SQLITE_ENABLE_PREUPDATE_HOOK
     SQLITE_ENABLE_DESERIALIZE
     BX_CONFIG_DEBUG=0
-    BGFX_CONFIG_RENDERER_OPENGLES=31
 )
 
 target_include_directories(main PRIVATE
@@ -133,5 +138,7 @@ target_include_directories(main PRIVATE
 target_link_libraries(main PRIVATE
     bgfx box2d
     SDL3::SDL3
-    android log EGL GLESv3 z
+    # Vulkan is loaded dynamically by bgfx (libvulkan.so); no explicit link.
+    # EGL and GLESv3 are not needed since we use the Vulkan renderer.
+    android log z
 )
