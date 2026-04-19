@@ -27,6 +27,10 @@ android {
     buildTypes {
         release {
             minifyEnabled = false
+            // Sign with the debug key so the release APK can be installed on
+            // the emulator during local development and CI cell runs. Replace
+            // with a production keystore before publishing to the Play Store.
+            signingConfig = signingConfigs.debug
         }
     }
 
@@ -51,11 +55,11 @@ android {
     }
 }
 
-// Sync game data + compiled GLES shaders into APK assets before building.
+// Sync game data + compiled SPIRV shaders into APK assets before building.
 // The host-side build compiles shaders for multiple profiles:
 //   build/shaders/        — Metal bytecode (macOS / iOS)
-//   build/shaders-gles/   — OpenGL ES 3.1 (Android)
-// We consume the GLES variant but place it under assets/build/shaders/
+//   build/shaders-gles/   — SPIRV (Android Vulkan backend)
+// We consume the SPIRV variant but place it under assets/build/shaders/
 // so the runtime lookup via ge::resource("build/shaders/...") keeps
 // working unchanged across platforms.
 tasks.register('syncAssets', Sync) {

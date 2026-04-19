@@ -127,9 +127,14 @@ BgfxContext::BgfxContext(const BgfxConfig& config)
         }
     }
 #elif defined(__ANDROID__)
-    // OpenGL ES on Android. bgfx creates its own EGL context internally
-    // from the ANativeWindow*; we just hand SDL a plain surface.
-    init.type = bgfx::RendererType::OpenGLES;
+    // Vulkan on Android. bgfx loads libvulkan.so dynamically and creates
+    // its own swap-chain from the ANativeWindow*. This avoids the EGL GLES
+    // path entirely, which is necessary because the Android emulator's
+    // Apple-Metal-backed EGL translator only supports GLES 3.0 — requesting
+    // a 3.1 context triggers EGL_BAD_CONFIG → bgfx fatal on all AVDs running
+    // on macOS Apple Silicon. SPIRV shaders (compiled with -p spirv) bypass
+    // the glsl-optimizer and work cleanly with the Vulkan backend.
+    init.type = bgfx::RendererType::Vulkan;
 
     const char* title = (config.title && *config.title) ? config.title : "ge";
     // Android: ask for a fullscreen surface. Passing non-fullscreen
@@ -171,7 +176,7 @@ BgfxContext::BgfxContext(const BgfxConfig& config)
         return;
     }
 
-    // Backbuffer/swap-chain resize after init. On Android GLES the
+    // Backbuffer/swap-chain resize after init. On Android Vulkan the
     // native window size isn't fully reflected until reset() is called.
     bgfx::reset(m->width, m->height, init.resolution.reset);
 
