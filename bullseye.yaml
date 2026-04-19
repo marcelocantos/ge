@@ -354,6 +354,20 @@ targets:
     context: 'Automated matrix-test covers sim/emu only (6 cells, all green as of this commit). 🎯T19''s acceptance includes physical device smokes on iPhone, iPad Pippa, and Android phone × dist/player, but these weren''t run in the session that pushed the branch because: (a) device-signed iOS builds require a different xcodebuild invocation + provisioning, (b) Android device build + install + smoke requires switching adb context to USB device (emulator was the only Android target available mid-session), (c) the user''s priority was shipping the known-good state quickly so downstream games can start. The rotation fix was specifically validated on Pippa in a prior session (commit 1471f9d), giving device-side confidence. To satisfy this target: build signed dist .app / .apk for each device, install, run ge/tools/smoke-test.sh --platform ios-device|android-device --device name per cell, confirm no crash reports, confirm player/dist modes both render.'
     origin: manual
     discovered: 2026-04-19
+  T22:
+    name: Debug-build matrix cells build and exercise a real debug variant, not a reused release build
+    status: identified
+    value: 0.0
+    cost: 0.0
+    observable: true
+    acceptance:
+    - make ge/<platform>-debug (or equivalent) produces a debug binary / .app / APK distinct from the release build — assertions enabled, debug symbols retained
+    - matrix-cell.sh's run_*_debug_* functions build and deploy the debug variant, not the release binary
+    - make cell.desktop-debug-dist, ios-debug-dist, android-debug-dist each pass cold-launch + 10s soak + clean-exit
+    - Android tablet AVD name is documented (e.g. as a Module.mk variable with a sensible default) and the form-factor detection in matrix-cell.sh prefers it over heuristic matching
+    context: 'The six *-debug-* cells (desktop-debug-dist, desktop-debug-player, ios-debug-dist, ios-debug-player, android-debug-dist, android-debug-player) were added to the canonical 24-cell matrix for scaffolding, but their implementations in tools/matrix-cell.sh currently reuse the release build. That makes them redundant with the release cells. Real value from a debug-cycle cell comes from exercising the debug build (assertions enabled, debug symbols, BX_CONFIG_DEBUG=1) so debug-only regressions are caught by `make check` before release. Short ~10s smoke per cell is enough. Related: the Android form-factor split uses an AVD-name heuristic; a canonical tablet AVD name should be documented in Module.mk.'
+    origin: manual
+    discovered: 2026-04-19
   T3:
     name: Player sends mip cache manifest before rendering begins
     status: identified
