@@ -75,6 +75,38 @@ Module.mk       Build rules and exported variables
 |--------|-------------|
 | `ImageDiff.h` | CPU and GPU pixel comparison (RMS difference) |
 
+## Launching the Player with a Specific Server Address
+
+For automated and scripted launches (CI, matrix testing, agent workflows), pass the ged
+address directly at launch time so the player connects without a QR scan.
+
+**Desktop**
+```bash
+bin/player  # always connects to localhost:42069
+```
+
+**iOS Simulator** — pass `-ged_addr host:port` as a launch argument:
+```bash
+xcrun simctl launch <udid> com.squz.player -ged_addr localhost:42069
+```
+
+**iOS Device** — use `devicectl` with `--console-pty` and pass args after `--`:
+```bash
+xcrun devicectl device process launch --console-pty --device <udid> com.squz.player -- -ged_addr 192.168.1.100:42069
+```
+
+**Android Emulator** — pass `--es ged_addr host:port` to `am start`:
+```bash
+adb shell am start -n com.squz.player/.GeActivity --es ged_addr 10.0.2.2:42069
+```
+
+**Android Device** — same syntax with the Mac's LAN IP:
+```bash
+adb shell am start -n com.squz.player/.GeActivity --es ged_addr 192.168.1.100:42069
+```
+
+If the parameter is absent the player falls back to any saved address, then QR scan.
+
 ## License
 
 See individual files and `vendor/` subdirectories for license terms.

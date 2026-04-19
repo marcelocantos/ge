@@ -1,6 +1,12 @@
 // Android ge player entry point.
 // Scans a QR code on startup to discover the game server, then runs the shared
 // player core.
+//
+// Pass --es ged_addr "host:port" to adb am start to connect directly (highest priority):
+//   adb shell am start -n com.squz.player/.GeActivity --es ged_addr "10.0.2.2:42069"
+// Set debug.ge.address system property to connect directly without QR:
+//   adb shell setprop debug.ge.address "192.168.1.100:42069"
+// On the emulator, 10.0.2.2 is automatically used when neither override is present.
 
 #include "player_core.h"
 #include "QRScanner.h"
@@ -8,6 +14,9 @@
 #include <spdlog/spdlog.h>
 #include <spdlog/sinks/android_sink.h>
 #include <sys/system_properties.h>
+
+#include <jni.h>
+#include <SDL3/SDL.h>
 
 namespace {
 
@@ -19,22 +28,47 @@ bool isEmulator() {
     return value[0] == '1';
 }
 
-// Check debug.ge.address system property for direct connection (skips QR).
-// Set via: adb shell setprop debug.ge.address "192.168.1.100:42069"
-// Or just: adb shell setprop debug.ge.address "192.168.1.100" (uses default port)
-// Clear:  adb shell setprop debug.ge.address ""
-ge::ScanResult directAddress() {
-    char value[PROP_VALUE_MAX] = {};
-    __system_property_get("debug.ge.address", value);
-    if (value[0] == '\0') return {};
-
-    std::string addr(value);
+// Parse "host:port" or "host" into a ScanResult.
+ge::ScanResult parseAddr(const std::string& addr) {
     auto colon = addr.rfind(':');
     if (colon != std::string::npos) {
         uint16_t port = static_cast<uint16_t>(std::stoi(addr.substr(colon + 1)));
         return {addr.substr(0, colon), port};
     }
     return {addr, static_cast<uint16_t>(kDefaultPort)};
+}
+
+// Retrieve the ged_addr intent extra set by GeActivity.getGedAddr() via JNI.
+// Returns empty string if absent or on JNI error.
+std::string intentGedAddr() {
+    JNIEnv* env = static_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());
+    if (!env) return {};
+
+    jclass cls = env->FindClass("com/squz/player/GeActivity");
+    if (!cls) { env->ExceptionClear(); return {}; }
+
+    jmethodID mid = env->GetStaticMethodID(cls, "getGedAddr", "()Ljava/lang/String;");
+    if (!mid) { env->ExceptionClear(); env->DeleteLocalRef(cls); return {}; }
+
+    jobject obj = env->CallStaticObjectMethod(cls, mid);
+    env->DeleteLocalRef(cls);
+    if (!obj) return {};
+
+    const char* chars = env->GetStringUTFChars(static_cast<jstring>(obj), nullptr);
+    std::string result = chars ? chars : "";
+    env->ReleaseStringUTFChars(static_cast<jstring>(obj), chars);
+    env->DeleteLocalRef(obj);
+    return result;
+}
+
+// Check debug.ge.address system property for direct connection (skips QR).
+// Set via: adb shell setprop debug.ge.address "192.168.1.100:42069"
+// Clear:  adb shell setprop debug.ge.address ""
+ge::ScanResult directAddressProp() {
+    char value[PROP_VALUE_MAX] = {};
+    __system_property_get("debug.ge.address", value);
+    if (value[0] == '\0') return {};
+    return parseAddr(std::string(value));
 }
 
 } // namespace
@@ -46,20 +80,32 @@ int main(int argc, char* argv[]) {
 
     SPDLOG_INFO("ge player (Android) starting...");
 
-    // System property override — fast, non-blocking.
-    auto direct = directAddress();
-    if (!direct.host.empty()) {
-        SPDLOG_INFO("Direct connection via debug.ge.address: {}:{}", direct.host, direct.port);
-        return playerCore(direct.host, direct.port);
+    // Priority 1: ged_addr intent extra (set via adb am start --es ged_addr host:port).
+    {
+        std::string addr = intentGedAddr();
+        if (!addr.empty()) {
+            auto r = parseAddr(addr);
+            SPDLOG_INFO("Intent ged_addr: {}:{}", r.host, r.port);
+            return playerCore(r.host, r.port);
+        }
     }
 
-    // Emulator auto-connect — Android's alias for the host loopback.
+    // Priority 2: System property override — fast, non-blocking.
+    {
+        auto direct = directAddressProp();
+        if (!direct.host.empty()) {
+            SPDLOG_INFO("Direct connection via debug.ge.address: {}:{}", direct.host, direct.port);
+            return playerCore(direct.host, direct.port);
+        }
+    }
+
+    // Priority 3: Emulator auto-connect — Android's alias for the host loopback.
     if (isEmulator()) {
         SPDLOG_INFO("Emulator detected — connecting to 10.0.2.2:{}", kDefaultPort);
         return playerCore("10.0.2.2", kDefaultPort);
     }
 
-    // Physical device — scan QR code presented by ged dashboard.
+    // Priority 4: Physical device — scan QR code presented by ged dashboard.
     SPDLOG_INFO("Physical device — waiting for QR scan...");
     ge::ScanResult result = ge::scanQRCode();
     return playerCore(result.host, result.port);
