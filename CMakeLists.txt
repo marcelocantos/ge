@@ -230,6 +230,15 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Android")
     )
     target_link_libraries(ge PUBLIC SDL3_image::SDL3_image)
 
+    # SDL3_ttf — built from source; brings freetype, harfbuzz,
+    # plutosvg, plutovg with it via its bundled external/ sources.
+    set(SDLTTF_VENDORED ON)
+    add_subdirectory(
+        ${GE_VENDOR}/github.com/libsdl-org/SDL_ttf
+        ${CMAKE_BINARY_DIR}/SDL3_ttf
+    )
+    target_link_libraries(ge PUBLIC SDL3_ttf::SDL3_ttf)
+
     # Android system libs
     target_link_libraries(ge INTERFACE android log EGL GLESv2)
 

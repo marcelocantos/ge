@@ -145,7 +145,7 @@ targets:
     discovered: 2026-04-12
   T12:
     name: ge's render subsystem synthesises ⌥WASD accelerometer events uniformly across all host contexts
-    status: identified
+    status: achieved
     value: 5.0
     cost: 5.0
     acceptance:
@@ -161,9 +161,10 @@ targets:
       Fix: extract the synthesis logic (detect-no-accel + keyboard-to-SDL_EVENT_SENSOR_UPDATE + orientation rotation) into a reusable ge helper, and invoke it from every render-subsystem host: player_core.cpp AND ge's direct-mode render path. "No accelerometer" detection should be programmatic — SDL sensor enumeration plus runtime platform check for simulator/emulator.
     origin: discovered during 🎯T10 tiltbuggy work when writing main.cpp input handling
     discovered: 2026-04-16
+    achieved: 2026-04-19
   T13:
     name: ⌥-gated mouse movement simulates accelerometer (replaces or supplements ⌥WASD)
-    status: identified
+    status: achieved
     value: 3.0
     cost: 2.0
     acceptance:
@@ -183,6 +184,7 @@ targets:
     - T12
     origin: user suggestion during tiltbuggy architecture validation
     discovered: 2026-04-16
+    achieved: 2026-04-19
   T14:
     name: Render subsystem visibly tilts the viewport in response to synthesised accelerometer input
     status: identified
@@ -431,7 +433,7 @@ targets:
     achieved: 2026-04-19
   T25:
     name: Player-mode cells pass the reconnect sub-check on iOS sim and Android emu
-    status: identified
+    status: converging
     value: 0.0
     cost: 0.0
     observable: true
@@ -439,12 +441,7 @@ targets:
     - '`make cell.ios-sim-tablet-player` passes the reconnect sub-check end-to-end'
     - '`make cell.android-emu-phone-player` passes the reconnect sub-check end-to-end'
     - If the bug was in matrix-cell.sh, the fix explains what signal is actually reliable; if in the player, root cause is documented in the fix commit
-    context: |-
-      Both `ios-sim-tablet-player` and `android-emu-phone-player` fail the `reconnect` sub-check in matrix-cell.sh: kill the desktop server, wait 5s, verify the player reconnects by polling ged for a new session. Pre-existing — agents flagged this on both the 🎯T22 and 🎯T23 verification runs, and it's present on master prior to those PRs too.
-
-      Reconnect is an important property for the server/player architecture — games restart during development and the player should transparently pick up the new server. If this sub-check is broken but the underlying reconnect logic works, the bug is in the test. If the logic is broken, it's a real regression from the recent ged / pigeon / session-handshake work.
-
-      First diagnostic step: read `check_reconnect_ios_sim_player` / `check_reconnect_android_emu_player` in matrix-cell.sh and understand what signal it looks for. Second: manually test — start `bin/tiltbuggy`, launch the player, kill tiltbuggy, start a fresh `bin/tiltbuggy`, verify the player reconnects visually. If yes, the matrix-cell check is wrong. If no, there's a real reconnect bug.
+    context: 'Root cause found: player cells start the desktop server without --brokered, so tiltbuggy runs in direct/standalone mode and never connects to ged. server_attached_sessions() always returns 0, so wait_for_server_sessions never fires. Fix: add SERVER_ARGS global, set to --brokered in all player cell runners (run_desktop_player, run_ios_sim_player, run_android_emu_player, run_ios_device_player, run_android_device_player, run_debug_player), and thread it through start_server and all reconnect helpers. This is a pure test/matrix-cell.sh fix — the player reconnect logic itself works correctly.'
     origin: manual
     discovered: 2026-04-19
   T26:
@@ -483,6 +480,95 @@ targets:
     context: '`make check` currently budgets ~60s soak per cell × 22 active cells ≈ 22 min of mostly-idle wall time. Total wall-clock is estimated 10-20 min. Target: under 8 min. Two levers: (1) cut per-cell soak to 10s, keep one dedicated long-soak cell for the reliability sweep; (2) multi-sim/emu parallelism — booting multiple sims concurrently (iPad Air + iPad Pro for two iOS tablet cells, Pixel 7 + Pixel 9 Pro XL for Android) lets make -j check exercise them in parallel. M4 Max has 128 GB of RAM headroom. matrix-cell.sh already takes the soak timeout as a parameter; ios_sim_get_udid / android_get_serial pick one sim per form factor and need extension to reserve specific sims per cell.'
     origin: manual
     discovered: 2026-04-19
+  T28:
+    name: AccelSynth (Shift-mouse) works in every host context lacking a real accelerometer
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - In a tilt-driven sample app (e.g. tiltbuggy) built as distribution (in-process DirectRenderHost, no ged/player), Shift-drag of the mouse tilts the viewport and drives gameplay identically to the player binary's behaviour
+    - 'Works on: macOS desktop distribution build, iOS simulator distribution build, Android emulator distribution build'
+    - Real sensor detection remains correct — synth stays OFF on devices that have a real accelerometer (iOS/Android hardware)
+    - Engine-side code (games) is unchanged — only SDL_EVENT_SENSOR_UPDATE is observed
+    context: AccelSynth (src/render/AccelSynth.h) synthesises SDL_EVENT_SENSOR_UPDATE from Shift-gated mouse motion. It is wired into PlayerRender (player binary) where it works, and constructed by DirectRenderHost (distribution modality) but not fully driven — events are not routed through synth->handle() in pumpEvents, update() per frame is not called, and the viewport tilt composite is not driven by synth tilt. Supersedes 🎯T12 (⌥WASD uniform synthesis) and 🎯T13 (⌥-gated mouse) — both described an earlier design abandoned in favour of AccelSynth's single-file Shift-mouse model.
+    origin: user request 2026-04-19
+    discovered: 2026-04-19
+  T28.1:
+    name: DirectRenderHost routes events through AccelSynth::handle() and drives update() per frame
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    observable: true
+    acceptance:
+    - DirectRenderHost::pumpEvents routes each SDL event through synth->handle() (when synth is active) before forwarding to the user event handler; consumed events are NOT forwarded
+    - DirectRenderHost drives synth->update() once per frame (beginFrame or endFrame) so the ease-back after Shift-release animates
+    - On a macOS desktop distribution build of sample/tiltbuggy (or equivalent tilt-driven app), Shift+mouse-drag produces SDL_EVENT_SENSOR_UPDATE events that reach the engine's onEvent callback
+    - Unit or integration test (where feasible) covers the routing + update path; otherwise a manual verification note lives in the PR description
+    context: DirectRenderHost.mm:138-164 constructs AccelSynth when config.sensors requests an accelerometer and no real sensor is available, and DirectRenderHost::setEventHandler wires synth->setEmit. But pumpEvents (~line 183) doesn't call synth->handle(), and there's no per-frame synth->update() call, so the Shift-mouse → sensor-event path is inert in the distribution modality. Compare to PlayerRender.cpp for the working pattern.
+    origin: decomposed from T28
+    discovered: 2026-04-19
+    achieved: 2026-04-19
+  T28.2:
+    name: DirectRenderHost viewport tilt composite responds to AccelSynth tilt (parity with PlayerRender)
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    observable: true
+    acceptance:
+    - In a distribution build using DirectRenderHost, Shift-dragging produces a visible viewport tilt matching the player binary's visual behaviour on the same app
+    - The tilt compose shader in DirectRenderHost is fed the current AccelSynth tilt each frame (same convention as PlayerRender.cpp ~line 346)
+    - When Shift is released, the composite eases back to neutral alongside the sensor values
+    context: PlayerRender.cpp has a viewport tilt composite driven by AccelSynth::current(). DirectRenderHost has compose shaders (DirectRenderHost.mm:117, submitCompose at ~line 262) but they're not currently driven by synth tilt. Need to plumb synth->current() into submitCompose's (tx, ty) arguments each frame so visual parity with the player is achieved.
+    depends_on:
+    - T28.1
+    origin: decomposed from T28
+    discovered: 2026-04-19
+    achieved: 2026-04-19
+  T28.3:
+    name: iOS simulator distribution build exposes working AccelSynth
+    status: converging
+    value: 0.0
+    cost: 0.0
+    observable: true
+    acceptance:
+    - On an iOS simulator running a distribution build of a tilt-driven sample app, SDL reports zero real sensors and AccelSynth activates
+    - Shift+mouse-drag inside the simulator window tilts the viewport and drives sensor-driven gameplay
+    - On a real iOS device (same app), AccelSynth stays OFF and real Core Motion sensors drive the game (no regression)
+    context: |-
+      iOS simulator has no Core Motion accelerometer — SDL sensor enumeration should return zero sensors, so AccelSynth::realSensorAvailable() returns false and synth activates. Verify: AccelSynth is actually constructed when running on iOS-sim distribution builds, the key/mouse events reach synth->handle() through SDL's iOS input path (Shift key must be delivered by simulator's keyboard passthrough), and the tilt composite renders correctly in portrait/landscape. Depends on T28.2 for the visual parity path. Smoke-test via ge/tools/smoke-test.sh --platform ios-sim --device tablet --install &lt;app&gt;.
+
+      Investigation (2026-04-19): Build exists and app launches cleanly on iPad Air 11-inch M4 sim (iOS 26.4). Rendering confirmed — buggy (yellow) and ground (blue) visible. AccelSynth activation path verified by code analysis: SDL_INIT_SENSOR is never called so SDL_GetSensors() returns 0 → realSensorAvailable() returns false → synth is constructed. Shift+mouse event delivery chain is sound: iOS sim surfaces a GCKeyboard (Mac keyboard) + GCMouse, SDL's UIKit backend registers for GCKeyboardDidConnectNotification and GCMouseDidConnectNotification, both fire on sim. GCMouse mouseMovedHandler only fires SDL_SendMouseMotion when SDL_GCMouseRelativeMode() is true — which AccelSynth enables via SDL_SetWindowRelativeMouseMode when Shift is held. Full chain is coherent. Remaining gap: interactive verification (actual Shift+drag → tilt response) not yet confirmed programmatically — simctl cannot inject GCKeyboard Shift events. Requires manual or XCUITest-based confirmation.
+    depends_on:
+    - T28.2
+    origin: decomposed from T28
+    discovered: 2026-04-19
+  T28.4:
+    name: Android emulator distribution build exposes working AccelSynth
+    status: identified
+    value: 0.0
+    cost: 0.0
+    observable: true
+    acceptance:
+    - On an Android emulator running a distribution build of a tilt-driven sample app, SDL reports zero real sensors (or emulator's virtual sensors pass a simulator-detection check) and AccelSynth activates
+    - Shift+mouse-drag inside the emulator window tilts the viewport and drives sensor-driven gameplay
+    - On a real Android device (same app), AccelSynth stays OFF and real sensors drive the game (no regression)
+    context: Android emulator ostensibly reports virtual sensors via AVD. If SDL sees them, AccelSynth::realSensorAvailable() returns true and synth stays off — we may need a runtime emulator-detection fallback (e.g. check Build.FINGERPRINT via JNI) to force synth on. Confirm behaviour first; extend detection if needed. Shift + mouse drag from the host is delivered to the emulator via the emulator window; verify SDL receives the events. Smoke-test via ge/tools/smoke-test.sh --platform android-emu --package <pkg> --install <apk>.
+    depends_on:
+    - T28.2
+    - T30
+    origin: decomposed from T28
+    discovered: 2026-04-19
+  T29:
+    name: smoke-test.sh default bundle ID is updated to com.squz.tiltbuggy
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - smoke-test.sh --platform ios-sim works for tiltbuggy without requiring --bundle-id override
+    - Default bundle ID in smoke-test.sh is either parameterised from the project or set to com.squz.tiltbuggy
+    context: smoke-test.sh hardcodes default bundle ID as com.squz.yourworld2 (line 47). Running it against tiltbuggy without --bundle-id causes launch to fail with the wrong app ID. Discovered while verifying T28.3.
+    origin: discovered while working on T28.3
+    discovered: 2026-04-19
   T3:
     name: Player sends mip cache manifest before rendering begins
     status: identified
@@ -493,6 +579,66 @@ targets:
     context: Currently the server sends all texture data and the player reactively checks its local mip cache (hit/miss). This still mutates the rendering pipeline with large WriteTexture commands even when the player already has the data. For ~270MB of initial textures, this dominates reconnection time. A preemptive cache manifest exchange would let the server skip cached uploads entirely.
     origin: migrated from docs/targets.md
     discovered: 2026-04-12
+  T30:
+    name: ge has a single integration path on every platform — consumers do add_subdirectory(ge) and get everything
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - 'On every supported platform (macOS, iOS, Android — Windows/Linux when added), a consuming app integrates ge via exactly one pattern: add_subdirectory(ge) followed by target_link_libraries(app PRIVATE ge). No hand-picked GE_SOURCES lists, no per-consumer source-level workarounds.'
+    - libge on every platform exposes the full public API from include/ge/ — Text, FontLoader, BgfxContext, SessionHost, tweaks, animation, etc. No subsystem is silently Apple-only or desktop-only.
+    - CLAUDE.md's 'Integrating ge into a New App' section documents this one path and explicitly warns against hand-picking engine sources.
+    - sample/tiltbuggy and multimaze2 (and any other consumer) build on Android via the uniform path, with Text.cpp compiled and linked.
+    context: 'Discovered 2026-04-19 while investigating Android tilt testing. ge currently has two Android integration paths: (a) add_subdirectory(ge) + link ge — the documented path, used by multimaze2, broken because ge''s Android CMakeLists branch doesn''t link SDL3_ttf and Text.cpp''s FontLoader dependency is Apple-only; (b) hand-picked GE_SOURCES list — used by sample/tiltbuggy/android, works by explicitly omitting Text.cpp and FontLoader_apple.mm (see sample/tiltbuggy/android/app/src/main/cpp/CMakeLists.txt:76-78). Having two paths is the bug — consumers have to reason about which subset of ge is safe on which platform, and bit-rot is inevitable (multimaze2''s Android CMakeLists already omits Text.cpp quietly). Principle: one path, everyone gets everything. Decomposes into T30.1 (SDL3_ttf + deps for Android), T30.2 (FontLoader_android implementation so Text.cpp compiles cross-platform), T30.3 (migrate sample/tiltbuggy Android to add_subdirectory(ge)), and a CLAUDE.md doc update baked into acceptance.'
+    origin: 'forked-from: 🎯T28.4 / Android tilt-testing investigation 2026-04-19'
+    discovered: 2026-04-19
+  T30.1:
+    name: ge's Android build links SDL3_ttf + freetype/harfbuzz/plutosvg/plutovg
+    status: identified
+    value: 0.0
+    cost: 0.0
+    observable: true
+    acceptance:
+    - SDL_ttf is vendored under ge/vendor/github.com/libsdl-org/SDL_ttf — added as a git submodule (matching the existing SDL submodule at the same parent path) pinned to release-3.2.2 (requires SDL ≥ 3.2.6; ge's SDL is 3.4.0 so compatible)
+    - ge/CMakeLists.txt's Android branch (currently lines 217-234) does add_subdirectory for SDL_ttf and links SDL3_ttf::SDL3_ttf into the ge target via PUBLIC
+    - SDLTTF_VENDORED is set so freetype, harfbuzz, plutosvg, plutovg are picked up transitively from SDL_ttf's own vendored external sources — no separate prebuilt .a vendoring
+    - NOTICES.md is updated to attribute SDL_ttf + freetype + harfbuzz + plutosvg + plutovg
+    - A CMake configure targeting Android (cmake -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK/build/cmake/android.toolchain.cmake ...) completes without errors for the ge target, confirming SDL_ttf resolves. Full build-and-link verification follows naturally once T30.2 and T30.3 land.
+    context: First of the two leaves under T30. Source-build approach (not prebuilt .a) for parity with existing SDL3/SDL3_image strategy on Android and to avoid prebuilt drift. This alone doesn't close T30 — FontLoader_android (T30.2) is the paired piece that makes Text.cpp actually compile and work.
+    origin: 'forked-from: T30 on 2026-04-19'
+    discovered: 2026-04-19
+  T30.2:
+    name: FontLoader has a non-Apple implementation so Text.cpp compiles on every platform
+    status: identified
+    value: 0.0
+    cost: 0.0
+    observable: true
+    acceptance:
+    - A FontLoader implementation exists that works on Android (and is portable to desktop Linux/Windows if/when those are added) — likely FontLoader_sdl.cpp using SDL_IOStream + SDL_ttf directly, or FontLoader_android.cpp using AAssetManager. Name and approach at author's discretion.
+    - 'ge/CMakeLists.txt selects the right FontLoader source per platform (FontLoader_apple.mm on Apple, the new one everywhere else) — no #ifdef sprawl inside a single file'
+    - ge/src/Text.cpp compiles and links on Android without needing consumers to omit it from source lists
+    - A ge unit test or Android smoke path exercises loading a font and rendering a glyph on Android, so regressions are caught
+    context: Second of the two leaves under T30. The tiltbuggy Android CMakeLists explicitly acknowledges this gap at sample/tiltbuggy/android/app/src/main/cpp/CMakeLists.txt:76-78 ('FontLoader_apple.mm is Apple-only \u2014 Android would need its own FontLoader implementation'). Pairs with T30.1 \u2014 SDL3_ttf libs alone aren't useful without a FontLoader that can feed them font bytes.
+    depends_on:
+    - T30.1
+    origin: 'forked-from: T30 on 2026-04-19'
+    discovered: 2026-04-19
+  T30.3:
+    name: sample/tiltbuggy Android build consumes ge via add_subdirectory(ge), not a hand-picked source list
+    status: identified
+    value: 0.0
+    cost: 0.0
+    observable: true
+    acceptance:
+    - sample/tiltbuggy/android/app/src/main/cpp/CMakeLists.txt calls add_subdirectory(${GE_ROOT}) and target_link_libraries(main PRIVATE ge)
+    - The inline GE_SOURCES block (currently lines 79-96) and its accompanying Apple-only comment (lines 76-78) are deleted
+    - The bgfx/bx/bimg/box2d add_library blocks (currently lines 23-73) are deleted — those libraries come from the ge target transitively
+    - The tiltbuggy Android APK still builds and launches on an Android emulator, and the smoke test passes
+    context: Final leaf under T30 \u2014 the migration that actually proves the single-path principle for the sample app. Gated by T30.2 because the current hand-picked approach exists specifically to dodge the missing Android FontLoader; once the engine can build end-to-end on Android, the workaround can go.
+    depends_on:
+    - T30.2
+    origin: 'forked-from: T30 on 2026-04-19'
+    discovered: 2026-04-19
   T4:
     name: playerLoop takes a config struct with named fields
     status: identified

@@ -146,6 +146,50 @@ compiled into the Android player.
 - Notice: Same terms as SDL above. See
   `vendor/github.com/libsdl-org/SDL_image/LICENSE.txt`.
 
+### SDL_ttf (SDL3_ttf)
+- Source: https://github.com/libsdl-org/SDL_ttf
+- Version: commit `a1ce367` (tag `release-3.2.2`)
+- Licence: zlib
+- Copyright: © 1997–2025 Sam Lantinga.
+- Notice: Same terms as SDL above. See
+  `vendor/github.com/libsdl-org/SDL_ttf/LICENSE.txt`. Built from
+  source on Android and shipped as prebuilt xcframework on Apple
+  platforms; both paths pull in freetype, harfbuzz, plutosvg, and
+  plutovg (attributed below).
+
+### FreeType (via SDL_ttf)
+- Source: https://github.com/freetype/freetype
+- Version: commit `9973564cf` (based on tag `VER-2-13-2`)
+- Licence: FreeType Licence (FTL, BSD-style) OR GPL-2.0 — licensee's
+  choice; ge uses under FTL. Source tree contains both texts.
+- Copyright: © 1996–2024 David Turner, Robert Wilhelm, Werner Lemberg
+  and the FreeType Project.
+- Notice: Portions of this software are copyright © The FreeType
+  Project (www.freetype.org). All rights reserved. See
+  `vendor/github.com/libsdl-org/SDL_ttf/external/freetype/LICENSE.TXT`
+  and `docs/FTL.TXT`.
+
+### HarfBuzz (via SDL_ttf)
+- Source: https://github.com/harfbuzz/harfbuzz
+- Version: commit `564bf9818` (based on tag `8.5.0`)
+- Licence: "Old MIT" (MIT-style)
+- Copyright: © 2010–2022 Google, Inc. and contributors.
+- Notice: See `vendor/github.com/libsdl-org/SDL_ttf/external/harfbuzz/COPYING`.
+
+### plutosvg (via SDL_ttf)
+- Source: https://github.com/sammycage/plutosvg
+- Version: commit `2983eb6` (based on tag `v0.0.6`)
+- Licence: MIT
+- Copyright: © 2020–2025 Samuel Ugochukwu.
+- Notice: See `vendor/github.com/libsdl-org/SDL_ttf/external/plutosvg/LICENSE`.
+
+### plutovg (via SDL_ttf)
+- Source: https://github.com/sammycage/plutovg
+- Version: commit `3e6f922` (tag `v0.0.12`)
+- Licence: MIT
+- Copyright: © 2020–2024 Samuel Ugochukwu.
+- Notice: See `vendor/github.com/libsdl-org/SDL_ttf/external/plutovg/LICENSE`.
+
 ### QR-Code-generator
 - Source: https://github.com/nayuki/QR-Code-generator
 - Version: commit `2c9044de6b` (tag `v1.8.0`)
