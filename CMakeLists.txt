@@ -140,6 +140,9 @@ set(GE_CORE_SOURCES
 if(APPLE)
     list(APPEND GE_CORE_SOURCES
         ${CMAKE_CURRENT_SOURCE_DIR}/src/FontLoader_apple.mm)
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Android")
+    list(APPEND GE_CORE_SOURCES
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/FontLoader_android.cpp)
 endif()
 
 if(GE_DIRECT)
