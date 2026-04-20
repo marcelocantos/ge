@@ -9,7 +9,7 @@ Rendering and asset engine for Dawn (WebGPU) + SDL3 applications. Provides RAII 
 - [spdlog](https://github.com/gabime/spdlog) — Logging (header-only)
 - [linalg.h](https://github.com/sgorsten/linalg) — Linear algebra (header-only)
 - [doctest](https://github.com/doctest/doctest) — Testing (header-only)
-- [Triangle](https://www.cs.cmu.edu/~quake/triangle.html) — Constrained Delaunay triangulation
+- [Triangle](https://www.cs.cmu.edu/~quake/triangle.html) — Constrained Delaunay triangulation *(opt-in only; not linked into `libge.a`. Non-commercial licence — see [`NOTICES.md`](NOTICES.md#triangle-j-r-shewchuk) before shipping in a paid product.)*
 
 Dependencies live in `vendor/` as git submodules or vendored sources.
 

@@ -181,7 +181,16 @@ ge/BOX2D_CFLAGS = -I$(ge/BOX2D_DIR)/include -I$(ge/BOX2D_DIR)/src -O2 -std=c17
 ge/SQLITE_SRC = $(ge)/vendor/src/sqlite3.c
 ge/SQLITE_OBJ = $(BUILD_DIR)/ge/vendor/sqlite3.o
 
-# Triangle library (C code, used by precompute tool)
+# Triangle library (C code, used by build-time precompute tools in
+# consuming projects). OPT-IN ONLY — not linked into libge.a. Reference
+# $(ge/TRIANGLE_OBJ) in your link line explicitly to pull it in.
+#
+# LICENCE WARNING: Triangle is NOT permissively licensed. Commercial
+# distribution requires direct arrangement with Jonathan Shewchuk
+# (jrs@cs.berkeley.edu). See NOTICES.md "Triangle (J. R. Shewchuk)"
+# for the full terms and the three options if you're shipping a paid
+# product. Safe default for commercial builds: do not reference
+# $(ge/TRIANGLE_OBJ) anywhere in your Makefile.
 ge/TRIANGLE_SRC = $(ge)/vendor/src/triangle.c
 ge/TRIANGLE_OBJ = $(BUILD_DIR)/ge/vendor/triangle.o
 ge/TRIANGLE_CFLAGS = -O2 -I$(ge)/vendor/include -DTRILIBRARY -DREAL=double -DANSI_DECLARATORS -DNO_TIMER
