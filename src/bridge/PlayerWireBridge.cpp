@@ -125,13 +125,42 @@ bool PlayerWireBridge::sendDeviceInfo(const wire::DeviceInfo& devInfo) {
     // callback captures a stable `this`.
     if (!i_->decoder) {
         i_->decoder = std::make_unique<VideoDecoder>(
-            [this](const uint8_t* bgra, int w, int h, size_t bpr) {
+            [this](const VideoFrame& f) {
                 std::lock_guard<std::mutex> lock(i_->frameMutex);
-                size_t total = bpr * h;
-                i_->pending.bgra.assign(bgra, bgra + total);
-                i_->pending.width = w;
-                i_->pending.height = h;
-                i_->pending.bytesPerRow = bpr;
+                i_->pending.format = f.format;
+                i_->pending.width = f.width;
+                i_->pending.height = f.height;
+                i_->pending.stride0 = f.strides[0];
+                i_->pending.stride1 = f.strides[1];
+                i_->pending.stride2 = f.strides[2];
+
+                auto copyPlane = [](std::vector<uint8_t>& dst,
+                                    const uint8_t* src, int stride, int rows) {
+                    if (!src || stride <= 0 || rows <= 0) {
+                        dst.clear();
+                        return;
+                    }
+                    size_t bytes = static_cast<size_t>(stride) * rows;
+                    dst.assign(src, src + bytes);
+                };
+
+                switch (f.format) {
+                case VideoFrame::Format::BGRA:
+                    copyPlane(i_->pending.plane0, f.planes[0], f.strides[0], f.height);
+                    i_->pending.plane1.clear();
+                    i_->pending.plane2.clear();
+                    break;
+                case VideoFrame::Format::NV12:
+                    copyPlane(i_->pending.plane0, f.planes[0], f.strides[0], f.height);
+                    copyPlane(i_->pending.plane1, f.planes[1], f.strides[1], f.height / 2);
+                    i_->pending.plane2.clear();
+                    break;
+                case VideoFrame::Format::IYUV:
+                    copyPlane(i_->pending.plane0, f.planes[0], f.strides[0], f.height);
+                    copyPlane(i_->pending.plane1, f.planes[1], f.strides[1], f.height / 2);
+                    copyPlane(i_->pending.plane2, f.planes[2], f.strides[2], f.height / 2);
+                    break;
+                }
                 i_->pendingReady = true;
             });
     }

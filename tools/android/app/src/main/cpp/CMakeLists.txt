@@ -58,9 +58,10 @@ target_include_directories(main PRIVATE
 )
 
 # FFmpeg static libs + SDL3 + Android system libs
+# (libswscale is no longer needed: VideoDecoder_ffmpeg.cpp delivers IYUV
+# directly to the renderer, which handles YUV→RGB on the GPU via SDL.)
 target_link_libraries(main PRIVATE
     ${FFMPEG_DIR}/lib/android-arm64/libavcodec.a
-    ${FFMPEG_DIR}/lib/android-arm64/libswscale.a
     ${FFMPEG_DIR}/lib/android-arm64/libavutil.a
     SDL3::SDL3
     android

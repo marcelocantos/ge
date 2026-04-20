@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 // H.264 decoder using FFmpeg libavcodec. Used on Android where the
-// native MediaCodec API is fragile. Produces BGRA output for SDL.
+// native MediaCodec API is fragile. Delivers IYUV (planar YUV 4:2:0)
+// directly to the renderer — no software CSC.
 
 #ifdef __ANDROID__
 
@@ -11,8 +12,6 @@
 
 extern "C" {
 #include <libavcodec/avcodec.h>
-#include <libavutil/imgutils.h>
-#include <libswscale/swscale.h>
 }
 
 #include <cstring>
@@ -29,19 +28,11 @@ struct VideoDecoder::M {
     AVCodecParserContext* parser = nullptr;
     AVFrame* frame = nullptr;
     AVPacket* pkt = nullptr;
-    SwsContext* sws = nullptr;
     bool opened = false;
-
-    // BGRA output buffer
-    uint8_t* bgraData[4] = {};
-    int bgraLinesize[4] = {};
-    int bgraWidth = 0, bgraHeight = 0;
 
     std::mutex decodeMutex;
 
     ~M() {
-        if (sws) sws_freeContext(sws);
-        if (bgraData[0]) av_freep(&bgraData[0]);
         av_frame_free(&frame);
         av_packet_free(&pkt);
         if (parser) av_parser_close(parser);
@@ -77,20 +68,6 @@ struct VideoDecoder::M {
         return true;
     }
 
-    void ensureBgraBuffer(int w, int h) {
-        if (bgraWidth == w && bgraHeight == h) return;
-        if (bgraData[0]) av_freep(&bgraData[0]);
-        av_image_alloc(bgraData, bgraLinesize, w, h, AV_PIX_FMT_BGRA, 1);
-        bgraWidth = w;
-        bgraHeight = h;
-
-        if (sws) sws_freeContext(sws);
-        sws = sws_getContext(w, h, ctx->pix_fmt,
-                             w, h, AV_PIX_FMT_BGRA,
-                             SWS_BILINEAR, nullptr, nullptr, nullptr);
-        SPDLOG_INFO("VideoDecoder: BGRA buffer {}x{}", w, h);
-    }
-
     void deliverDecodedFrames() {
         int ret = 0;
         while (ret >= 0) {
@@ -98,14 +75,20 @@ struct VideoDecoder::M {
             if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) break;
             if (ret < 0) break;
 
-            int w = frame->width;
-            int h = frame->height;
-            ensureBgraBuffer(w, h);
-
-            sws_scale(sws, frame->data, frame->linesize, 0, h,
-                      bgraData, bgraLinesize);
-
-            callback(bgraData[0], w, h, static_cast<size_t>(bgraLinesize[0]));
+            // libavcodec H.264 outputs AV_PIX_FMT_YUV420P (planar Y/U/V),
+            // which maps directly to SDL_PIXELFORMAT_IYUV. Pass plane
+            // pointers and strides through with no conversion.
+            VideoFrame f;
+            f.format = VideoFrame::Format::IYUV;
+            f.width = frame->width;
+            f.height = frame->height;
+            f.planes[0] = frame->data[0];
+            f.planes[1] = frame->data[1];
+            f.planes[2] = frame->data[2];
+            f.strides[0] = frame->linesize[0];
+            f.strides[1] = frame->linesize[1];
+            f.strides[2] = frame->linesize[2];
+            callback(f);
         }
     }
 };

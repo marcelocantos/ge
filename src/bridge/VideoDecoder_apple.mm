@@ -25,7 +25,6 @@ struct VideoDecoder::M {
     int frameWidth = 0;
     int frameHeight = 0;
     size_t frameBytesPerRow = 0;
-    bool frameReady = false;
 
     ~M() {
         if (session) {
@@ -114,7 +113,6 @@ void VideoDecoder::M::outputCallback(void* decompressionOutputRefCon,
         CVPixelBufferGetBaseAddress(imageBuffer));
 
     if (baseAddr) {
-        // Buffer the frame for the main thread
         std::lock_guard<std::mutex> lock(self->frameMutex);
         size_t totalBytes = bytesPerRow * height;
         self->frameBuffer.resize(totalBytes);
@@ -122,20 +120,17 @@ void VideoDecoder::M::outputCallback(void* decompressionOutputRefCon,
         self->frameWidth = width;
         self->frameHeight = height;
         self->frameBytesPerRow = bytesPerRow;
-        self->frameReady = true;
+
+        VideoFrame f;
+        f.format = VideoFrame::Format::BGRA;
+        f.width = width;
+        f.height = height;
+        f.planes[0] = self->frameBuffer.data();
+        f.strides[0] = static_cast<int>(bytesPerRow);
+        self->callback(f);
     }
 
     CVPixelBufferUnlockBaseAddress(imageBuffer, kCVPixelBufferLock_ReadOnly);
-
-    // Deliver the frame via callback on the calling thread
-    if (baseAddr) {
-        std::lock_guard<std::mutex> lock(self->frameMutex);
-        if (self->frameReady) {
-            self->callback(self->frameBuffer.data(),
-                          self->frameWidth, self->frameHeight,
-                          self->frameBytesPerRow);
-        }
-    }
 }
 
 VideoDecoder::VideoDecoder(FrameCallback onFrame)

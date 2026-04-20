@@ -9,9 +9,25 @@
 
 namespace ge {
 
+// A decoded video frame, view-only. Plane pointers belong to the decoder
+// and are only valid for the duration of the FrameCallback invocation.
+//
+// Plane count depends on format:
+//   BGRA: 1 plane.  planes[0] = BGRA pixels, strides[0] = bytesPerRow.
+//   NV12: 2 planes. planes[0] = Y (w×h), planes[1] = interleaved UV (w×h/2).
+//   IYUV: 3 planes. planes[0] = Y, planes[1] = U (w/2×h/2), planes[2] = V.
+struct VideoFrame {
+    enum class Format { BGRA, NV12, IYUV };
+    Format format = Format::BGRA;
+    int width = 0;
+    int height = 0;
+    const uint8_t* planes[3] = {nullptr, nullptr, nullptr};
+    int strides[3] = {0, 0, 0};
+};
+
 class VideoDecoder {
 public:
-    using FrameCallback = std::function<void(const uint8_t* bgraPixels, int width, int height, size_t bytesPerRow)>;
+    using FrameCallback = std::function<void(const VideoFrame&)>;
 
     explicit VideoDecoder(FrameCallback onFrame);
     ~VideoDecoder();
