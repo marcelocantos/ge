@@ -148,7 +148,7 @@ Engine-internal variables use the `ge/` prefix. These are read-only — the pare
 | `ge/BGFX_LIBS` | bgfx static libraries (`libbgfx.a`, `libbimg.a`, `libbx.a`) |
 | `ge/SDL_LIBS` | SDL3 static libraries (SDL3, SDL3_image, SDL3_ttf, freetype, harfbuzz, etc.) |
 | `ge/TEST_SRC`, `ge/TEST_OBJ` | Unit test sources and objects |
-| `ge/TRIANGLE_OBJ` | Triangle library object (for tools that need triangulation) |
+| `ge/TRIANGLE_OBJ` | Triangle library object — **opt-in; not linked into `libge.a`**. Commercial builds should not reference this without first reading NOTICES.md's Triangle section (restrictive licence; commercial distribution requires arrangement with the author). |
 | `ge/PLAYER` | ge player binary path (`bin/player`) |
 
 ### Shared Variables

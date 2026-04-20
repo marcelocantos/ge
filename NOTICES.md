@@ -14,14 +14,36 @@ terms in `vendor/src/triangle.c`. Key restrictions:
 
 - Free for private, research, and institutional use.
 - Redistribution requires retaining the copyright header unchanged.
-- Commercial distribution is **only permissible by direct arrangement
-  with the author**.
+- Modifications must preserve the original copyright, source and object
+  code must be freely available, and changes must be clearly noted.
+- **Commercial distribution is only permissible by direct arrangement
+  with Jonathan Shewchuk (jrs@cs.berkeley.edu)**, with one carve-out:
+  if you do not directly supply Triangle to your customer but instead
+  tell them where to obtain it for free (e.g. by referring them to
+  ge's public GitHub repository), no arrangement is required.
 
-If ge is distributed as part of a commercial product, confirm that
-triangulation is either removed or that a commercial arrangement has
-been made with Jonathan Shewchuk (jrs@cs.berkeley.edu). Alternatively,
-replace Triangle with the permissively-licenced earcut.hpp (also
-vendored) for polygon triangulation.
+**How this affects ge consumers**
+
+Triangle is **not linked into `libge.a`**. Nothing under `src/` calls
+`triangulate()` or `#include`s `triangle.h`. The file `vendor/src/triangle.c`
+is compiled only when a consumer explicitly references the
+opt-in `ge/TRIANGLE_OBJ` make variable in their link line (see
+`Module.mk`). Downloading ge from GitHub does not itself constitute
+commercial redistribution of Triangle, so open-source / research /
+institutional consumers are unaffected.
+
+**If you are building a commercial product**, you have three options:
+
+1. **Do nothing** and leave `ge/TRIANGLE_OBJ` out of your link line.
+   ge itself will build and link cleanly; no Triangle code will be
+   compiled into your binary. This is the safe default.
+2. **Replace with earcut.hpp** (also vendored, ISC-licensed, header-only
+   at `vendor/include/earcut.hpp`) for simple polygon triangulation.
+   earcut.hpp does not do constrained Delaunay or quality refinement,
+   so it is not a drop-in substitute for every Triangle use-case.
+3. **Contact Jonathan Shewchuk** to arrange commercial licensing if
+   your build genuinely needs Triangle's constrained Delaunay /
+   quality-mesh features and you intend to ship them in a paid product.
 
 ### FFmpeg (prebuilt, Android only)
 
