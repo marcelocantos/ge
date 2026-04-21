@@ -1,144 +1,43 @@
 # Android distribution build for __APP_NAME__ — standalone, no ged / player.
 #
 # Builds the game as a self-contained Android APK that renders directly via
-# bgfx/OpenGL ES 3.1. Uses the ge engine at __GE_REL__ (from this
-# CMakeLists.txt).
+# bgfx/Vulkan. Consumes the ge engine at __GE_REL__ (from this CMakeLists)
+# through the single documented integration path: add_subdirectory(ge) +
+# target_link_libraries(main PRIVATE ge).
 cmake_minimum_required(VERSION 3.22)
 project(__CMAKE_PROJECT__ LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 20)
 
-# CMAKE_CURRENT_SOURCE_DIR is the cpp/ dir (5 levels deep inside the app).
-# Resolve to absolute paths via REALPATH so repeated `..` segments collapse.
+# Resolve GE_ROOT to an absolute path (CMAKE_CURRENT_SOURCE_DIR is cpp/,
+# five levels deep inside the app).
 get_filename_component(ANDROID_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../../.. REALPATH)
 get_filename_component(PROJECT_ROOT ${ANDROID_DIR}/.. REALPATH)
 get_filename_component(GE_ROOT ${ANDROID_DIR}/__GE_REL__ REALPATH)
 
-# SDL3 — built from source as part of the Gradle build.
-add_subdirectory(
-    ${GE_ROOT}/vendor/github.com/libsdl-org/SDL
-    ${CMAKE_CURRENT_BINARY_DIR}/SDL3
-)
+# Direct rendering mode: the app owns the frame loop; ge provides bgfx
+# init, DirectRenderHost, SDL3, box2d, sqlite/sqlpipe, liteparser, and the
+# Android system libs transitively.
+set(GE_DIRECT ON CACHE BOOL "" FORCE)
+add_subdirectory(${GE_ROOT} ${CMAKE_CURRENT_BINARY_DIR}/ge)
 
-# ── bgfx + bx + bimg (vendored, compiled from source for Android) ───────
-set(BX_DIR   ${GE_ROOT}/vendor/github.com/bkaradzic/bx)
-set(BIMG_DIR ${GE_ROOT}/vendor/github.com/bkaradzic/bimg)
-set(BGFX_DIR ${GE_ROOT}/vendor/github.com/bkaradzic/bgfx)
-
-# bx uses the linux compat path on Android — the platform-specific bits
-# are handled internally via __ANDROID__ in bx's source.
-add_library(bx STATIC ${BX_DIR}/src/amalgamated.cpp)
-target_include_directories(bx PUBLIC
-    ${BX_DIR}/include
-    ${BX_DIR}/include/compat/linux
-)
-target_include_directories(bx PRIVATE ${BX_DIR}/3rdparty)
-target_compile_options(bx PRIVATE -Wno-unused-but-set-variable)
-target_compile_definitions(bx PUBLIC BX_CONFIG_DEBUG=0)
-
-add_library(bimg STATIC
-    ${BIMG_DIR}/src/image.cpp
-    ${BIMG_DIR}/src/image_gnf.cpp
-)
-target_include_directories(bimg PUBLIC ${BIMG_DIR}/include)
-target_include_directories(bimg PRIVATE
-    ${BIMG_DIR}/3rdparty
-    ${BIMG_DIR}/3rdparty/astc-encoder/include
-)
-target_link_libraries(bimg PUBLIC bx)
-target_compile_definitions(bimg PRIVATE BIMG_CONFIG_DECODE_ENABLE=0)
-
-add_library(bgfx STATIC ${BGFX_DIR}/src/amalgamated.cpp)
-target_include_directories(bgfx PUBLIC ${BGFX_DIR}/include)
-target_include_directories(bgfx PRIVATE
-    ${BGFX_DIR}/3rdparty
-    ${BGFX_DIR}/3rdparty/khronos
-    ${BGFX_DIR}/src
-)
-target_link_libraries(bgfx PUBLIC bx bimg)
-# Vulkan-only build: explicitly select Vulkan so bgfx skips the auto-detect
-# block that would otherwise enable both GLES (=30) and Vulkan together.
-# With BGFX_CONFIG_RENDERER_VULKAN=1 defined, the entire auto-detect block
-# (lines 22-120 of config.h) is bypassed; GLES defaults to 0, so no EGL/GLES
-# symbols are compiled in and we don't need to link against EGL or GLESv3.
-# Do NOT add BGFX_CONFIG_RENDERER_OPENGLES — the Android emulator's
-# Apple-Metal-backed EGL translator only exposes GLES 3.0, so any GLES 3.1
-# context request triggers EGL_BAD_CONFIG → bgfx fatal.
-target_compile_definitions(bgfx PUBLIC BGFX_CONFIG_RENDERER_VULKAN=1)
-
-# ── Box2D (vendored C code) ─────────────────────────────────────────────
-set(BOX2D_DIR ${GE_ROOT}/vendor/github.com/erincatto/box2d)
-file(GLOB BOX2D_SRC ${BOX2D_DIR}/src/*.c)
-add_library(box2d STATIC ${BOX2D_SRC})
-target_include_directories(box2d PUBLIC  ${BOX2D_DIR}/include)
-target_include_directories(box2d PRIVATE ${BOX2D_DIR}/src)
-
-# ── Engine sources (direct-mode subset) ─────────────────────────────────
-# Mirrors ge/SRC_DIRECT in Module.mk. Note FontLoader_apple.mm is Apple-
-# only — Android would need its own FontLoader implementation. For now,
-# tiltbuggy doesn't use fonts, so it's safe to omit.
-set(GE_SOURCES
-    ${GE_ROOT}/src/Context.cpp
-    ${GE_ROOT}/src/Resource.cpp
-    ${GE_ROOT}/src/FileIO.cpp
-    ${GE_ROOT}/src/SdlContext_android.cpp
-    ${GE_ROOT}/src/BgfxContext.mm
-    ${GE_ROOT}/src/Signal.cpp
-    ${GE_ROOT}/src/SessionHost.mm
-    ${GE_ROOT}/src/render/DirectRenderHost.mm
-    ${GE_ROOT}/vendor/src/sqlite3.c
-    ${GE_ROOT}/vendor/src/sqlpipe.cpp  # embeds sqlift — do NOT add sqlift.cpp
-    ${GE_ROOT}/vendor/src/lz4.c
-    ${GE_ROOT}/vendor/github.com/sqliteai/liteparser/src/arena.c
-    ${GE_ROOT}/vendor/github.com/sqliteai/liteparser/src/liteparser.c
-    ${GE_ROOT}/vendor/github.com/sqliteai/liteparser/src/lp_tokenize.c
-    ${GE_ROOT}/vendor/github.com/sqliteai/liteparser/src/lp_unparse.c
-    ${GE_ROOT}/vendor/github.com/sqliteai/liteparser/src/parse.c
-)
-
-# The engine's BgfxContext, SessionHost, DirectRenderHost files use .mm
-# extensions (ObjC++) for cross-platform symmetry with the Apple builds.
-# Compile them as plain C++ on Android.
-set_source_files_properties(
-    ${GE_ROOT}/src/BgfxContext.mm
-    ${GE_ROOT}/src/SessionHost.mm
-    ${GE_ROOT}/src/render/DirectRenderHost.mm
-    PROPERTIES LANGUAGE CXX
-)
-
-# ── App sources ─────────────────────────────────────────────────────────
+# App sources (C++ and .mm) under the sample's src/.
 file(GLOB_RECURSE APP_SOURCES
     CONFIGURE_DEPENDS
     ${PROJECT_ROOT}/src/*.cpp
     ${PROJECT_ROOT}/src/*.mm
 )
 
-add_library(main SHARED ${APP_SOURCES} ${GE_SOURCES})
+add_library(main SHARED ${APP_SOURCES})
 
 target_compile_definitions(main PRIVATE
     GE_ANDROID
     GE_DIRECT_ONLY
-    ASIO_STANDALONE
-    SQLITE_ENABLE_SESSION
-    SQLITE_ENABLE_PREUPDATE_HOOK
-    SQLITE_ENABLE_DESERIALIZE
     BX_CONFIG_DEBUG=0
 )
 
 target_include_directories(main PRIVATE
     ${PROJECT_ROOT}/src
     ${PROJECT_ROOT}/include
-    ${GE_ROOT}/include
-    ${GE_ROOT}/vendor/include
-    ${GE_ROOT}/vendor/github.com/gabime/spdlog/include
-    ${GE_ROOT}/vendor/github.com/chriskohlhoff/asio/include
-    ${GE_ROOT}/vendor/github.com/libsdl-org/SDL/include
-    ${GE_ROOT}/vendor/github.com/sqliteai/liteparser/src
 )
 
-target_link_libraries(main PRIVATE
-    bgfx box2d
-    SDL3::SDL3
-    # Vulkan is loaded dynamically by bgfx (libvulkan.so); no explicit link.
-    # EGL and GLESv3 are not needed since we use the Vulkan renderer.
-    android log z
-)
+target_link_libraries(main PRIVATE ge)
