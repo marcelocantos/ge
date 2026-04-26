@@ -1,3 +1,6 @@
+// Copyright 2026 Marcelo Cantos
+// SPDX-License-Identifier: Apache-2.0
+
 #include "AudioPlayer.h"
 
 #include <SDL3/SDL.h>
@@ -30,6 +33,23 @@ void loopCallback(void* userdata, SDL_AudioStream* stream,
     }
 }
 
+// SDL event watch callback: pauses or resumes the audio device on app
+// background/foreground transitions. Registered by AudioPlayer on
+// construction; removed on destruction. Runs on the event-posting thread
+// — SDL_PauseAudioDevice / SDL_ResumeAudioDevice are thread-safe.
+bool lifecycleEventWatch(void* userdata, SDL_Event* event) {
+    auto* deviceID = static_cast<SDL_AudioDeviceID*>(userdata);
+    if (!deviceID || !*deviceID) return false;
+    if (event->type == SDL_EVENT_DID_ENTER_BACKGROUND) {
+        SPDLOG_INFO("AudioPlayer: backgrounded — pausing audio device");
+        SDL_PauseAudioDevice(*deviceID);
+    } else if (event->type == SDL_EVENT_DID_ENTER_FOREGROUND) {
+        SPDLOG_INFO("AudioPlayer: foregrounded — resuming audio device");
+        SDL_ResumeAudioDevice(*deviceID);
+    }
+    return false;  // do not filter the event
+}
+
 } // namespace
 
 struct AudioPlayer::M {
@@ -37,6 +57,9 @@ struct AudioPlayer::M {
     std::vector<Clip> clips;
 
     ~M() {
+        if (device) {
+            SDL_RemoveEventWatch(lifecycleEventWatch, &device);
+        }
         for (auto& clip : clips) {
             if (clip.stream) {
                 SDL_DestroyAudioStream(clip.stream);
@@ -65,10 +88,31 @@ AudioPlayer::AudioPlayer() : m(std::make_unique<M>()) {
     }
 
     SDL_ResumeAudioDevice(m->device);
+
+    // Auto-pause/resume on iOS/Android background transitions.
+    // SDL_AddEventWatch fires on the posting thread before SDL_PollEvent
+    // delivers the event to the main loop, so the device is paused/resumed
+    // as soon as the OS raises the transition event.
+    SDL_AddEventWatch(lifecycleEventWatch, &m->device);
+
     SPDLOG_INFO("AudioPlayer: Opened audio device");
 }
 
 AudioPlayer::~AudioPlayer() = default;
+
+void AudioPlayer::pause() {
+    if (m->device) {
+        SPDLOG_INFO("AudioPlayer: pause");
+        SDL_PauseAudioDevice(m->device);
+    }
+}
+
+void AudioPlayer::resume() {
+    if (m->device) {
+        SPDLOG_INFO("AudioPlayer: resume");
+        SDL_ResumeAudioDevice(m->device);
+    }
+}
 
 void AudioPlayer::loadClip(uint32_t id, uint32_t format, uint32_t flags,
                            const void* data, size_t size) {

@@ -296,6 +296,12 @@ The player has no app-specific code — it works with any ge app.
 
 The player retries on disconnect with exponential backoff: 10ms initial, doubling to 2000ms cap, reset on success. This means you can restart the server and the player will reconnect automatically.
 
+### Audio Lifecycle (iOS / Android)
+
+`AudioPlayer` automatically pauses all audio output when the OS backgrounds the app (`SDL_EVENT_DID_ENTER_BACKGROUND`) and resumes it when the app returns to the foreground (`SDL_EVENT_DID_ENTER_FOREGROUND`). This is wired via `SDL_AddEventWatch` inside `AudioPlayer`'s constructor — no game code or player-loop changes are required. The watch is removed in the destructor.
+
+Desktop builds are unaffected: SDL does not fire these events on macOS/Linux/Windows.
+
 ### Ged Quiet Mode
 
 Use `-no-open` to prevent ged from opening the dashboard in the browser on first server connection:
