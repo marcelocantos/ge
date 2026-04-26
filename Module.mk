@@ -745,17 +745,22 @@ ge/android-release: $(ge/APP_SHADERS_GLES) $(ge/RENDER_SHADERS_GLES)
 # Glob syntax: `*` matches any run of characters within a cell name.
 # Multiple patterns: space-separated.
 
-# Android tablet AVD name used by matrix-cell.sh to pick the right emulator
-# for tablet cells.  Override in the app's Makefile if you use a different AVD.
-# Set to empty to fall back to the heuristic name-matching logic.
-GE_ANDROID_TABLET_AVD ?= Pixel_Tablet
-
-# iOS physical device names/UDIDs for device cells (passed to ios_device_get_udid).
-# Set to a device name or UDID substring to prefer a specific device when multiple
-# iPads or iPhones are connected. Leave empty to auto-select (first connected device
-# of the right form factor).
-GE_IOS_TABLET_DEVICE ?= Pippa
-GE_IOS_PHONE_DEVICE ?=
+# Device pin variables — passed to matrix-cell.sh to target a specific inventory
+# alias or UDID for each device class.  When set, the cell skips spyder reserve
+# --on selector dispatch and pins the given alias directly.  Leave empty to let
+# spyder pick from the available pool via selector predicates.
+#
+# Simulator / emulator cells (selector-based by default):
+GE_IOS_SIM_PHONE_DEVICE   ?=
+GE_IOS_SIM_TABLET_DEVICE  ?=
+GE_ANDROID_EMU_PHONE_DEVICE  ?=
+GE_ANDROID_EMU_TABLET_DEVICE ?=
+#
+# Physical device cells (common to pin for developer setups):
+GE_IOS_PHONE_DEVICE   ?=
+GE_IOS_TABLET_DEVICE  ?= Pippa
+GE_ANDROID_PHONE_DEVICE  ?=
+GE_ANDROID_TABLET_DEVICE ?=
 
 # Canonical 24-cell list. Cells are grouped for readability.
 ge/CELLS := \
@@ -781,31 +786,38 @@ ge/CHECK_CELLS := $(filter-out $(ge/CHECK_EXCLUDE_PATTERNS),$(ge/CELLS))
 # Boilerplate enumeration is deliberate: the spec calls for explicit
 # enumeration so `make cell.ios-sim-tablet-dist` works and `make -n check`
 # prints a readable dep list.
+# Cell rules — each cell resolves its own device reservation via spyder.
+# Pin variables (GE_IOS_SIM_PHONE_DEVICE, etc.) are exported so matrix-cell.sh
+# can pick them up when a specific alias is configured; leave empty to let
+# spyder resolve via selector predicates (--on platform=ios-sim,...).
+#
+# Cells targeting different devices run concurrently under parallel make.
+# Cells racing for the same device serialise via spyder's reservation queue.
 .PHONY: $(addprefix cell.,$(ge/CELLS))
 cell.desktop-dist:               ; $(ge)/tools/matrix-cell.sh desktop-dist
 cell.desktop-player:             ; $(ge)/tools/matrix-cell.sh desktop-player
-cell.ios-sim-phone-dist:         ; $(ge)/tools/matrix-cell.sh ios-sim-phone-dist
-cell.ios-sim-phone-player:       ; $(ge)/tools/matrix-cell.sh ios-sim-phone-player
-cell.ios-sim-tablet-dist:        ; $(ge)/tools/matrix-cell.sh ios-sim-tablet-dist
-cell.ios-sim-tablet-player:      ; $(ge)/tools/matrix-cell.sh ios-sim-tablet-player
+cell.ios-sim-phone-dist:         ; GE_IOS_SIM_PHONE_DEVICE=$(GE_IOS_SIM_PHONE_DEVICE) $(ge)/tools/matrix-cell.sh ios-sim-phone-dist
+cell.ios-sim-phone-player:       ; GE_IOS_SIM_PHONE_DEVICE=$(GE_IOS_SIM_PHONE_DEVICE) $(ge)/tools/matrix-cell.sh ios-sim-phone-player
+cell.ios-sim-tablet-dist:        ; GE_IOS_SIM_TABLET_DEVICE=$(GE_IOS_SIM_TABLET_DEVICE) $(ge)/tools/matrix-cell.sh ios-sim-tablet-dist
+cell.ios-sim-tablet-player:      ; GE_IOS_SIM_TABLET_DEVICE=$(GE_IOS_SIM_TABLET_DEVICE) $(ge)/tools/matrix-cell.sh ios-sim-tablet-player
 cell.ios-device-phone-dist:      ; GE_IOS_PHONE_DEVICE=$(GE_IOS_PHONE_DEVICE) $(ge)/tools/matrix-cell.sh ios-device-phone-dist
 cell.ios-device-phone-player:    ; GE_IOS_PHONE_DEVICE=$(GE_IOS_PHONE_DEVICE) $(ge)/tools/matrix-cell.sh ios-device-phone-player
 cell.ios-device-tablet-dist:     ; GE_IOS_TABLET_DEVICE=$(GE_IOS_TABLET_DEVICE) $(ge)/tools/matrix-cell.sh ios-device-tablet-dist
 cell.ios-device-tablet-player:   ; GE_IOS_TABLET_DEVICE=$(GE_IOS_TABLET_DEVICE) $(ge)/tools/matrix-cell.sh ios-device-tablet-player
-cell.android-emu-phone-dist:     ; GE_ANDROID_TABLET_AVD=$(GE_ANDROID_TABLET_AVD) $(ge)/tools/matrix-cell.sh android-emu-phone-dist
-cell.android-emu-phone-player:   ; GE_ANDROID_TABLET_AVD=$(GE_ANDROID_TABLET_AVD) $(ge)/tools/matrix-cell.sh android-emu-phone-player
-cell.android-emu-tablet-dist:    ; GE_ANDROID_TABLET_AVD=$(GE_ANDROID_TABLET_AVD) $(ge)/tools/matrix-cell.sh android-emu-tablet-dist
-cell.android-emu-tablet-player:  ; GE_ANDROID_TABLET_AVD=$(GE_ANDROID_TABLET_AVD) $(ge)/tools/matrix-cell.sh android-emu-tablet-player
-cell.android-device-phone-dist:  ; GE_ANDROID_TABLET_AVD=$(GE_ANDROID_TABLET_AVD) $(ge)/tools/matrix-cell.sh android-device-phone-dist
-cell.android-device-phone-player: ; GE_ANDROID_TABLET_AVD=$(GE_ANDROID_TABLET_AVD) $(ge)/tools/matrix-cell.sh android-device-phone-player
-cell.android-device-tablet-dist: ; GE_ANDROID_TABLET_AVD=$(GE_ANDROID_TABLET_AVD) $(ge)/tools/matrix-cell.sh android-device-tablet-dist
-cell.android-device-tablet-player: ; GE_ANDROID_TABLET_AVD=$(GE_ANDROID_TABLET_AVD) $(ge)/tools/matrix-cell.sh android-device-tablet-player
+cell.android-emu-phone-dist:     ; GE_ANDROID_EMU_PHONE_DEVICE=$(GE_ANDROID_EMU_PHONE_DEVICE) $(ge)/tools/matrix-cell.sh android-emu-phone-dist
+cell.android-emu-phone-player:   ; GE_ANDROID_EMU_PHONE_DEVICE=$(GE_ANDROID_EMU_PHONE_DEVICE) $(ge)/tools/matrix-cell.sh android-emu-phone-player
+cell.android-emu-tablet-dist:    ; GE_ANDROID_EMU_TABLET_DEVICE=$(GE_ANDROID_EMU_TABLET_DEVICE) $(ge)/tools/matrix-cell.sh android-emu-tablet-dist
+cell.android-emu-tablet-player:  ; GE_ANDROID_EMU_TABLET_DEVICE=$(GE_ANDROID_EMU_TABLET_DEVICE) $(ge)/tools/matrix-cell.sh android-emu-tablet-player
+cell.android-device-phone-dist:  ; GE_ANDROID_PHONE_DEVICE=$(GE_ANDROID_PHONE_DEVICE) $(ge)/tools/matrix-cell.sh android-device-phone-dist
+cell.android-device-phone-player: ; GE_ANDROID_PHONE_DEVICE=$(GE_ANDROID_PHONE_DEVICE) $(ge)/tools/matrix-cell.sh android-device-phone-player
+cell.android-device-tablet-dist: ; GE_ANDROID_TABLET_DEVICE=$(GE_ANDROID_TABLET_DEVICE) $(ge)/tools/matrix-cell.sh android-device-tablet-dist
+cell.android-device-tablet-player: ; GE_ANDROID_TABLET_DEVICE=$(GE_ANDROID_TABLET_DEVICE) $(ge)/tools/matrix-cell.sh android-device-tablet-player
 cell.desktop-debug-dist:         ; $(ge)/tools/matrix-cell.sh desktop-debug-dist
 cell.desktop-debug-player:       ; $(ge)/tools/matrix-cell.sh desktop-debug-player
-cell.ios-debug-dist:             ; $(ge)/tools/matrix-cell.sh ios-debug-dist
-cell.ios-debug-player:           ; $(ge)/tools/matrix-cell.sh ios-debug-player
-cell.android-debug-dist:         ; GE_ANDROID_TABLET_AVD=$(GE_ANDROID_TABLET_AVD) $(ge)/tools/matrix-cell.sh android-debug-dist
-cell.android-debug-player:       ; GE_ANDROID_TABLET_AVD=$(GE_ANDROID_TABLET_AVD) $(ge)/tools/matrix-cell.sh android-debug-player
+cell.ios-debug-dist:             ; GE_IOS_SIM_PHONE_DEVICE=$(GE_IOS_SIM_PHONE_DEVICE) $(ge)/tools/matrix-cell.sh ios-debug-dist
+cell.ios-debug-player:           ; GE_IOS_SIM_PHONE_DEVICE=$(GE_IOS_SIM_PHONE_DEVICE) $(ge)/tools/matrix-cell.sh ios-debug-player
+cell.android-debug-dist:         ; GE_ANDROID_EMU_TABLET_DEVICE=$(GE_ANDROID_EMU_TABLET_DEVICE) $(ge)/tools/matrix-cell.sh android-debug-dist
+cell.android-debug-player:       ; GE_ANDROID_EMU_TABLET_DEVICE=$(GE_ANDROID_EMU_TABLET_DEVICE) $(ge)/tools/matrix-cell.sh android-debug-player
 
 .PHONY: check matrix-test
 check matrix-test: $(addprefix cell.,$(ge/CHECK_CELLS))

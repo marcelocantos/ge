@@ -6,6 +6,12 @@
 # Module.mk has one make rule per cell (e.g. cell.desktop-dist) that calls
 # this script with the cell name.
 #
+# For cells that target a mobile device or simulator/emulator, the script
+# automatically acquires a spyder reservation before doing any device work
+# and releases it on exit. This makes concurrent cell execution safe: two
+# cells targeting different devices run in parallel; two cells racing for
+# the same device serialise via spyder's reservation queue.
+#
 # Usage:
 #   ge/tools/matrix-cell.sh <cell-name> [options]
 #
@@ -19,6 +25,11 @@
 #   --capture-refs    Record reference screenshots instead of comparing.
 #   --rms <f>         Image-diff RMS threshold (default 0.08).
 #   --verbose         Echo sub-command output.
+#   --device <alias>  Pin a specific device alias (skip spyder reserve --on).
+#                     Normally passed internally by the self-wrap; callers can
+#                     also use it to target a known inventory alias directly.
+#   --skip-spyder-run Internal flag. Means this invocation is already running
+#                     inside a `spyder run` wrapper — skip the self-wrap.
 #
 # Canonical cell names:
 #   desktop-dist  desktop-player
@@ -34,10 +45,32 @@
 #   ios-debug-dist  ios-debug-player
 #   android-debug-dist  android-debug-player
 #
+# Parallelism story (🎯T33.2):
+#   Cells that need a device are wrapped in `spyder run --device <alias>`.
+#   Two cells targeting different devices run concurrently. Two cells
+#   targeting the same device serialise — the second one retries up to 3×
+#   (10 s backoff) before failing (exit code 13 surfaced as a setup error).
+#   Desktop cells never need a reservation and always run concurrently.
+#
+# Environment variables:
+#   GE_IOS_SIM_PHONE_DEVICE   Inventory alias or UDID for the phone iOS sim.
+#   GE_IOS_SIM_TABLET_DEVICE  Inventory alias or UDID for the tablet iOS sim.
+#   GE_IOS_PHONE_DEVICE       Inventory alias or UDID for physical iOS phone.
+#   GE_IOS_TABLET_DEVICE      Inventory alias or UDID for physical iOS tablet.
+#   GE_ANDROID_EMU_PHONE_DEVICE  Inventory alias for Android phone emulator.
+#   GE_ANDROID_EMU_TABLET_DEVICE Inventory alias for Android tablet emulator.
+#   GE_ANDROID_PHONE_DEVICE   Inventory alias for USB-connected Android phone.
+#   GE_ANDROID_TABLET_DEVICE  Inventory alias for USB-connected Android tablet.
+#
+#   When set, these bypass spyder reserve --on selector dispatch and use
+#   the given alias directly for that cell's device. Useful for CI where
+#   device layout is fixed and you want deterministic pinning.
+#
 # Exit codes:
 #   0 — cell passed all applicable sub-checks
 #   1 — one or more sub-checks failed
 #   2 — setup error (cell name invalid, APP_ID auto-detect failed, prereq missing)
+#   13 — reservation conflict: another cell holds this device (all retries exhausted)
 
 set -euo pipefail
 
@@ -60,6 +93,10 @@ GED_PORT=42069
 PLAYER_BUNDLE_ID="com.squz.player"
 PLAYER_ANDROID_PKG="com.squz.player"
 PLAYER_ANDROID_ACTIVITY="com.squz.player/.GeActivity"
+# Pinned device alias (set by self-wrap; can also be passed by caller).
+PINNED_DEVICE=""
+# Skip the spyder-run self-wrap (we're already inside one).
+SKIP_SPYDER_RUN=0
 
 if [[ $# -eq 0 ]]; then
     sed -n '2,/^$/{ s/^# \{0,1\}//; p; }' "$0"
@@ -70,11 +107,13 @@ CELL="$1"; shift
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --app)          APP_DIR="$(cd "$2" && pwd)"; shift 2 ;;
-        --timeout)      COLD_LAUNCH_TIMEOUT="$2"; SOAK_TIMEOUT="$2"; shift 2 ;;
-        --capture-refs) CAPTURE_REFS=1; shift ;;
-        --rms)          RMS="$2"; shift 2 ;;
-        --verbose)      VERBOSE=1; shift ;;
+        --app)             APP_DIR="$(cd "$2" && pwd)"; shift 2 ;;
+        --timeout)         COLD_LAUNCH_TIMEOUT="$2"; SOAK_TIMEOUT="$2"; shift 2 ;;
+        --capture-refs)    CAPTURE_REFS=1; shift ;;
+        --rms)             RMS="$2"; shift 2 ;;
+        --verbose)         VERBOSE=1; shift ;;
+        --device)          PINNED_DEVICE="$2"; shift 2 ;;
+        --skip-spyder-run) SKIP_SPYDER_RUN=1; shift ;;
         -h|--help)
             sed -n '2,/^$/{ s/^# \{0,1\}//; p; }' "$0"
             exit 0
@@ -157,6 +196,178 @@ IS_PLAYER=0; [[ "$MODE" == "player" ]] && IS_PLAYER=1
 SOAK_TIME=$SOAK_TIMEOUT
 [[ $IS_DEBUG -eq 1 ]] && SOAK_TIME=$DEBUG_SOAK_TIMEOUT
 
+# ── Spyder: cell device selector ────────────────────────────────────
+#
+# Each mobile/sim/emu cell maps to a spyder selector (for reserve --on)
+# and an optional env-var that lets callers pin a specific alias.
+#
+# Desktop cells never need a device reservation. They set CELL_SELECTOR=""
+# to indicate "no reservation required".
+#
+# Returns:
+#   CELL_SELECTOR  — spyder reserve --on predicate (empty for desktop)
+#   CELL_PIN_VAR   — name of the env var that pins a specific alias
+
+CELL_SELECTOR=""
+CELL_PIN_VAR=""
+
+case "$CELL" in
+    ios-sim-phone-dist|ios-sim-phone-player|ios-debug-dist|ios-debug-player)
+        CELL_SELECTOR="platform=ios-sim,model=iphone"
+        CELL_PIN_VAR="GE_IOS_SIM_PHONE_DEVICE"
+        ;;
+    ios-sim-tablet-dist|ios-sim-tablet-player)
+        CELL_SELECTOR="platform=ios-sim,model=ipad"
+        CELL_PIN_VAR="GE_IOS_SIM_TABLET_DEVICE"
+        ;;
+    ios-device-phone-dist|ios-device-phone-player)
+        CELL_SELECTOR="platform=ios,model=iphone"
+        CELL_PIN_VAR="GE_IOS_PHONE_DEVICE"
+        ;;
+    ios-device-tablet-dist|ios-device-tablet-player)
+        CELL_SELECTOR="platform=ios,model=ipad"
+        CELL_PIN_VAR="GE_IOS_TABLET_DEVICE"
+        ;;
+    android-emu-phone-dist|android-emu-phone-player)
+        CELL_SELECTOR="platform=android-emu,model=phone"
+        CELL_PIN_VAR="GE_ANDROID_EMU_PHONE_DEVICE"
+        ;;
+    android-emu-tablet-dist|android-emu-tablet-player|android-debug-dist|android-debug-player)
+        CELL_SELECTOR="platform=android-emu,model=tablet"
+        CELL_PIN_VAR="GE_ANDROID_EMU_TABLET_DEVICE"
+        ;;
+    android-device-phone-dist|android-device-phone-player)
+        CELL_SELECTOR="platform=android,model=phone"
+        CELL_PIN_VAR="GE_ANDROID_PHONE_DEVICE"
+        ;;
+    android-device-tablet-dist|android-device-tablet-player)
+        CELL_SELECTOR="platform=android,model=tablet"
+        CELL_PIN_VAR="GE_ANDROID_TABLET_DEVICE"
+        ;;
+    desktop-*)
+        # Desktop cells never need a device reservation.
+        CELL_SELECTOR=""
+        CELL_PIN_VAR=""
+        ;;
+esac
+
+# ── Spyder self-wrap ─────────────────────────────────────────────────
+#
+# For cells that need a device: if we're not already inside a `spyder run`
+# wrapper (SKIP_SPYDER_RUN=0), resolve a device and re-exec under
+# `spyder run --device <alias> --as cell-<cell-id>`.
+#
+# This makes parallel `make cell.*` invocations race-safe: two cells
+# targeting different devices run concurrently; two cells racing for the
+# same device get exit code 13 from `spyder reserve` and retry.
+#
+# Re-exec passes --skip-spyder-run so the child knows the reservation is
+# already held, and --device <alias> so the resolved alias is available to
+# device helpers that previously read GE_IOS_SIM_UDID / GE_ANDROID_EMU_SERIAL.
+
+# retry_spyder_run <alias> <owner>
+# Wraps `spyder run --device <alias> --as <owner> -- "$0" [forwarded args]`
+# with up to 3 retries on exit code 13 (reservation-conflict), 10 s backoff.
+# Exits with the child's exit code on success, or 13 after all retries fail.
+retry_spyder_run() {
+    local alias="$1"; local owner="$2"; shift 2
+    local attempt max_attempts=3 backoff=10
+    for attempt in $(seq 1 $max_attempts); do
+        spyder run --device "$alias" --as "$owner" -- "$@"
+        local rc=$?
+        if [[ $rc -eq 13 ]]; then
+            if [[ $attempt -lt $max_attempts ]]; then
+                echo "[$CELL] reservation conflict for '$alias' (attempt $attempt/$max_attempts); retrying in ${backoff}s …" >&2
+                sleep $backoff
+            else
+                echo "[$CELL] reservation conflict for '$alias': all $max_attempts attempts failed" >&2
+                exit 13
+            fi
+        else
+            exit $rc
+        fi
+    done
+}
+
+# resolve_and_wrap: pick a device via `spyder reserve --on <selector>` and
+# re-exec under `spyder run`. We acquire-then-release to learn the alias
+# spyder selected, then hand that alias to `spyder run` which re-acquires.
+# The release→re-acquire window is tiny (~1 ms); in practice parallel cells
+# targeting different selectors have no overlap, so this is safe.
+resolve_and_wrap() {
+    local selector="$1"; local owner="$2"
+    # Attempt reserve --on to resolve the alias.
+    local reserve_out reserve_rc
+    reserve_out=$(spyder reserve --on "$selector" --as "$owner" 2>&1)
+    reserve_rc=$?
+    case $reserve_rc in
+        0)  ;;
+        10) echo "[$CELL] spyder daemon unreachable — is 'spyder serve' running?" >&2; exit 2 ;;
+        11) echo "[$CELL] no device matched selector '$selector' — check inventory" >&2; exit 2 ;;
+        12) echo "[$CELL] device matched selector '$selector' but is not connected" >&2; exit 2 ;;
+        13) exit 13 ;;  # conflict; let caller retry
+        30) echo "[$CELL] spyder reserve timed out waiting for '$selector'" >&2; exit 2 ;;
+        40) echo "[$CELL] iOS trust not granted — accept the trust dialog on the device" >&2; exit 2 ;;
+        41) echo "[$CELL] iOS Developer Mode is disabled — enable it in Settings" >&2; exit 2 ;;
+        42) echo "[$CELL] device is locked — unlock it before running the matrix" >&2; exit 2 ;;
+        *)  echo "[$CELL] spyder reserve failed (exit $reserve_rc): $reserve_out" >&2; exit 2 ;;
+    esac
+    # Extract the resolved device alias from the JSON output.
+    local alias
+    alias=$(printf '%s' "$reserve_out" | python3 -c "import sys,json; print(json.load(sys.stdin)['device'])" 2>/dev/null || true)
+    if [[ -z "$alias" ]]; then
+        echo "[$CELL] could not parse device alias from spyder reserve output" >&2
+        echo "$reserve_out" >&2
+        exit 2
+    fi
+    # Release immediately so spyder run can re-acquire.
+    spyder release "$alias" --as "$owner" >/dev/null 2>&1 || true
+    echo "[$CELL] resolved device '$alias' via selector '$selector'" >&2
+    # Re-exec under spyder run with the resolved alias.
+    retry_spyder_run "$alias" "$owner" "$0" "$CELL" \
+        --app "$APP_DIR" \
+        --timeout "$COLD_LAUNCH_TIMEOUT" \
+        --rms "$RMS" \
+        --device "$alias" \
+        --skip-spyder-run \
+        $([ "$CAPTURE_REFS" -eq 1 ] && printf '%s' --capture-refs) \
+        $([ "$VERBOSE" -eq 1 ] && printf '%s' --verbose)
+}
+
+# Determine if this invocation needs the spyder-run wrapper.
+NEEDS_DEVICE=0
+[[ -n "$CELL_SELECTOR" ]] && NEEDS_DEVICE=1
+
+if [[ $NEEDS_DEVICE -eq 1 && $SKIP_SPYDER_RUN -eq 0 ]]; then
+    owner="cell-$CELL"
+    # Check if a device alias is pinned (caller-supplied or env var).
+    resolved_alias="${PINNED_DEVICE:-}"
+    if [[ -z "$resolved_alias" && -n "$CELL_PIN_VAR" ]]; then
+        resolved_alias="${!CELL_PIN_VAR:-}"
+    fi
+    if [[ -n "$resolved_alias" ]]; then
+        # Pinned alias: go straight to spyder run (no reserve --on needed).
+        echo "[$CELL] using pinned device '$resolved_alias'" >&2
+        retry_spyder_run "$resolved_alias" "$owner" "$0" "$CELL" \
+            --app "$APP_DIR" \
+            --timeout "$COLD_LAUNCH_TIMEOUT" \
+            --rms "$RMS" \
+            --device "$resolved_alias" \
+            --skip-spyder-run \
+            $([ "$CAPTURE_REFS" -eq 1 ] && printf '%s' --capture-refs) \
+            $([ "$VERBOSE" -eq 1 ] && printf '%s' --verbose)
+        # retry_spyder_run calls exit internally; unreachable.
+    else
+        # No pin: use selector dispatch to resolve a device, then wrap.
+        resolve_and_wrap "$CELL_SELECTOR" "$owner"
+        # resolve_and_wrap calls exit internally; unreachable.
+    fi
+fi
+
+# ── From here on we either own a spyder reservation (mobile/sim/emu cells)
+# ── or are a desktop cell that needs no reservation.
+# ── PINNED_DEVICE is the resolved alias available to device helpers below.
+
 # ── Auto-detect app vars ─────────────────────────────────────────────
 
 APP_NAME=""
@@ -188,6 +399,7 @@ REFS_DIR="$APP_DIR/test/refs"
 mkdir -p "$REFS_DIR"
 
 echo "matrix-cell: $CELL  app=$APP_NAME  dir=$APP_DIR"
+[[ -n "$PINNED_DEVICE" ]] && echo "device:      $PINNED_DEVICE"
 echo "artifacts:   $ARTIFACTS"
 echo
 
@@ -405,12 +617,33 @@ check_or_capture_ref() {
 }
 
 # ── iOS simulator helpers ────────────────────────────────────────────
+#
+# When PINNED_DEVICE is set (i.e. we're inside a spyder run wrapper), we
+# ask spyder to resolve it to a UDID rather than calling xcrun simctl
+# directly. This keeps device discovery going through spyder and avoids
+# races with concurrent cells.
 
-# Returns the UDID of a booted iOS sim matching the form factor.
-# If none booted, attempts to boot a canonical one.
-# Writes UDID to stdout. Returns 1 if not available.
+# Returns the UDID of the booted iOS sim for this cell.
+# Uses PINNED_DEVICE alias via spyder resolve when available;
+# falls back to xcrun simctl discovery when not.
 ios_sim_get_udid() {
-    local ff="${1:-}"   # phone or tablet
+    local ff="${1:-}"
+
+    # If spyder resolved a device alias for us, get the UDID from inventory.
+    if [[ -n "$PINNED_DEVICE" ]]; then
+        local resolved
+        resolved=$(spyder resolve "$PINNED_DEVICE" --json 2>/dev/null \
+            | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('ios_uuid',''))" \
+            2>/dev/null || true)
+        if [[ -n "$resolved" ]]; then
+            echo "$resolved"
+            return 0
+        fi
+        # Alias doesn't have ios_uuid — treat PINNED_DEVICE as a raw UDID.
+        echo "$PINNED_DEVICE"
+        return 0
+    fi
+
     local filter=""
     case "$ff" in
         phone)  filter='test("iPhone"; "i")' ;;
@@ -501,21 +734,34 @@ ios_sim_crash_count() {
 
 # ── iOS physical device helpers ──────────────────────────────────────
 
-# Returns the UDID of a connected iOS physical device matching form factor.
-# form factor: phone or tablet (by screen aspect ratio).
-# Writes UDID to stdout. Returns 1 if not available.
+# Returns the UDID of a connected iOS physical device for this cell.
+# Uses PINNED_DEVICE alias via spyder resolve when available.
 IOS_DEVICE_UDID=""
 ios_device_get_udid() {
     local ff="${1:-}"
-    # GE_IOS_TABLET_DEVICE / GE_IOS_PHONE_DEVICE: optional name/UDID preference
-    # passed in from Module.mk. If set, prefer that device when multiple are connected.
+
+    if [[ -n "$PINNED_DEVICE" ]]; then
+        local resolved
+        resolved=$(spyder resolve "$PINNED_DEVICE" --json 2>/dev/null \
+            | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('ios_coredevice','') or d.get('ios_uuid',''))" \
+            2>/dev/null || true)
+        if [[ -n "$resolved" ]]; then
+            IOS_DEVICE_UDID="$resolved"
+            echo "$resolved"
+            return 0
+        fi
+        IOS_DEVICE_UDID="$PINNED_DEVICE"
+        echo "$PINNED_DEVICE"
+        return 0
+    fi
+
+    # Fallback: discover via devicectl (no spyder pin).
     local pref_device=""
     case "$ff" in
         tablet) pref_device="${GE_IOS_TABLET_DEVICE:-}" ;;
         phone)  pref_device="${GE_IOS_PHONE_DEVICE:-}" ;;
     esac
 
-    # List connected physical devices via devicectl JSON output.
     local tmpfile
     tmpfile=$(mktemp)
     if ! xcrun devicectl list devices -j "$tmpfile" >/dev/null 2>&1; then
@@ -524,8 +770,6 @@ ios_device_get_udid() {
         return 1
     fi
 
-    # Filter to connected devices and pick by form factor.
-    # Pass tmpfile, ff, and pref_device as positional args.
     local udid
     udid=$(python3 - "$tmpfile" "$ff" "$pref_device" <<'PY'
 import sys, json
@@ -538,7 +782,6 @@ devices = data.get("result", {}).get("devices", [])
 connected = [d for d in devices if d.get("connectionProperties", {}).get("transportType") == "localNetwork"
              or d.get("connectionProperties", {}).get("tunnelState") == "connected"
              or "connected" in str(d.get("connectionProperties", {}))]
-# Fallback: any device that is not offline
 if not connected:
     connected = [d for d in devices if d.get("deviceProperties", {}).get("developerModeStatus") == "enabled"
                  or "connected" in str(d.get("connectionProperties", {}).get("pairingState", ""))]
@@ -546,8 +789,6 @@ if not ff:
     if connected:
         print(connected[0]["identifier"])
     sys.exit(0)
-# Filter by form factor using device model name heuristic.
-# Use .identifier (CoreDevice UUID) — consistent with smoke-test.sh.
 form_matches = []
 for d in connected:
     model = d.get("hardwareProperties", {}).get("deviceType", "")
@@ -555,11 +796,8 @@ for d in connected:
         form_matches.append(d)
     elif ff == "phone" and "iPhone" in model:
         form_matches.append(d)
-
 if not form_matches:
     sys.exit(1)
-
-# If a preferred device is specified, try to match it by name or UDID substring.
 if pref:
     for d in form_matches:
         name = d.get("deviceProperties", {}).get("name", "")
@@ -567,8 +805,6 @@ if pref:
         hw_udid = d.get("hardwareProperties", {}).get("udid", "")
         if pref.lower() in name.lower() or pref.lower() in udid_val.lower() or pref.lower() in hw_udid.lower():
             print(udid_val); sys.exit(0)
-
-# No preference match or no preference set — pick first.
 print(form_matches[0]["identifier"]); sys.exit(0)
 PY
 2>/dev/null || true)
@@ -585,8 +821,6 @@ PY
 }
 
 # Check if a bundle is running on a physical iOS device via devicectl.
-# devicectl info processes returns {executable, processIdentifier} — no bundleIdentifier.
-# Match by bundle ID in the executable path (app container includes bundle ID components).
 ios_device_is_running() {
     local udid="$1"; local bundle_id="$2"
     local tmpfile
@@ -599,7 +833,6 @@ import json
 d = json.load(open('$tmpfile'))
 procs = d.get('result', {}).get('runningProcesses', [])
 bundle_id = '$bundle_id'
-# Match by app binary name (last bundle segment), case-insensitive (iOS uses CamelCase).
 app_name = bundle_id.split('.')[-1].lower()
 matches = [p for p in procs if bundle_id in str(p.get('executable', ''))
            or ('/' + app_name + '.app/') in str(p.get('executable', '')).lower()
@@ -619,7 +852,6 @@ ios_device_crash_count() {
 }
 
 # Resolve the macOS host LAN IP for passing to physical devices.
-# Physical devices cannot reach localhost — they need the host's Wi-Fi IP.
 host_lan_ip() {
     ipconfig getifaddr en0 2>/dev/null \
         || ipconfig getifaddr en1 2>/dev/null \
@@ -630,9 +862,23 @@ host_lan_ip() {
 # ── Android helpers ──────────────────────────────────────────────────
 
 android_get_serial() {
-    local ff="${1:-}"  # phone or tablet; empty = any emulator
+    local ff="${1:-}"
 
-    # Determine connected emulator serials.
+    # If spyder resolved a device alias, use it directly as the adb serial.
+    if [[ -n "$PINNED_DEVICE" ]]; then
+        local resolved
+        resolved=$(spyder resolve "$PINNED_DEVICE" --json 2>/dev/null \
+            | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('android_serial',''))" \
+            2>/dev/null || true)
+        if [[ -n "$resolved" ]]; then
+            echo "$resolved"
+            return 0
+        fi
+        # No android_serial in inventory — treat PINNED_DEVICE as raw serial.
+        echo "$PINNED_DEVICE"
+        return 0
+    fi
+
     local serials
     serials=$(adb devices 2>/dev/null \
         | awk 'NR>1 && /emulator-[0-9]+[[:space:]]+device$/ {print $1}')
@@ -647,9 +893,6 @@ android_get_serial() {
         return 0
     fi
 
-    # For tablet form factor, prefer GE_ANDROID_TABLET_AVD if it names a
-    # running emulator.  GE_ANDROID_TABLET_AVD is passed via env from
-    # Module.mk cell rules (default: Pixel_Tablet).
     if [[ "$ff" == "tablet" && -n "${GE_ANDROID_TABLET_AVD:-}" ]]; then
         while IFS= read -r serial; do
             local avd_name
@@ -658,16 +901,13 @@ android_get_serial() {
                 echo "$serial"; return 0
             fi
         done <<< "$serials"
-        # GE_ANDROID_TABLET_AVD not booted — fall through to heuristic.
     fi
 
-    # Filter by form factor: check avd name via adb emu avd name.
     while IFS= read -r serial; do
         local avd_name
         avd_name=$(adb -s "$serial" emu avd name 2>/dev/null | head -1 | tr -d '\r' || true)
         case "$ff" in
             phone)
-                # Phone AVDs typically have "Phone" in name or lack "Tablet"/"iPad"
                 if ! echo "$avd_name" | grep -qi "tablet"; then
                     echo "$serial"; return 0
                 fi
@@ -692,6 +932,20 @@ android_get_serial() {
 
 android_device_get_serial() {
     local ff="${1:-}"
+
+    if [[ -n "$PINNED_DEVICE" ]]; then
+        local resolved
+        resolved=$(spyder resolve "$PINNED_DEVICE" --json 2>/dev/null \
+            | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('android_serial',''))" \
+            2>/dev/null || true)
+        if [[ -n "$resolved" ]]; then
+            echo "$resolved"
+            return 0
+        fi
+        echo "$PINNED_DEVICE"
+        return 0
+    fi
+
     local serials
     serials=$(adb devices 2>/dev/null \
         | awk 'NR>1 && !/emulator-/ && /[[:space:]]+device$/ {print $1}')
@@ -706,7 +960,6 @@ android_device_get_serial() {
         return 0
     fi
 
-    # Filter by screen size: portrait height / width > 1.4 ≈ phone.
     while IFS= read -r serial; do
         local size
         size=$(adb -s "$serial" shell wm size 2>/dev/null | grep -oE '[0-9]+x[0-9]+' | head -1 || true)
@@ -740,15 +993,12 @@ android_get_activity() {
 
 android_crash_count() {
     local serial="$1"; local since_epoch="$2"; local pkg="$3"
-    # Count E/AndroidRuntime and FATAL EXCEPTION lines since start time.
     adb -s "$serial" logcat -b crash -d 2>/dev/null \
         | grep -c "Process: $pkg" || true
 }
 
 android_is_running() {
     local serial="$1"; local pkg="$2"
-    # Mirror the iOS retry pattern — pidof occasionally returns empty
-    # during short-lived process transitions (e.g. mid-rotation).
     local attempt
     for attempt in 1 2 3 4 5; do
         if adb -s "$serial" shell pidof "$pkg" 2>/dev/null | grep -q '[0-9]'; then
@@ -760,8 +1010,6 @@ android_is_running() {
 }
 
 # ── Startup-flash check (mobile only) ────────────────────────────────
-# Records ~3s video from launch and scans frames for magenta pixels.
-# Returns 0 (pass) / 1 (fail). Writes result to $ARTIFACTS/startup-flash/.
 
 check_startup_flash_ios() {
     local subcheck="startup-flash"
@@ -779,24 +1027,14 @@ check_startup_flash_ios() {
     fi
 
     local video="$out_dir/launch.mov"
-    # To capture the *startup* flash (CAMetalLayer default pink before
-    # first draw), recording must start BEFORE the app launches. Kill
-    # any running instance, start recording, then relaunch.
     xcrun simctl terminate "$udid" "$bundle_id" 2>/dev/null || true
     sleep 0.5
 
-    # simctl recordVideo syntax: `recordVideo [--codec=<codec>] ... <file>`.
-    # --type= is for `screenshot`, not recordVideo. Default codec is hevc;
-    # we use h264 so ffmpeg-on-macOS reliably decodes the frames.
     xcrun simctl io "$udid" recordVideo --codec=h264 --force "$video" &
     local rec_pid=$!
-    # Give the recorder a moment to initialise before the launch, so
-    # the pre-first-frame window is captured.
     sleep 0.5
     xcrun simctl launch "$udid" "$bundle_id" >/dev/null 2>&1 || true
     sleep 3
-    # simctl recordVideo must be signalled with SIGINT to finalise the
-    # file; SIGTERM leaves a zero-byte result.
     kill -INT "$rec_pid" 2>/dev/null || true
     wait "$rec_pid" 2>/dev/null || true
 
@@ -805,7 +1043,6 @@ check_startup_flash_ios() {
         return 1
     fi
 
-    # Extract frames at 10fps.
     ffmpeg -y -i "$video" -vf fps=10 "$out_dir/frame_%04d.png" \
         >/dev/null 2>&1 || true
 
@@ -822,7 +1059,6 @@ check_startup_flash_ios() {
         pct=$(python3 - "$f" <<'PY'
 import sys
 try:
-    # Use ImageMagick to count magenta pixels: R>200, G<80, B>200
     import subprocess, re
     result = subprocess.run(
         ['convert', sys.argv[1],
@@ -854,9 +1090,8 @@ PY
 check_startup_flash_android() {
     local subcheck="startup-flash"
     local serial="$1"
-    local pkg="$2"      # e.g. com.squz.player
-    local activity="$3" # e.g. com.squz.player/.MainActivity
-    # $4: optional extra am start args (forwarded from the cold-launch call)
+    local pkg="$2"
+    local activity="$3"
     local extra_am_args="${4:-}"
     local out_dir="$ARTIFACTS/startup-flash"
     mkdir -p "$out_dir"
@@ -873,19 +1108,11 @@ check_startup_flash_android() {
     local video_device="/sdcard/matrix-launch.mp4"
     local video_local="$out_dir/launch.mp4"
 
-    # To capture the *startup* flash (uninitialised surface before first draw),
-    # recording must start BEFORE the app launches — mirroring the iOS pattern.
-    # Kill any running instance, start recording, then relaunch.
     adb -s "$serial" shell am force-stop "$pkg" 2>/dev/null || true
     sleep 0.5
 
-    # --bit-rate 2000000: without an explicit bit-rate the emulator's screenrecord
-    # produces a near-empty mp4 (duration=0, 1 frame) that ffmpeg cannot decode.
-    # Let screenrecord exit naturally via --time-limit (3s); only safety-kill if
-    # it hangs beyond 8s. Killing early truncates the mp4 before finalisation.
     adb -s "$serial" shell screenrecord --time-limit 3 --bit-rate 2000000 "$video_device" &
     local rec_pid=$!
-    # Brief pause to let screenrecord initialise before the app launches.
     sleep 0.5
     # shellcheck disable=SC2086
     adb -s "$serial" shell am start -n "$activity" $extra_am_args >/dev/null 2>&1 || true
@@ -901,8 +1128,6 @@ check_startup_flash_android() {
     adb -s "$serial" shell rm -f "$video_device" >/dev/null 2>&1 || true
 
     if [[ ! -s "$video_local" ]]; then
-        # Warn rather than fail: capture-tool failure is a test-infra problem,
-        # not evidence of a magenta flash.
         warn_check "$subcheck" "video capture empty — screenrecord may have failed; skipping flash check"
         return 0
     fi
@@ -913,8 +1138,6 @@ check_startup_flash_android() {
     local frame_count
     frame_count=$(ls "$out_dir"/frame_*.png 2>/dev/null | wc -l | tr -d ' ')
     if [[ "$frame_count" -eq 0 ]]; then
-        # Warn rather than fail: ffmpeg was unable to extract frames from a
-        # valid-but-empty mp4 (duration=0). This is a capture-infra issue.
         warn_check "$subcheck" "no frames extracted from video (duration=0?); skipping flash check"
         return 0
     fi
@@ -954,13 +1177,12 @@ PY
 }
 
 # ── Sub-check: cold-launch ───────────────────────────────────────────
-# Platform-specific variants set LAUNCH_PID (desktop) or just launch the app
-# on sim/emu/device. Returns 0 on success.
 
 LAUNCH_PID=""    # desktop only; sim/emu/device don't give us a local PID
 SIM_UDID=""      # set by ios launch helpers
 ANDROID_SERIAL=""  # set by android launch helpers
 DESKTOP_BIN=""   # overridden by debug cells to point at bin/$APP_NAME-debug
+SERVER_ARGS=""   # extra args passed to the desktop server; player cells set --brokered
 
 cold_launch_desktop() {
     local subcheck="cold-launch"
@@ -1001,7 +1223,6 @@ cold_launch_player_desktop() {
     "$player_bin" > "$ARTIFACTS/player.log" 2>&1 &
     LAUNCH_PID=$!
 
-    # Wait for a ged session (player connected).
     local baseline
     baseline=$(current_sessions)
     sleep 2
@@ -1023,8 +1244,6 @@ cold_launch_player_desktop() {
 cold_launch_ios_sim() {
     local subcheck="cold-launch"
     local bundle_id="$1"; local app_path="$2"; local ff="$3"
-    # $4: optional extra launch args forwarded verbatim to `simctl launch`
-    # (e.g. "-ged_addr localhost:42069" passes ged address as NSUserDefaults key)
     local extra_launch_args="${4:-}"
 
     SIM_UDID=$(ios_sim_get_udid "$ff") || { fail_check "$subcheck" "no booted iOS sim for $ff"; return 1; }
@@ -1054,7 +1273,6 @@ cold_launch_ios_sim() {
 cold_launch_android_emu() {
     local subcheck="cold-launch"
     local pkg="$1"; local apk="$2"; local ff="$3"; local activity="$4"
-    # $5: optional extra am start args (e.g. "--es ged_addr 10.0.2.2:42069")
     local extra_am_args="${5:-}"
 
     ANDROID_SERIAL=$(android_get_serial "$ff") \
@@ -1085,7 +1303,6 @@ cold_launch_android_emu() {
 cold_launch_android_device() {
     local subcheck="cold-launch"
     local pkg="$1"; local apk="$2"; local ff="$3"; local activity="$4"
-    # $5: optional extra am start args (e.g. "--es ged_addr 192.168.1.100:42069")
     local extra_am_args="${5:-}"
 
     ANDROID_SERIAL=$(android_device_get_serial "$ff") \
@@ -1116,13 +1333,11 @@ cold_launch_android_device() {
 cold_launch_ios_device() {
     local subcheck="cold-launch"
     local bundle_id="$1"; local app_path="$2"; local ff="$3"
-    # $4: optional extra launch args forwarded to devicectl process launch
     local extra_launch_args="${4:-}"
 
     IOS_DEVICE_UDID=$(ios_device_get_udid "$ff") \
         || { fail_check "$subcheck" "no connected iOS device for $ff"; return 1; }
 
-    # Terminate any running instance.
     local tmpfile
     tmpfile=$(mktemp)
     if xcrun devicectl device info processes -d "$IOS_DEVICE_UDID" -j "$tmpfile" --quiet 2>/dev/null; then
@@ -1171,12 +1386,9 @@ print(matches[0]['processIdentifier'] if matches else '')
         return 1
     fi
 
-    # Screenshot: try pymobiledevice3 screenshot, fall back gracefully if unavailable
-    # (device may be locked, or tool not installed).
     local shot="$ARTIFACTS/cold-launch.png"
     python3 -m pymobiledevice3 screenshot "$shot" 2>/dev/null || true
     if [[ ! -s "$shot" ]]; then
-        # Screenshot may be gated on screen unlock; skip ref check, don't fail.
         pass_check "$subcheck" "app running (screenshot unavailable — device may be locked)"
         return 0
     fi
@@ -1194,7 +1406,6 @@ check_soak_desktop() {
         fail_check "$subcheck" "app exited during soak"
         return 1
     fi
-    # Scan DiagnosticReports for any crash matching app name.
     local crashes
     crashes=$(ls ~/Library/Logs/DiagnosticReports/ 2>/dev/null \
         | grep -c "$APP_NAME" || true)
@@ -1248,8 +1459,6 @@ check_soak_ios_device() {
 check_soak_android() {
     local subcheck="soak"
     local serial="$1"; local pkg="$2"
-    local t_start
-    t_start=$(date +%s)
     echo "  … soak ${SOAK_TIME}s …"
     sleep "$SOAK_TIME"
     if ! android_is_running "$serial" "$pkg"; then
@@ -1272,11 +1481,9 @@ check_rotation_ios_sim() {
     local subcheck="rotation-round-trip"
     local udid="$1"; local bundle_id="$2"
 
-    # Bring Simulator to front for osascript keystrokes to land.
     osascript -e 'tell application "Simulator" to activate' >/dev/null 2>&1 || true
     sleep 0.5
 
-    # Rotate right (landscape).
     osascript -e 'tell application "System Events" to keystroke (ASCII character 29) using command down' \
         >/dev/null 2>&1 || true
     sleep 1
@@ -1285,7 +1492,6 @@ check_rotation_ios_sim() {
         return 1
     fi
 
-    # Rotate left (portrait).
     osascript -e 'tell application "System Events" to keystroke (ASCII character 28) using command down' \
         >/dev/null 2>&1 || true
     sleep 1
@@ -1301,10 +1507,8 @@ check_rotation_android_emu() {
     local subcheck="rotation-round-trip"
     local serial="$1"; local pkg="$2"
 
-    # Disable accelerometer so user_rotation takes effect.
     adb -s "$serial" shell settings put system accelerometer_rotation 0 >/dev/null 2>&1 || true
 
-    # Portrait (0) → landscape (1) → portrait (0).
     adb -s "$serial" shell settings put system user_rotation 1 >/dev/null 2>&1 || true
     sleep 1
     if ! android_is_running "$serial" "$pkg"; then
@@ -1338,22 +1542,18 @@ check_reconnect_desktop_player() {
     kill_bg "$srv_pid"
     sleep 5
 
-    # Restart server.
     local serverlog="$ARTIFACTS/server-reconnect.log"
     local srv_bin="${DESKTOP_BIN:-$APP_DIR/bin/$APP_NAME}"
-    ( cd "$APP_DIR" && exec "$srv_bin" > "$serverlog" 2>&1 ) &
+    # shellcheck disable=SC2086
+    ( cd "$APP_DIR" && exec "$srv_bin" $SERVER_ARGS > "$serverlog" 2>&1 ) &
     local new_srv_pid=$!
 
-    # Wait for at least one session to be bridged to the new server.
-    # (session count in ged stays constant across server restart since the
-    # player remains connected to ged; only bridged-session count changes.)
     if ! wait_for_server_sessions 1; then
         fail_check "$subcheck" "player did not reconnect within ${COLD_LAUNCH_TIMEOUT}s"
         kill_bg "$new_srv_pid"
         return 1
     fi
 
-    # Take a post-reconnect screenshot.
     local shot="$ARTIFACTS/reconnect.png"
     shot_window_by_pid "$player_pid" "$shot"
     kill_bg "$new_srv_pid"
@@ -1374,12 +1574,10 @@ check_reconnect_ios_sim_player() {
 
     local serverlog="$ARTIFACTS/server-reconnect.log"
     local srv_bin="${DESKTOP_BIN:-$APP_DIR/bin/$APP_NAME}"
-    ( cd "$APP_DIR" && exec "$srv_bin" > "$serverlog" 2>&1 ) &
+    # shellcheck disable=SC2086
+    ( cd "$APP_DIR" && exec "$srv_bin" $SERVER_ARGS > "$serverlog" 2>&1 ) &
     local new_srv_pid=$!
 
-    # Wait for at least one session to be bridged to the new server.
-    # (session count in ged stays constant across server restart since the
-    # player remains connected to ged; only bridged-session count changes.)
     if ! wait_for_server_sessions 1; then
         fail_check "$subcheck" "iOS player did not reconnect within ${COLD_LAUNCH_TIMEOUT}s"
         kill_bg "$new_srv_pid"
@@ -1406,12 +1604,10 @@ check_reconnect_android_player() {
 
     local serverlog="$ARTIFACTS/server-reconnect.log"
     local srv_bin="${DESKTOP_BIN:-$APP_DIR/bin/$APP_NAME}"
-    ( cd "$APP_DIR" && exec "$srv_bin" > "$serverlog" 2>&1 ) &
+    # shellcheck disable=SC2086
+    ( cd "$APP_DIR" && exec "$srv_bin" $SERVER_ARGS > "$serverlog" 2>&1 ) &
     local new_srv_pid=$!
 
-    # Wait for at least one session to be bridged to the new server.
-    # (session count in ged stays constant across server restart since the
-    # player remains connected to ged; only bridged-session count changes.)
     if ! wait_for_server_sessions 1; then
         fail_check "$subcheck" "Android player did not reconnect within ${COLD_LAUNCH_TIMEOUT}s"
         kill_bg "$new_srv_pid"
@@ -1435,11 +1631,9 @@ check_bgfg_ios() {
     local subcheck="bg/fg"
     local udid="$1"; local bundle_id="$2"
 
-    # Home screen sends app to background.
     xcrun simctl launch "$udid" com.apple.springboard >/dev/null 2>&1 || true
     sleep 5
 
-    # Re-launch the app.
     xcrun simctl launch "$udid" "$bundle_id" >/dev/null 2>&1 \
         || { fail_check "$subcheck" "failed to foreground app"; return 1; }
     sleep 2
@@ -1462,14 +1656,6 @@ check_bgfg_ios_device() {
     local subcheck="bg/fg"
     local udid="$1"; local bundle_id="$2"
 
-    # Lock/home the device — use devicectl to send the home button event.
-    # There is no direct "home" key via devicectl; pressing the lock button
-    # sends the app to background via UIApplicationDidEnterBackgroundNotification.
-    # We approximate bg/fg by terminating and re-launching (same as clean cycle).
-    # NOTE: True background/foreground on physical device is not automatable
-    # without device-side tooling. We verify that a re-launch succeeds and the
-    # app is running — that exercises the same code paths as bg→fg for the
-    # purposes of the smoke test.
     local launch_tmp
     launch_tmp=$(mktemp)
     if ! xcrun devicectl device process launch -d "$udid" \
@@ -1564,7 +1750,6 @@ check_clean_exit_ios_device() {
     local crash_before
     crash_before=$(ios_device_crash_count "$bundle_id")
 
-    # Terminate via devicectl.
     local tmpfile
     tmpfile=$(mktemp)
     if xcrun devicectl device info processes -d "$udid" -j "$tmpfile" --quiet 2>/dev/null; then
@@ -1606,7 +1791,8 @@ check_reconnect_ios_device_player() {
     local baseline
     baseline=$(current_sessions)
     local srv_bin="${DESKTOP_BIN:-$APP_DIR/bin/$APP_NAME}"
-    ( cd "$APP_DIR" && exec "$srv_bin" > "$serverlog" 2>&1 ) &
+    # shellcheck disable=SC2086
+    ( cd "$APP_DIR" && exec "$srv_bin" $SERVER_ARGS > "$serverlog" 2>&1 ) &
     local new_srv_pid=$!
 
     if ! wait_for_sessions $((baseline + 1)); then
@@ -1625,7 +1811,6 @@ check_clean_exit_android() {
     adb -s "$serial" shell am force-stop "$pkg" 2>/dev/null || true
     sleep 1
 
-    # If the app was still running and crashed, logcat would have FATAL EXCEPTION.
     local fatals
     fatals=$(adb -s "$serial" logcat -b crash -d 2>/dev/null \
         | grep -c "Process: $pkg" || true)
@@ -1660,48 +1845,40 @@ build_player_desktop_debug() {
     ( cd "$APP_DIR" && run make ge/player ) || return 1
 }
 
-# iOS Debug (.app built with -configuration Debug via `make ge/ios`).
 build_ios_sim_debug() {
     echo "  … building iOS debug (make ge/ios) …"
     ( cd "$APP_DIR" && run make ge/ios ) || return 1
 }
 
-# iOS Release (.app built with -configuration Release via `make ge/ios-release`).
 build_ios_sim_release() {
     echo "  … building iOS release (make ge/ios-release) …"
     ( cd "$APP_DIR" && run make ge/ios-release ) || return 1
 }
 
-# Alias used by non-debug dist/player cells.
 build_ios_sim() {
     build_ios_sim_release
 }
 
-# Android Debug APK (assembleDebug via `make ge/android`).
 build_android_debug() {
     echo "  … building Android debug (make ge/android) …"
     ( cd "$APP_DIR" && run make ge/android ) || return 1
 }
 
-# Android Release APK (assembleRelease via `make ge/android-release`).
 build_android_release() {
     echo "  … building Android release (make ge/android-release) …"
     ( cd "$APP_DIR" && run make ge/android-release ) || return 1
 }
 
-# Alias used by non-debug dist/player cells.
 build_android() {
     build_android_release
 }
 
 find_ios_sim_app_debug() {
-    # Debug builds land in Debug-iphonesimulator
     find "$APP_DIR/ios/build" -name "*.app" -path "*Debug-iphonesimulator*" \
         2>/dev/null | head -1
 }
 
 find_ios_sim_app_release() {
-    # Release builds land in Release-iphonesimulator
     find "$APP_DIR/ios/build" -name "*.app" -path "*Release-iphonesimulator*" \
         2>/dev/null | head -1
 }
@@ -1710,13 +1887,11 @@ find_ios_sim_app() {
     find_ios_sim_app_release
 }
 
-# iOS Release (.app built for physical device via `make ge/ios-device-release`).
 build_ios_device_release() {
     echo "  … building iOS device release (make ge/ios-device-release) …"
     ( cd "$APP_DIR" && run make ge/ios-device-release ) || return 1
 }
 
-# iOS player for physical device (built via `make ge/player-ios-device`).
 build_ios_device_player() {
     echo "  … building ge iOS device player (make ge/player-ios-device) …"
     ( cd "$APP_DIR" && run make ge/player-ios-device ) || return 1
@@ -1728,7 +1903,6 @@ find_ios_device_app_release() {
 }
 
 find_ios_device_player_app() {
-    # ge/player-ios uses build/xcode (iphoneos sysroot); device build lands in Debug-iphoneos.
     find "$GE_ROOT/tools/ios/build/xcode" -name "Player.app" -path "*iphoneos*" \
         2>/dev/null | head -1
 }
@@ -1738,7 +1912,6 @@ find_android_apk_debug() {
 }
 
 find_android_apk_release() {
-    # assembleRelease produces an unsigned APK when no signing config is set.
     local unsigned="$APP_DIR/android/app/build/outputs/apk/release/app-release-unsigned.apk"
     local signed="$APP_DIR/android/app/build/outputs/apk/release/app-release.apk"
     if [[ -f "$signed" ]]; then echo "$signed"; else echo "$unsigned"; fi
@@ -1755,7 +1928,8 @@ SERVER_PID=""
 start_server() {
     local logf="$ARTIFACTS/server.log"
     local srv_bin="${DESKTOP_BIN:-$APP_DIR/bin/$APP_NAME}"
-    ( cd "$APP_DIR" && exec "$srv_bin" > "$logf" 2>&1 ) &
+    # shellcheck disable=SC2086
+    ( cd "$APP_DIR" && exec "$srv_bin" $SERVER_ARGS > "$logf" 2>&1 ) &
     SERVER_PID=$!
     sleep 2
 }
@@ -1787,6 +1961,7 @@ run_desktop_dist() {
 run_desktop_player() {
     build_player_desktop || { fail_check "cold-launch" "build failed"; return; }
     ensure_ged
+    SERVER_ARGS="--brokered"
     start_server
     cold_launch_player_desktop || { stop_server; return; }
     check_soak_desktop "$LAUNCH_PID" || true
@@ -1814,7 +1989,6 @@ run_ios_sim_dist() {
 
 run_ios_sim_player() {
     require_cmd xcrun "xcrun not found — Xcode not installed"
-    # Player is the ge player, not the app. Build it via make ge/player (xcodebuild).
     echo "  … building ge iOS player …"
     local ios_proj="$GE_ROOT/tools/ios"
     if [[ ! -d "$ios_proj/build/xcode" ]]; then
@@ -1832,13 +2006,11 @@ run_ios_sim_player() {
     app_path=$(find "$ios_proj/build" -name "Player.app" -path "*iphonesimulator*" 2>/dev/null | head -1)
     [[ -n "$app_path" ]] || { fail_check "cold-launch" "Player.app not found in tools/ios/build"; return; }
 
-    # Build and start desktop server.
     ( cd "$APP_DIR" && run make ) || { fail_check "cold-launch" "build (server) failed"; return; }
     ensure_ged
+    SERVER_ARGS="--brokered"
     start_server
 
-    # Pass ged address as launch arg so the player connects directly (no QR scan).
-    # The iOS simulator reaches the macOS host via localhost.
     cold_launch_ios_sim "$PLAYER_BUNDLE_ID" "$app_path" "$FORM_FACTOR" \
         "-ged_addr localhost:$GED_PORT" || { stop_server; return; }
     check_startup_flash_ios "$SIM_UDID" "$PLAYER_BUNDLE_ID" || true
@@ -1859,27 +2031,23 @@ run_ios_device_dist() {
     [[ -n "$app_path" ]] || { fail_check "cold-launch" ".app not found in ios/build/Release-iphoneos"; return; }
 
     cold_launch_ios_device "$APP_ID" "$app_path" "$FORM_FACTOR" || return
-    # NOTE: startup-flash check uses simctl video capture, not available on physical device; skipped.
     check_soak_ios_device "$IOS_DEVICE_UDID" "$APP_ID" || true
-    # NOTE: rotation is not automated on physical device cells; skipped.
     check_bgfg_ios_device "$IOS_DEVICE_UDID" "$APP_ID" || true
     check_clean_exit_ios_device "$IOS_DEVICE_UDID" "$APP_ID"
 }
 
 run_ios_device_player() {
     require_cmd xcrun "xcrun not found — Xcode not installed"
-    # Build player for device.
     build_ios_device_player || { fail_check "cold-launch" "make ge/player-ios-device failed"; return; }
     local app_path
     app_path=$(find_ios_device_player_app)
     [[ -n "$app_path" ]] || { fail_check "cold-launch" "Player.app not found in tools/ios/build/*iphoneos*"; return; }
 
-    # Build and start desktop server.
     ( cd "$APP_DIR" && run make ) || { fail_check "cold-launch" "build (server) failed"; return; }
     ensure_ged
+    SERVER_ARGS="--brokered"
     start_server
 
-    # Physical device needs the host's LAN IP (not localhost) to reach ged.
     local host_ip
     host_ip=$(host_lan_ip)
     if [[ -z "$host_ip" ]]; then
@@ -1888,16 +2056,10 @@ run_ios_device_player() {
         return
     fi
 
-    # Pass ged address as NSUserDefaults key (same as iOS sim, just different address).
     cold_launch_ios_device "$PLAYER_BUNDLE_ID" "$app_path" "$FORM_FACTOR" \
         "-ged_addr ${host_ip}:${GED_PORT}" || { stop_server; return; }
-    # NOTE: startup-flash check uses simctl video capture, not available on physical device; skipped.
     check_soak_ios_device "$IOS_DEVICE_UDID" "$PLAYER_BUNDLE_ID" || true
-    # NOTE: rotation not automated on physical device; skipped.
     check_bgfg_ios_device "$IOS_DEVICE_UDID" "$PLAYER_BUNDLE_ID" || true
-    # NOTE: reconnect not tested on physical iOS device — ged_addr is cleared from
-    # NSUserDefaults after first use; the player would fall back to QR scan on
-    # reconnect, which is not automatable.
     warn_check "reconnect" "skipped on physical device (NSUserDefaults ged_addr cleared after first use)"
     stop_server
     SERVER_PID=""
@@ -1935,10 +2097,9 @@ run_android_emu_player() {
 
     ( cd "$APP_DIR" && run make ) || { fail_check "cold-launch" "build (server) failed"; return; }
     ensure_ged
+    SERVER_ARGS="--brokered"
     start_server
 
-    # Pass ged address as intent extra so the player connects directly (no QR scan).
-    # 10.0.2.2 is the Android emulator's alias for the macOS host loopback.
     cold_launch_android_emu "$PLAYER_ANDROID_PKG" "$apk" "$FORM_FACTOR" "$PLAYER_ANDROID_ACTIVITY" \
         "--es ged_addr 10.0.2.2:$GED_PORT" || { stop_server; return; }
     check_startup_flash_android "$ANDROID_SERIAL" "$PLAYER_ANDROID_PKG" "$PLAYER_ANDROID_ACTIVITY" \
@@ -1964,7 +2125,6 @@ run_android_device_dist() {
     cold_launch_android_device "$APP_ID" "$apk" "$FORM_FACTOR" "$activity" || return
     check_startup_flash_android "$ANDROID_SERIAL" "$APP_ID" "$activity" || true
     check_soak_android "$ANDROID_SERIAL" "$APP_ID" || true
-    # NOTE: physical device rotation is not automated; skipped for device cells.
     check_bgfg_android "$ANDROID_SERIAL" "$APP_ID" "$activity" || true
     check_clean_exit_android "$ANDROID_SERIAL" "$APP_ID"
 }
@@ -1982,9 +2142,9 @@ run_android_device_player() {
 
     ( cd "$APP_DIR" && run make ) || { fail_check "cold-launch" "build (server) failed"; return; }
     ensure_ged
+    SERVER_ARGS="--brokered"
     start_server
 
-    # Physical device needs the host's LAN IP (not 10.0.2.2 which is emulator-only).
     local host_ip
     host_ip=$(host_lan_ip)
     if [[ -z "$host_ip" ]]; then
@@ -1997,11 +2157,7 @@ run_android_device_player() {
     check_startup_flash_android "$ANDROID_SERIAL" "$PLAYER_ANDROID_PKG" "$PLAYER_ANDROID_ACTIVITY" \
         "--es ged_addr ${host_ip}:${GED_PORT}" || true
     check_soak_android "$ANDROID_SERIAL" "$PLAYER_ANDROID_PKG" || true
-    # NOTE: physical device rotation is not automated; skipped for device cells.
     check_bgfg_android "$ANDROID_SERIAL" "$PLAYER_ANDROID_PKG" "$PLAYER_ANDROID_ACTIVITY" || true
-    # NOTE: reconnect not tested on physical Android device — ged_addr intent extra is
-    # consumed at launch and not re-sent on server restart; player would require manual
-    # QR scan or re-launch to reconnect.
     warn_check "reconnect" "skipped on physical device (intent extra consumed at launch)"
     stop_server
     SERVER_PID=""
@@ -2009,10 +2165,6 @@ run_android_device_player() {
 }
 
 run_debug_dist() {
-    # Short smoke for debug builds: cold-launch + 10s soak + clean-exit.
-    # Desktop uses bin/$APP_NAME-debug (assertions enabled, -O0, -DDEBUG).
-    # iOS uses xcodebuild -configuration Debug (the default ge/ios target).
-    # Android uses assembleDebug (the default ge/android target).
     case "$PLATFORM" in
         desktop)
             build_desktop_debug || { fail_check "cold-launch" "debug build failed"; return; }
@@ -2051,15 +2203,12 @@ run_debug_dist() {
 }
 
 run_debug_player() {
-    # Short smoke for debug builds: cold-launch + 10s soak + clean-exit.
-    # No reconnect/bg-fg/rotation — debug cells are a lightweight sanity check.
-    # Desktop server runs bin/$APP_NAME-debug; player is the standard release player.
-    # iOS/Android player builds use the Debug configuration / assembleDebug.
     case "$PLATFORM" in
         desktop)
             build_player_desktop_debug || { fail_check "cold-launch" "debug build failed"; return; }
             DESKTOP_BIN="$APP_DIR/bin/$APP_NAME-debug"
             ensure_ged
+            SERVER_ARGS="--brokered"
             start_server
             cold_launch_player_desktop || { stop_server; DESKTOP_BIN=""; return; }
             check_soak_desktop "$LAUNCH_PID" || true
@@ -2088,6 +2237,7 @@ run_debug_player() {
             build_desktop_debug || { fail_check "cold-launch" "debug server build failed"; return; }
             DESKTOP_BIN="$APP_DIR/bin/$APP_NAME-debug"
             ensure_ged
+            SERVER_ARGS="--brokered"
             start_server
             cold_launch_ios_sim "$PLAYER_BUNDLE_ID" "$app_path" "phone" \
                 "-ged_addr localhost:$GED_PORT" || { stop_server; DESKTOP_BIN=""; return; }
@@ -2107,6 +2257,7 @@ run_debug_player() {
             build_desktop_debug || { fail_check "cold-launch" "debug server build failed"; return; }
             DESKTOP_BIN="$APP_DIR/bin/$APP_NAME-debug"
             ensure_ged
+            SERVER_ARGS="--brokered"
             start_server
             cold_launch_android_emu "$PLAYER_ANDROID_PKG" "$apk" "" "$PLAYER_ANDROID_ACTIVITY" \
                 "--es ged_addr 10.0.2.2:$GED_PORT" || { stop_server; DESKTOP_BIN=""; return; }
