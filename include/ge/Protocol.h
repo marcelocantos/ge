@@ -1,5 +1,15 @@
 #pragma once
 
+// TODO: 🎯T11.1.1 — replace hand-rolled constants and structs in this file
+// with generated bindings from protocol/ge_wire.yaml.
+// Generated outputs (DO NOT EDIT — regenerate via `make protogen`):
+//   C header:  include/ge/generated/gewire_gen.h
+//   C impl:    src/generated/gewire_gen.c
+//   Go:        protocol/gewire_gen.go
+//   Swift:     tools/ios/generated/GeWireMachine.swift
+//   Kotlin:    tools/android/generated/GeWireMachine.kt
+//   TypeScript: web/src/GeWireMachine.ts
+
 #include <SDL3/SDL_video.h>
 
 #include <bit>

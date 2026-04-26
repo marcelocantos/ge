@@ -1,0 +1,249 @@
+# ge wire protocol declaration.
+#
+# H.264 streaming protocol between the game server, ged broker daemon, and
+# player. The server renders headless via bgfx, encodes H.264 frames, and
+# streams them to the player over a ged-brokered WebSocket. The player
+# decodes frames and forwards SDL input back to the server.
+#
+# Protocol version: 6 (wire constant protocol_version).
+#
+# NOTE: ge's wire protocol is NOT a state machine — it is a simple
+# message-passing channel brokered by ged. Actors (server, player, ged) are
+# declared here only because pigeon's Validate() requires message from/to
+# fields to reference valid actor names. Each actor has a single-state
+# trivial machine (Idle → Idle) rather than a real state machine.
+#
+# The primary value of this YAML is wire_constants: — all magic numbers,
+# version constants, size limits, and sensor/orientation values — and the
+# messages: declarations that document the channel topology.
+#
+# Source of truth for C types: include/ge/Protocol.h
+# TODO: 🎯T11.1.1 — replace Protocol.h consumers with generated bindings.
+
+name: GeWire
+
+# Protocol wire constants — emitted as typed constants in Go, Swift,
+# Kotlin, TypeScript, and C for every platform that participates in the
+# ge wire protocol.
+wire_constants:
+  # Message magic numbers (ASCII "GE2x") — identify each message type.
+  # All sent as the first uint32 of a wire message header.
+  - name: magic_device_info
+    value: 0x47453244
+    type: int
+    group: message_magic
+    desc: '"GE2D" player→ged: player dimensions/class/safe area'
+  - name: magic_safe_area
+    value: 0x47453245
+    type: int
+    group: message_magic
+    desc: '"GE2E" player→server: safe area update on orientation change'
+  - name: magic_sdl_event
+    value: 0x47453249
+    type: int
+    group: message_magic
+    desc: '"GE2I" player→server: SDL input event forwarding'
+  - name: magic_session_end
+    value: 0x4745324D
+    type: int
+    group: message_magic
+    desc: '"GE2M" ged→player: server disconnected'
+  - name: magic_server_assigned
+    value: 0x4745324E
+    type: int
+    group: message_magic
+    desc: '"GE2N" ged→player: assigned server name'
+  - name: magic_session_config
+    value: 0x47453243
+    type: int
+    group: message_magic
+    desc: '"GE2C" server→player: session requirements (sensors, orientation)'
+  - name: magic_sqlpipe_msg
+    value: 0x47453254
+    type: int
+    group: message_magic
+    desc: '"GE2T" bidirectional sqlpipe messages'
+  - name: magic_video_stream
+    value: 0x47453256
+    type: int
+    group: message_magic
+    desc: '"GE2V" server→ged: H.264 NAL units'
+  - name: magic_stream_start
+    value: 0x47453257
+    type: int
+    group: message_magic
+    desc: '"GE2W" ged→player: start streaming'
+  - name: magic_stream_stop
+    value: 0x47453258
+    type: int
+    group: message_magic
+    desc: '"GE2X" ged→player: stop streaming'
+  - name: magic_aspect_lock
+    value: 0x47453260
+    type: int
+    group: message_magic
+    desc: '"GE2`" server→player: lock window aspect ratio'
+
+  # Protocol framing constants.
+  - name: protocol_version
+    value: 6
+    type: int
+    group: framing
+    desc: 'wire protocol version; bump on breaking changes'
+  - name: max_message_size
+    value: 536870912
+    type: int
+    group: framing
+    desc: 'maximum single message size in bytes (512 MiB); matches ged/bridge.go'
+
+  # Sensor bitmask flags (used in SessionConfig.sensors field).
+  - name: sensor_accelerometer
+    value: 1
+    type: int
+    group: sensors
+    desc: 'bitmask: request accelerometer data from player'
+
+  # Orientation lock constants (SDL_DisplayOrientation values).
+  # Assigned from SDL_DisplayOrientation enum; 0 = no lock.
+  - name: orientation_unknown
+    value: 0
+    type: int
+    group: orientation
+    desc: 'SDL_ORIENTATION_UNKNOWN — no orientation preference'
+  - name: orientation_landscape
+    value: 1
+    type: int
+    group: orientation
+    desc: 'SDL_ORIENTATION_LANDSCAPE'
+  - name: orientation_landscape_flipped
+    value: 2
+    type: int
+    group: orientation
+    desc: 'SDL_ORIENTATION_LANDSCAPE_FLIPPED'
+  - name: orientation_portrait
+    value: 3
+    type: int
+    group: orientation
+    desc: 'SDL_ORIENTATION_PORTRAIT'
+  - name: orientation_portrait_flipped
+    value: 4
+    type: int
+    group: orientation
+    desc: 'SDL_ORIENTATION_PORTRAIT_FLIPPED'
+
+  # Device class values (used in DeviceInfo.deviceClass field).
+  - name: device_class_unknown
+    value: 0
+    type: int
+    group: device_class
+    desc: 'device class: unknown'
+  - name: device_class_phone
+    value: 1
+    type: int
+    group: device_class
+    desc: 'device class: phone'
+  - name: device_class_tablet
+    value: 2
+    type: int
+    group: device_class
+    desc: 'device class: tablet'
+  - name: device_class_desktop
+    value: 3
+    type: int
+    group: device_class
+    desc: 'device class: desktop'
+
+# Message declarations — document the wire channel topology.
+# Struct field layouts are specified in include/ge/Protocol.h and reproduced
+# in desc fields below until 🎯T11.1.1 migrates consumers to generated bindings.
+#
+# Framing: each message is sent as MessageHeader{magic, length} followed by
+# the payload. Streamed over a ged-brokered WebSocket.
+messages:
+  device_info:
+    from: player
+    to: ged
+    desc: >-
+      Player capabilities sent after connecting.
+      Fields: magic(u32)=magic_device_info, version(u16)=protocol_version,
+      width(u16), height(u16), pixelRatio(u16), deviceClass(u8)=device_class_*,
+      orientation(u8)=orientation_*, safeX(u16), safeY(u16), safeW(u16), safeH(u16).
+  safe_area:
+    from: player
+    to: server
+    desc: >-
+      Safe area update sent on orientation change.
+      Fields: magic(u32)=magic_safe_area, safeX(u16), safeY(u16), safeW(u16), safeH(u16).
+  sdl_event:
+    from: player
+    to: server
+    desc: >-
+      SDL input event forwarded from player.
+      Fields: magic(u32)=magic_sdl_event followed by raw SDL_Event struct bytes.
+  session_end:
+    from: ged
+    to: player
+    desc: >-
+      Server disconnected; player should retry.
+      Fields: magic(u32)=magic_session_end, length(u32)=0.
+  server_assigned:
+    from: ged
+    to: player
+    desc: >-
+      Assigned server name for this player session.
+      Fields: magic(u32)=magic_server_assigned, length(u32), name(utf8).
+  session_config:
+    from: server
+    to: player
+    desc: >-
+      Session requirements sent once after setup.
+      Fields: magic(u32)=magic_session_config, sensors(u8) bitmask using sensor_*
+      constants, orientation(u8) using orientation_* constants, _pad(2 bytes).
+  sqlpipe_msg:
+    from: server
+    to: player
+    desc: >-
+      Bidirectional sqlpipe database sync message.
+      Fields: magic(u32)=magic_sqlpipe_msg, length(u32), payload(bytes).
+  video_stream:
+    from: server
+    to: ged
+    desc: >-
+      H.264 encoded NAL units for one frame.
+      Fields: magic(u32)=magic_video_stream, length(u32), nal_data(bytes).
+  stream_start:
+    from: ged
+    to: player
+    desc: >-
+      Signal to player to begin receiving H.264 frames.
+      Fields: magic(u32)=magic_stream_start, length(u32)=0.
+  stream_stop:
+    from: ged
+    to: player
+    desc: >-
+      Signal to player to stop receiving frames (server gone).
+      Fields: magic(u32)=magic_stream_stop, length(u32)=0.
+  aspect_lock:
+    from: server
+    to: player
+    desc: >-
+      Lock window aspect ratio.
+      Fields: magic(u32)=magic_aspect_lock, ratio(f32) = width/height
+      (e.g. 0.6948 for 954x1373); send 0.0 to unlock.
+
+# Actors — declared so message from/to fields validate correctly.
+# ge's protocol has no meaningful state machine; these actors exist only
+# to satisfy pigeon's schema. Each has a trivial single-state machine.
+actors:
+  server:
+    initial: Idle
+    transitions:
+      - {from: Idle, to: Idle, on: connected}
+  player:
+    initial: Idle
+    transitions:
+      - {from: Idle, to: Idle, on: connected}
+  ged:
+    initial: Idle
+    transitions:
+      - {from: Idle, to: Idle, on: connected}

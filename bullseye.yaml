@@ -1,4 +1,4 @@
-schema_version: 1
+schema_version: 3
 targets:
   T1:
     name: Game servers can run inside the player via WebAssembly
@@ -71,6 +71,22 @@ targets:
     context: Add github.com/marcelocantos/pigeon to ged's go.mod. ged lives at ge/ged/ with its own go.mod. Pigeon is at ../../marcelocantos/pigeon — use a replace directive for local dev.
     origin: decomposed from T11
     discovered: 2026-04-12
+  T11.1.1:
+    name: All Protocol.h consumers replaced with generated bindings; Protocol.h deleted
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - 'Every #include or import of Protocol.h''s hand-rolled constants in ge source files (SessionHost_brokered.mm, PlayerWireBridge.cpp, ServerWireBridge.mm, ged Go code) is replaced with the generated equivalents from protocol/ge_wire.yaml'
+    - Protocol.h itself is deleted from include/ge/
+    - The generated Go bindings are wired into ged as a proper Go package (using protogen --root-pkg=wire or equivalent)
+    - make protogen-check passes (generated files match YAML)
+    - ge/player still builds and passes smoke test
+    context: 🎯T11.1 established protocol/ge_wire.yaml as the new source of truth for the wire protocol and emitted generated bindings for Go/Swift/Kotlin/TypeScript/C. This follow-on completes the migration by replacing every hand-rolled usage of Protocol.h's constants with the generated equivalents, then deleting Protocol.h. The generated C header lives at include/ge/generated/gewire_gen.h; the Go package will need protogen --root-pkg= to emit into ged's module. Do not merge Protocol.h consumers until all platforms (C++, Go/ged, Swift, Kotlin) are wired up in a single consistent pass.
+    depends_on:
+    - T11.1
+    origin: forked from T11.1 during wire protocol YAML codegen PR
+    discovered: 2026-04-26
   T11.2:
     name: ged registers as a pigeon backend and accepts client connections
     status: identified
@@ -291,7 +307,7 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    observable: true
+    showcase: true
     actual_cost: 2.0
     acceptance:
     - 'All 6 automated matrix-test cells pass on current hardware: desktop-dist, desktop-player, ios-sim-dist, ios-sim-player, android-emu-dist, android-emu-player'
@@ -336,7 +352,7 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    observable: true
+    showcase: true
     actual_cost: 1.0
     acceptance:
     - rotation-stability-test.sh --platform ios-sim --app-id com.squz.tiltbuggy --cycles 10 reports PASS end-to-end against the iPad Air M4 simulator
@@ -351,7 +367,7 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    observable: true
+    showcase: true
     actual_cost: 5.0
     acceptance:
     - 'iPhone: dist + player smoke pass (cold launch, 60s soak, no crashes)'
@@ -369,7 +385,7 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    observable: true
+    showcase: true
     actual_cost: 5.0
     acceptance:
     - make ge/<platform>-debug (or equivalent) produces a debug binary / .app / APK distinct from the release build — assertions enabled, debug symbols retained
@@ -385,7 +401,7 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    observable: true
+    showcase: true
     actual_cost: 5.0
     acceptance:
     - Android player reads a `ged_addr` intent extra (e.g. `adb shell am start -n com.squz.player/.GeActivity --es ged_addr host:port`) and connects directly, skipping QR onboarding
@@ -412,7 +428,7 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    observable: true
+    showcase: true
     acceptance:
     - '`make cell.android-emu-phone-dist` and `make cell.android-debug-dist` both pass end-to-end on the current canonical phone AVD'
     - Failure mode (GL-context error) either fixed at the bgfx config layer or worked around with a documented AVD requirement in Module.mk
@@ -436,7 +452,7 @@ targets:
     status: converging
     value: 0.0
     cost: 0.0
-    observable: true
+    showcase: true
     acceptance:
     - '`make cell.ios-sim-tablet-player` passes the reconnect sub-check end-to-end'
     - '`make cell.android-emu-phone-player` passes the reconnect sub-check end-to-end'
@@ -449,7 +465,7 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    observable: true
+    showcase: true
     actual_cost: 3.0
     acceptance:
     - '`make cell.android-emu-phone-player` passes the startup-flash sub-check end-to-end with no false positive and no genuine flash'
@@ -471,7 +487,7 @@ targets:
     status: identified
     value: 0.0
     cost: 0.0
-    observable: true
+    showcase: true
     acceptance:
     - Per-cell soak sub-check runs for ~10s by default
     - A single dedicated long-soak cell runs the 60s sweep
@@ -498,7 +514,7 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    observable: true
+    showcase: true
     acceptance:
     - DirectRenderHost::pumpEvents routes each SDL event through synth->handle() (when synth is active) before forwarding to the user event handler; consumed events are NOT forwarded
     - DirectRenderHost drives synth->update() once per frame (beginFrame or endFrame) so the ease-back after Shift-release animates
@@ -513,7 +529,7 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    observable: true
+    showcase: true
     acceptance:
     - In a distribution build using DirectRenderHost, Shift-dragging produces a visible viewport tilt matching the player binary's visual behaviour on the same app
     - The tilt compose shader in DirectRenderHost is fed the current AccelSynth tilt each frame (same convention as PlayerRender.cpp ~line 346)
@@ -529,7 +545,7 @@ targets:
     status: converging
     value: 0.0
     cost: 0.0
-    observable: true
+    showcase: true
     acceptance:
     - On an iOS simulator running a distribution build of a tilt-driven sample app, SDL reports zero real sensors and AccelSynth activates
     - Shift+mouse-drag inside the simulator window tilts the viewport and drives sensor-driven gameplay
@@ -547,7 +563,7 @@ targets:
     status: identified
     value: 0.0
     cost: 0.0
-    observable: true
+    showcase: true
     acceptance:
     - On an Android emulator running a distribution build of a tilt-driven sample app, SDL reports zero real sensors (or emulator's virtual sensors pass a simulator-detection check) and AccelSynth activates
     - Shift+mouse-drag inside the emulator window tilts the viewport and drives sensor-driven gameplay
@@ -598,7 +614,7 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    observable: true
+    showcase: true
     acceptance:
     - SDL_ttf is vendored under ge/vendor/github.com/libsdl-org/SDL_ttf — added as a git submodule (matching the existing SDL submodule at the same parent path) pinned to release-3.2.2 (requires SDL ≥ 3.2.6; ge's SDL is 3.4.0 so compatible)
     - ge/CMakeLists.txt's Android branch (currently lines 217-234) does add_subdirectory for SDL_ttf and links SDL3_ttf::SDL3_ttf into the ge target via PUBLIC
@@ -614,7 +630,7 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    observable: true
+    showcase: true
     acceptance:
     - A FontLoader implementation exists that works on Android (and is portable to desktop Linux/Windows if/when those are added) — likely FontLoader_sdl.cpp using SDL_IOStream + SDL_ttf directly, or FontLoader_android.cpp using AAssetManager. Name and approach at author's discretion.
     - 'ge/CMakeLists.txt selects the right FontLoader source per platform (FontLoader_apple.mm on Apple, the new one everywhere else) — no #ifdef sprawl inside a single file'
@@ -631,7 +647,7 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    observable: true
+    showcase: true
     acceptance:
     - sample/tiltbuggy/android/app/src/main/cpp/CMakeLists.txt calls add_subdirectory(${GE_ROOT}) and target_link_libraries(main PRIVATE ge)
     - The inline GE_SOURCES block (currently lines 79-96) and its accompanying Apple-only comment (lines 76-78) are deleted
@@ -648,7 +664,7 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    observable: true
+    showcase: true
     acceptance:
     - 'Confirmed where Triangle code actually lands. Inventory: vendor/src/triangle.c + vendor/include/triangle.h are vendored in ge''s repo; Module.mk exposes ge/TRIANGLE_OBJ as an opt-in object (built with -DTRILIBRARY -DREAL=double -DANSI_DECLARATORS -DNO_TIMER); no ge/src/ file #includes triangle.h or calls triangulate(); ge/CMakeLists.txt does not compile triangle.c into libge; the only known consumer is yourworld/yourworld2/tools/precompute.cpp (build-time tool, not a runtime artifact)'
     - 'Confirmed exactly what the licence permits and forbids. The text in vendor/src/triangle.c grants free use for private, research, and institutional use; permits redistribution if (a) copyright notices are kept, (b) no compensation is received for redistribution, (c) modifications keep original copyright + free source/object availability; **explicitly forbids distribution as part of a commercial system without direct arrangement with Shewchuk (jrs@cs.berkeley.edu)**, with one carve-out: if you don''t supply the code directly to the customer but instead point them at a free download, no arrangement needed'
@@ -664,7 +680,7 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    observable: true
+    showcase: true
     acceptance:
     - VideoDecoder's frame callback on Android delivers NV12 planar data (Y plane + interleaved UV plane with their respective strides), not pre-converted BGRA. The hand-rolled nv12ToBgra() function and reusable frameBuffer member in src/bridge/VideoDecoder_android.cpp (and the equivalent libswscale conversion in src/bridge/VideoDecoder_ffmpeg.cpp) are deleted
     - PlayerRender uploads Y as a bgfx R8 texture (w×h) and UV as a bgfx RG8 texture (w/2 × h/2) with proper pitch handling for MediaCodec's row stride

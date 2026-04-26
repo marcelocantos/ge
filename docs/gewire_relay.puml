@@ -1,0 +1,14 @@
+@startuml relay
+!theme plain
+skinparam backgroundColor white
+skinparam state {
+  BackgroundColor #f8f8f8
+  BorderColor #888
+}
+
+title GeWire — Relay
+
+' === Cross-actor interactions ===
+
+
+@enduml

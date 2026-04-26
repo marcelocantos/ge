@@ -1,0 +1,14 @@
+@startuml transport
+!theme plain
+skinparam backgroundColor white
+skinparam state {
+  BackgroundColor #f8f8f8
+  BorderColor #888
+}
+
+title GeWire — Transport
+
+' === Cross-actor interactions ===
+
+
+@enduml
