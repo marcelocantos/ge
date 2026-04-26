@@ -575,3 +575,33 @@ VR_PIXEL_TOLERANCE=12 make update-baselines
 **Coexistence with imgdiff**: ge's `imgdiff` utility (built by `make ge/imgdiff`) performs byte-exact RMS comparison against committed reference images in `test/refs/`. The two systems complement each other: spyder diff for high-level visual regression (full-frame, device-level screenshots), imgdiff for pixel-exact comparison of specific rendered outputs. Neither replaces the other.
 
 **spyder not installed**: if `spyder` is not in `PATH`, the visual regression check emits a WARN (not a FAIL) and the cell continues. This keeps the cell runnable in environments without spyder. Install spyder and run `spyder serve` before relying on visual regression in CI.
+
+### Spyder pool (one-time setup)
+
+The matrix's iOS sim and Android emu cells pay a ~10–30 s boot cost when no pre-warmed instance exists. `tools/spyder-pool.yaml` commits pool templates for the three matrix platforms so spyder keeps ready instances around.
+
+**One-time setup** (per developer machine, requires spyder v0.17.0+):
+
+```bash
+make pool-init
+```
+
+This symlinks `tools/spyder-pool.yaml` to `~/.spyder/pool.yaml`, restarts the spyder daemon, and warms one instance per template (~30–60 s total). The symlink means any future changes to `tools/spyder-pool.yaml` take effect on the next daemon restart without re-running `pool-init`.
+
+**Drain** (optional — frees emulator resources when not in use):
+
+```bash
+make pool-drain
+```
+
+This shuts down all pool instances and removes the symlink.
+
+**Pool templates** (defined in `tools/spyder-pool.yaml`):
+
+| Template | Platform | Device | Runtime |
+|----------|----------|--------|---------|
+| `ios-phone` | iOS sim | iPhone 16 Pro | iOS 18.4 |
+| `ios-tablet` | iOS sim | iPad Air 11-inch (M4) | iOS 18.4 |
+| `android-phone` | Android emu | Pixel 9 Pro XL | android-36, google_apis_playstore |
+
+The pool is transparent to the matrix — cells acquire a device normally, and spyder's resolver prefers a warm pool instance over creating a fresh one.
