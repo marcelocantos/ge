@@ -1,4 +1,4 @@
-schema_version: 1
+schema_version: 3
 targets:
   T1:
     name: Game servers can run inside the player via WebAssembly
@@ -27,7 +27,7 @@ targets:
     discovered: 2026-04-12
   T10:
     name: ge has a sample app that exercises engine features
-    status: identified
+    status: achieved
     value: 8.0
     cost: 5.0
     acceptance:
@@ -44,103 +44,166 @@ targets:
       It also serves as the canonical integration test for the server/player architecture. Early candidate: a TiltBuggy port — tilt-controlled car with Box2D physics. References the 2013 Chipmunk prototype at ~/work/mirrors/marcelo-mbpr/work/TiltBuggy.
     origin: user request
     discovered: 2026-04-15
+    achieved: 2026-04-26
   T11:
-    name: ged uses pigeon for all networking between server, player, and daemon
+    name: ge's player↔server transport runs on pigeon (E2E-encrypted relay) instead of plain WebSocket through ged
     status: identified
     value: 13.0
     cost: 20.0
     acceptance:
-    - No WebSocket code remains in ged or ge client code (coder/websocket removed from go.mod, Asio WS framing removed from WebSocketClient.cpp)
-    - Server↔ged and player↔ged connections use pigeon streams
-    - H.264 video frames flow over pigeon (streams or datagrams)
-    - Input events flow back from player to server over pigeon
-    - Dashboard sideband (logs, preview, tweaks) works over pigeon
-    - LAN mode works without a relay when server and player are colocated
-    - Existing ge::run() API contract unchanged — apps don't need modification
-    context: Replace ged's hand-rolled WebSocket stack (coder/websocket in Go, Asio TCP+WS framing in C++) with pigeon (github.com/marcelocantos/pigeon). Pigeon provides QUIC/WebTransport relay with E2E encryption, LAN upgrade, and native SDKs for Go, Swift, and Kotlin — eliminating the need for ged to be on the same LAN, enabling mobile players to connect over the internet, and removing the custom WebSocket framing code.
+    - The player connects to the game server via pigeon's relay (Register/Connect or LAN bypass) — not via a WebSocket through ged. Wire framing is pigeon's stream + datagram protocol; payloads are ciphertext at the relay layer. ged's role is reduced to (a) issuing PairingArtifacts via pigeon.PairingHost so newly-installed players can establish first-contact with a server, and (b) the dashboard. ged is no longer on the runtime data path between server and player.
+    - All session traffic is end-to-end encrypted via pigeon's X25519 ECDH + AES-256-GCM channel. Neither ged nor the relay can read plaintext. The QR scan that today carries a server name + port now carries a pigeon PairingArtifact (base64url) — one-time-use, TTL-bound (default 30 days), persistable on the player so reconnects skip the ceremony.
+    - H.264 video frames flow over pigeon datagram channels (with pigeon's automatic fragmentation and reassembly), not the reliable stream. Keyframes optionally promoted to streams if measured packet loss makes pure-datagram delivery insufficient. Input events flow over reliable streams.
+    - Multiple players can attach to the same server via pigeon's per-instance fan-out (one Register on the server side, multiple Connects from players, each with an independent encrypted channel). Replaces ged's current per-session WebSocket multiplexing.
+    - 'LAN bypass is enabled: when player and server are on the same Wi-Fi, pigeon''s LANServer is used and the relay round-trip is skipped. Falls back to relay automatically on LAN failure or NAT crossing. Visible in logs and ideally via a player UI indicator.'
+    - ge/include/ge/Protocol.h's hand-rolled magic-number constants and MessageHeader struct are replaced by a pigeon protocol/ YAML declaration that generates Go (server-side / ged), Swift (iOS player), Kotlin (Android player), and C (mobile bgfx-direct player) bindings. No more parallel definitions of kVideoStreamMagic / kSdlEventMagic etc. across files.
+    - All WebSocket plumbing — ge/src/bridge/WebSocketClient.cpp, ge/src/bridge/PlayerWireBridge.cpp, ge/src/bridge/SessionHost_brokered.mm's WS code path, ged's gorilla/websocket dependency — is removed once every consumer (server, player, ged dashboard) has cut over.
+    - 'End-to-end test: a fresh player install scans a QR (or imports a PairingArtifact), connects to a server (via relay or LAN), receives video, sends input, disconnects, reconnects later (within TTL) without rescanning. Reproducible via ge''s matrix-cell.sh on at least one mobile platform.'
+    context: 'Rewritten 2026-04-26. The original T11 (''ged uses pigeon for all networking between server, player, and daemon'') and its sub-targets imagined pigeon as a daemon-style backend that ged would register against. Pigeon-as-it-actually-exists at v0.20.0 is structurally different: it''s an importable library across Go / Swift / Kotlin / C / TypeScript that does relay + E2E crypto + pairing + a runtime channel API as a single integrated story. Applications import pigeon as a library and call pigeon.Register / pigeon.Connect; the abstraction is at the runtime layer — point-to-point reliable streams and unreliable datagrams over E2E-encrypted, possibly-relayed QUIC. Applications speak their own wire protocols over those channels as opaque bytes; pigeon doesn''t care what the bytes are.\n\nKey shifts in pigeon''s surface that motivate the rewrite:\n- pigeon.Register() / pigeon.Connect() are application-level calls. The relay (cmd/pigeon, deployable as carrier-pigeon.fly.dev) is just QUIC bridging — it doesn''t know about ged at all. ged''s role under the new model is reduced to pairing-artifact issuance + dashboard, off the runtime data path.\n- E2E encryption is built in: X25519 ECDH + AES-256-GCM with monotonic-counter nonces. Neither relay nor any intermediary sees plaintext. Solves a security gap ge currently doesn''t address (today it relies on WebSocket TLS to a trusted ged).\n- PairingArtifact (v0.19.0) is a persistable, expirable envelope around a pairing record. Wire format is snake_case JSON / base64url text, portable across all SDKs. Player paired once can reconnect later within TTL without redoing the ceremony.\n- pigeon.PairingHost is the server-side artifact minter. The ''pigeon pair'' CLI subcommand exposes the same.\n- Reliable streams + unreliable datagrams in one channel. Datagrams have automatic fragmentation/reassembly with a 5-second discard window for incomplete sets. Video frames belong on datagrams; input events on streams.\n- LAN bypass: pigeon.Config.LANServer enables direct peer-to-peer when on the same network, falls back to relay otherwise. Saves the relay round-trip in the common ''phone+laptop'' scenario.\n- Multiple clients per instance ID. The relay maintains independent bridges per client. One server can fan out to N players without doing the multiplexing itself.\n- C library (dist/pigeon.h + libsodium + ngtcp2 transport) means iOS/Android player binaries can speak pigeon natively without a Go runtime — important for ge''s bgfx-direct mobile players that currently have no networking at all on the direct path.\n\nNote on internal pigeon machinery: pigeon implements its own protocol layer (pairing ceremony, session lifecycle, path switching) using a YAML-declared state-machine framework with a code generator (cmd/protogen). This is internal infrastructure, NOT a public codegen surface for pigeon consumers. ge''s own wire-protocol codegen needs are independent and tracked separately under 🎯T11.1, which is now tool-agnostic (protobuf / FlatBuffers / Cap''n Proto / bespoke — to be decided at implementation time).\n\nged''s role under the new model:\n- Pairing-artifact issuer: ged''s web dashboard mints a PairingArtifact via pigeon.PairingHost, presents it as a QR, and the player imports. Replaces today''s name+port QR.\n- Optional management dashboard. Today ged is on the runtime data path; under the new model it''s just the pairing/discovery service — once player and server are paired, all traffic flows directly through pigeon, ged is not needed at runtime.\n\nReadiness considerations:\n- pigeon v0.20.0 just shipped; not 1.0 eligible until 2026-06-25 minimum (settling clock reset by v0.19.0''s Swift PairingRecord JSON wire format change). PairingArtifact API is ''Needs Review'' — wants real-world consumer feedback before freezing. ge would be an ideal first consumer, with the caveat that the surface may shift slightly before 1.0.\n- pigeon''s TypeScript/web pairing-artifact parity is explicitly out of scope until web stabilises — relevant if the ge dashboard wants to embed pigeon-pairable web players. Defer that until pigeon ships it.\n- The C library is Fluid — stabilisation depends on real consumer feedback. ge mobile is again an ideal first consumer.\n\nDecomposition (sub-targets T11.1–T11.6) is rewritten to match this model.'
+    tags:
+    - pigeon
+    - transport
+    - encryption
+    - pairing
+    - wire-protocol
+    - architecture
     origin: user request
     discovered: 2026-04-12
   T11.1:
-    name: pigeon is vendored as a Go dependency in ged
+    name: ge's wire protocol has a single source of truth — magic numbers and message structs are generated for Go (ged), C / C++ (engine + Apple .mm), Kotlin / Java (Android), and Swift (iOS) instead of hand-rolled in parallel
     status: identified
     value: 3.0
     cost: 2.0
     acceptance:
-    - go.mod has pigeon dependency with replace directive pointing to local checkout
-    - go build succeeds
-    context: Add github.com/marcelocantos/pigeon to ged's go.mod. ged lives at ge/ged/ with its own go.mod. Pigeon is at ../../marcelocantos/pigeon — use a replace directive for local dev.
+    - 'A single canonical declaration of ge''s wire protocol exists in the repo — file format and tool choice are open (candidates: protobuf with `protoc`, FlatBuffers with `flatc`, Cap''n Proto, a small bespoke YAML+templated generator, or a hand-written C/C++ header authored as the source of truth and exported to other languages by tooling). The declaration covers every message currently defined in include/ge/Protocol.h: DeviceInfo, SafeAreaUpdate, AspectLock, MessageHeader, plus the eleven magic-number constants (kVideoStreamMagic, kSdlEventMagic, kSessionEndMagic, kStreamStartMagic, kStreamStopMagic, kServerAssignedMagic, kSafeAreaMagic, kAspectLockMagic, kSqlpipeMsgMagic, kDeviceInfoMagic, kProtocolVersion).'
+    - A make-rule (or equivalent) regenerates language bindings from the canonical source. ge's build wires it as a normal codegen step; CI fails if the generated outputs are out of sync with the source.
+    - 'Generated outputs land in a discoverable location per language, replacing the parallel hand-rolled equivalents: Go bindings under ged''s module (e.g. internal/wire); C / C++ headers consumed by the engine and Apple .mm files; Kotlin or Java for the Android player; Swift for the iOS player and any sample iOS apps that link the wire surface.'
+    - 'include/ge/Protocol.h is deleted (or trimmed to a thin compatibility shim that just includes the generated header). Every existing #include or import of Protocol.h''s constants and structs across ge/src/bridge/, ge/src/render/, ged''s Go code, and consumer projects (multimaze2, sample/tiltbuggy where applicable) is replaced with the generated equivalent.'
+    - 'Adding a new message becomes a one-place change: edit the canonical declaration, regenerate, the new constant + struct appears in every binding. No more searching for parallel definitions across .mm files, Go code, and Protocol.h.'
+    - The choice of codegen tool is documented (in CLAUDE.md or a dedicated docs page) along with the rationale and the wire-format compatibility commitment — once chosen and shipped, the tool and the on-the-wire byte layout are stable contract.
+    context: 'Rewritten 2026-04-26 after the original framing turned out to rest on a misreading of pigeon''s design. The original T11.1 (''declare in pigeon-protocol YAML; bindings generated via cmd/protogen'') was filed assuming pigeon''s protogen was a public codegen surface for consumers. It isn''t — protogen is internal pigeon infrastructure for generating pigeon''s own pairing/session/pathswitch state-machine code. The abstraction pigeon offers third-party users is at the runtime layer (Conn, StreamChannel, DatagramChannel for streams and datagrams); applications speak their own wire protocols over those channels as opaque bytes.\n\nge''s actual problem is real: the same eleven magic numbers and four message structs are hand-defined in parallel across include/ge/Protocol.h (C/C++), ge/src/bridge/PlayerWireBridge.cpp / SessionHost_brokered.mm / ServerWireBridge.mm (Apple platforms), ged''s Go code (server side), and any client SDKs (Android, iOS, web dashboard). Adding a new message requires edits in every place; drift is silent until something breaks at runtime.\n\nWhat T11.1 is NOT: a particular tool choice. The original framing baked ''pigeon protogen'' into the target name, which forced the wrong shape on the work. The rewrite leaves the codegen-tool choice open. Reasonable candidates worth considering during implementation:\n\n- Protocol Buffers (protoc): mature, multi-language, well-documented wire format, tooling on every platform. Adds a dependency but a well-understood one.\n- FlatBuffers: zero-copy reads, smaller runtime, similar codegen story. Used in some game engines.\n- Cap''n Proto: similar tradeoffs to FlatBuffers, less common.\n- Bespoke YAML + small generator script: minimal external dep, full control over wire format. Most work to maintain but can match ge''s existing on-the-wire byte layout exactly (8-byte sequence number, 16-byte AES-GCM tag etc. in MessageHeader).\n- Hand-written C/C++ header as source of truth + small extractor scripts to emit Swift / Kotlin / Go from it. Closest to the status quo; cheapest to bootstrap.\n\nTradeoff to be settled at implementation time:\n- Do we change ge''s on-the-wire byte layout to match whatever the codegen tool produces, or keep the current layout exactly and shape the tool around it? Latter is more work but keeps the wire format stable for any external consumer that''s already speaking it.\n\nRelation to 🎯T11 parent: T11 is the migration of ge''s transport from WebSocket to pigeon. T11.1 (this) is the source-of-truth-for-message-shape work. They''re related but independent in tooling — T11.1 doesn''t require T11, and T11 doesn''t require T11.1. If T11.1 happens first, T11 picks up the cleaner Protocol bindings as a bonus; if T11 happens first, T11.1 still has the same parallel-definitions problem to solve.\n\nNote: ge PR #45 (now closed) made a partial start on this with pigeon-protogen YAML and committed the codegen outputs. The closure removes those artefacts; this target starts fresh with no commitment to which tool replaces them.'
+    depends_on:
+    - T11
+    tags:
+    - wire-protocol
+    - codegen
+    - protocol-h
+    - single-source-of-truth
     origin: decomposed from T11
     discovered: 2026-04-12
   T11.2:
-    name: ged registers as a pigeon backend and accepts client connections
+    name: First-contact between player and server uses pigeon's PairingArtifact (QR scan delivers the artifact; player persists it for reconnect)
     status: identified
     value: 8.0
     cost: 5.0
     acceptance:
-    - ged starts a pigeon LANServer and logs its instance ID
-    - A pigeon client can connect to ged's instance ID
-    - ged distinguishes game vs player connections via initial message
-    context: ged calls pigeon.Register() on startup (LAN mode, no relay). Games and players connect via pigeon.Connect(). ged accepts connections and identifies them as game or player based on the initial handshake message. This replaces the WebSocket Accept on /ws/server and /ws/wire. The HTTP server (dashboard, REST API, MCP) stays on the existing port unchanged.
+    - ged's web dashboard mints a PairingArtifact via pigeon.PairingHost.Mint() for each newly-launched server (server-side PairingRecord stored in ged's state). The QR code displayed by the dashboard now encodes the artifact (base64url text, ~few hundred bytes), not a name+port pair.
+    - Player on first launch scans the QR, parses the PairingArtifact, calls pigeon.ConnectWithArtifact(), and is now in an E2E-encrypted session with the server.
+    - Player persists the PairingArtifact via pigeon's CredentialStore (FileCredentialStore on desktop; platform-appropriate equivalent on iOS Keychain / Android Keystore on mobile). On subsequent launches, the player loads the stored artifact and reconnects without re-scanning — unless the artifact is expired (default 30-day TTL) or the user explicitly re-pairs.
+    - Player surfaces the 6-digit confirmation code from pigeon's pairing ceremony during first-contact (and only first-contact). User compares it visually to the code shown by the dashboard and confirms or rejects. MitM attempts are caught by code mismatch.
+    - Server-side PairingRecord storage in ged survives ged restarts — paired players continue to reconnect after the daemon process bounces.
+    context: 'Replaces the previous T11.2 (''ged registers as a pigeon backend and accepts client connections''). ged isn''t a pigeon backend; pigeon backends are individual servers. ged''s role under the new model is pairing-artifact issuer, not relay endpoint.\n\nBenefits over the current ''QR carries name+port'' model:\n- Persistent across reconnects: today the player has to re-scan a QR (or rely on cached config) every time the server restarts. PairingArtifact + CredentialStore makes re-pair a one-time event.\n- MitM resistance: today a malicious actor on the same network could MitM the WebSocket. The 6-digit confirmation code rules this out.\n- Cross-platform pairing wire format: snake_case JSON / base64url text matches Go/Swift/Kotlin SDKs, so an artifact minted on the server can be read by any player.\n\nNotably, this target is technically achievable BEFORE the rest of T11 — the artifact-driven pairing can be deployed under today''s WebSocket transport as a first step (use the artifact''s pairing record to derive a key for WS-payload encryption), then the underlying transport gets swapped to pigeon in T11.3+. Allows incremental cutover instead of a big bang.'
     depends_on:
-    - T11.1
+    - T11
+    tags:
+    - pigeon
+    - pairing
+    - PairingArtifact
+    - qr
+    - e2e-crypto
     origin: decomposed from T11
     discovered: 2026-04-12
   T11.3:
-    name: Game server sideband uses pigeon channel instead of WebSocket
+    name: 'Server↔player runtime traffic flows over pigeon channels: video on datagrams, input/control on reliable streams'
     status: identified
     value: 5.0
     cost: 5.0
     acceptance:
-    - Game server connects to ged via pigeon and opens a sideband channel
-    - JSON control messages flow over the pigeon channel
-    - No /ws/server WebSocket endpoint remains
-    context: 'Replace the game server''s /ws/server WebSocket connection with a pigeon channel. The sideband carries JSON control messages: hello, log, preview, accel, tweaks, player_attached, player_detached. Game connects to ged via pigeon.Connect(), opens a sideband channel. ged side: replace handleServerSideband WebSocket handler with pigeon channel accept. C++ side: replace WebSocketClient.cpp Asio+TCP WS framing with pigeon (needs a C/C++ wrapper or cgo bridge).'
+    - The H.264 NAL-unit stream from server to player rides on a pigeon DatagramChannel. Pigeon's automatic fragmentation handles NAL units larger than the QUIC datagram MTU; the 5-second incomplete-set discard window is acceptable because lost frames are recoverable via the next keyframe.
+    - Input events (SdlEvent, SafeAreaUpdate) from player to server ride on a pigeon reliable StreamChannel. Loss of an input event is unacceptable; reliable framing matches.
+    - Control messages (SessionConfig, StreamStart/Stop, ServerAssigned, SessionEnd, AspectLock) ride on a separate reliable StreamChannel. Control isolation prevents head-of-line blocking from queued video frames or input bursts.
+    - Each channel uses an independently-keyed pigeon Channel (HKDF-derived from the pairing record's shared secret with channel-specific info strings). Different channels can't decrypt each other's messages even if a shared key were leaked.
+    - Measured throughput meets or exceeds today's WebSocket-based path on a controlled local network. End-to-end frame latency is comparable; tail latency improves under packet loss because video doesn't wait for retransmits.
+    context: 'Replaces the previous T11.3 + T11.4 (''Game server sideband uses pigeon channel instead of WebSocket'' + ''Per-session wire uses pigeon channel instead of WebSocket''). The old framing assumed two parallel WebSocket-equivalent channels; pigeon''s reliable+unreliable model is a better fit and lets us split video off the reliable path entirely.\n\nMaps directly onto pigeon''s channel API: OpenChannel() for reliable, DatagramChannel() for unreliable. Each channel gets its own keys via PairingRecord.DeriveChannel(sendInfo, recvInfo).\n\nThe video-on-datagrams decision is the headline win: today''s WebSocket path waits for retransmits even on lost video frames, which is wasted because we''re going to send another frame imminently anyway. Datagrams let dropped video frames just fall through, while keyframes act as natural resync points.\n\nLow-priority follow-up worth noting: if measurement shows datagrams alone are insufficient under high loss (say, >5% sustained), the design can fall back to streaming keyframes specifically, rather than abandoning the datagram path. Don''t optimise for that until we measure it.'
     depends_on:
+    - T11.1
     - T11.2
+    tags:
+    - pigeon
+    - transport
+    - datagram
+    - video
+    - channel
     origin: decomposed from T11
     discovered: 2026-04-12
   T11.4:
-    name: Per-session wire uses pigeon channel instead of WebSocket
+    name: LAN-co-located peers bypass the relay via pigeon's LAN server; falls back automatically when the network changes
     status: identified
     value: 8.0
     cost: 5.0
     acceptance:
-    - H.264 frames flow over pigeon channel from game to ged
-    - Input events flow over pigeon channel from ged to game
-    - No /ws/server/wire/{sessionID} endpoint remains
-    context: Replace /ws/server/wire/{sessionID} with a pigeon channel per session. When ged tells a game server "player attached", the game opens a new pigeon channel for that session's wire traffic (H.264 frames server→ged, input events ged→server). ged bridges this to the player's pigeon channel.
+    - When player and server detect they're on the same Wi-Fi (or wired LAN), pigeon's LAN bypass kicks in via pigeon.Config.LANServer + LAN-IP discovery. Traffic goes peer-to-peer over QUIC, the relay sees only the initial introduction handshake.
+    - 'Player surfaces the connection mode in its UI (or at least logs it): ''connected via LAN'' vs ''connected via relay''. Useful for debugging and for users to understand performance characteristics.'
+    - When the LAN connection drops (peer leaves the network, Wi-Fi switches, etc.), pigeon's automatic FallbackToRelay() restores connectivity over the relay without dropping the session. Visible in logs; not user-visible if seamless.
+    - Latency on LAN is measurably lower than via the relay (relay adds the round-trip to carrier-pigeon.fly.dev). Confirm with a basic measurement on at least one platform.
+    - The transition relay→LAN→relay survives an active video stream without visible glitches — pigeon handles the underlying reconnect transparently to ge's application layer.
+    context: 'Net-new sub-target. The original T11 family didn''t have LAN-bypass; pigeon''s LAN-server feature only landed later. Highly relevant to ge''s most-common use case: phone-as-player + laptop-as-server on the same Wi-Fi at home or in a meeting room.\n\nThe relay round-trip to carrier-pigeon.fly.dev (presumably us-west or similar) adds 50–200 ms depending on the user''s location. Eliminating it for the LAN-co-located case is a meaningful UX improvement, especially for input latency in interactive games.\n\nTechnically pigeon does most of the work; ge''s job is mostly to enable LAN mode in pigeon.Config and to surface the resulting state in the player UI / logs.'
     depends_on:
     - T11.3
+    tags:
+    - pigeon
+    - lan
+    - latency
+    - transport
     origin: decomposed from T11
     discovered: 2026-04-12
   T11.5:
-    name: Player connects to ged via pigeon instead of WebSocket
+    name: Mobile players (bgfx-direct iOS + Android distribution builds) speak pigeon natively via the C library, with no Go runtime
     status: identified
     value: 8.0
     cost: 5.0
     acceptance:
-    - Desktop player connects to ged via pigeon
-    - H.264 frames arrive at player over pigeon
-    - Input events flow from player to ged over pigeon
-    - No /ws/wire WebSocket endpoint remains
-    context: Replace /ws/wire player WebSocket with pigeon. Player connects via pigeon's C API (pigeon_connect), sends DeviceInfo, receives H.264 stream, sends input events back. Desktop player (tools/player.cpp) links libpigeon. ged bridges the player's pigeon channel to the game's wire channel. Same C API available for game server side (SessionHost.mm), eliminating WebSocketClient.cpp entirely.
+    - The bgfx-direct iOS and Android distribution players link pigeon's C library (dist/pigeon.h + dist/pigeon.c) plus libsodium and ngtcp2 (vendored as submodules under ge/vendor/github.com/<org>/, per CLAUDE.md). No Go runtime is shipped to the device.
+    - 'The mobile player can connect to a server via a stored PairingArtifact and run a session end-to-end: receive video, send input, decode, render. Functional parity with the desktop player on the same server.'
+    - Pigeon's C library generates the same wire-protocol bindings (T11.1) and the same pairing-ceremony state machine (T11.2) that the Swift/Kotlin/Go SDKs use, via pigeon's protocol/ codegen. No hand-translated state machines on the C side.
+    - ge/CMakeLists.txt's Android branch and the iOS xcframework story include pigeon's C library + libsodium + ngtcp2 as transitive deps of `ge`. Consumer apps still consume ge via add_subdirectory(ge) (T30 principle) — pigeon is one more thing they get for free.
+    - 'Apk / ipa size impact is acceptable: libsodium (~200KB), ngtcp2 (~500KB), pigeon (~100KB), generated state machines (~50KB) — about 1MB additional vs the current direct-mode build. Confirm with a measurement; reject the design if it''s more than ~3MB.'
+    context: 'Net-new sub-target. The original T11 family assumed the player would always have access to a Go runtime (via gomobile or similar). The pigeon C library makes it possible to ship a fully-native mobile player with no Go.\n\nWhy this matters for ge:\n- Today''s bgfx-direct mobile players (sample/tiltbuggy/android, sample/tiltbuggy/ios) have NO networking. They render locally only. There''s currently no path to add multiplayer / streaming to a direct-mode mobile build without either (a) shipping a Go runtime via gomobile (~10MB+) or (b) writing a custom networking layer per platform.\n- pigeon''s C library is the missing piece that lets ge''s direct-mode mobile builds participate in a pigeon session as a client. Server-side pigeon would still be Go (where the H.264 encoder lives anyway), but the player is C — small footprint, no GC pauses, no cross-language FFI.\n- The C library is currently ''Fluid'' per pigeon''s STABILITY.md — stabilisation depends on real consumer feedback. ge mobile would be an ideal first consumer and would help drive pigeon''s C surface to stable.\n\nTransport stack on the C side: ngtcp2 for QUIC, libsodium for crypto primitives, pigeon''s C glue on top. Both deps are vendored per CLAUDE.md (substantial libraries get git submodules under vendor/github.com/<org>/<repo>).'
     depends_on:
-    - T11.4
+    - T11.1
+    - T11.2
+    - T11.3
+    tags:
+    - pigeon
+    - c-library
+    - ios
+    - android
+    - direct-mode
+    - mobile
     origin: decomposed from T11
     discovered: 2026-04-12
   T11.6:
-    name: WebSocket code removed from ged and ge client
+    name: All WebSocket plumbing is removed from ge and ged once every consumer has cut over to pigeon
     status: identified
     value: 3.0
     cost: 3.0
     acceptance:
-    - coder/websocket removed from go.mod
-    - WebSocketClient.cpp deleted or gutted
-    - No /ws/server or /ws/wire routes in ged
-    - Dashboard /ws/logs, /ws/preview, /ws/stream still work
-    context: 'Final cleanup: remove coder/websocket from go.mod, remove WebSocketClient.cpp and Asio WS framing, remove all /ws/* route registrations (except dashboard WS endpoints which stay as-is). Dashboard WebSocket endpoints (/ws/logs, /ws/preview, /ws/stream) remain — they serve the browser and don''t need pigeon.'
+    - ge/src/bridge/WebSocketClient.cpp and the matching WebSocketClient.h are deleted. No remaining call sites in ge.
+    - PlayerWireBridge.cpp's WebSocket-specific code paths are deleted (the class itself may still exist as a thin wrapper around pigeon, or be replaced entirely — author's discretion).
+    - SessionHost_brokered.mm's WebSocket code path is replaced by pigeon channel calls. The class either retains its name as a pigeon wrapper or is renamed; either is fine.
+    - ged's gorilla/websocket dependency is removed from go.mod. The dashboard's WS endpoints (/ws/wire) are deleted; the dashboard still exists as the pairing-artifact issuer + management UI, just without WebSocket plumbing.
+    - The 'Wire format' / 'Steady-State Messages' section in ge/CLAUDE.md is rewritten to document the pigeon-channel layout instead of WebSocket framing. The per-message magic-number table is replaced by a pointer to the protocol YAML.
+    - ge/vendor/include/ws.h (and any WebSocket-specific transitive deps) are removed from vendor/ if not used elsewhere.
+    context: 'Carryover from the original T11.6 — same intent, slightly broader scope. The cleanup target. Lands AFTER all the cut-over targets (T11.2 through T11.5) so that no consumer is left needing the WebSocket path.\n\nIntentionally last in the chain so the migration can be incremental: each prior sub-target can land independently with WebSocket fallback still available, and only when every consumer is on pigeon does the WebSocket code go.\n\nAlso drives the CLAUDE.md documentation refresh — today''s wire-protocol section is one of the larger blocks and is heavily WebSocket-shaped. Once removed, the new pigeon-shaped doc should be considerably shorter (most of the framing detail moves into pigeon''s STABILITY.md by reference).'
     depends_on:
+    - T11.3
+    - T11.4
     - T11.5
+    tags:
+    - pigeon
+    - websocket-removal
+    - cleanup
+    - documentation
     origin: decomposed from T11
     discovered: 2026-04-12
   T12:
@@ -187,7 +250,7 @@ targets:
     achieved: 2026-04-19
   T14:
     name: Render subsystem visibly tilts the viewport in response to synthesised accelerometer input
-    status: identified
+    status: achieved
     value: 3.0
     cost: 3.0
     acceptance:
@@ -210,6 +273,7 @@ targets:
     - T12
     origin: user suggestion during tiltbuggy architecture validation
     discovered: 2026-04-16
+    achieved: 2026-04-26
   T15:
     name: Player binary restructured around named PlayerWireBridge + PlayerRender classes
     status: achieved
@@ -291,7 +355,7 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    observable: true
+    showcase: true
     actual_cost: 2.0
     acceptance:
     - 'All 6 automated matrix-test cells pass on current hardware: desktop-dist, desktop-player, ios-sim-dist, ios-sim-player, android-emu-dist, android-emu-player'
@@ -336,7 +400,7 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    observable: true
+    showcase: true
     actual_cost: 1.0
     acceptance:
     - rotation-stability-test.sh --platform ios-sim --app-id com.squz.tiltbuggy --cycles 10 reports PASS end-to-end against the iPad Air M4 simulator
@@ -351,7 +415,7 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    observable: true
+    showcase: true
     actual_cost: 5.0
     acceptance:
     - 'iPhone: dist + player smoke pass (cold launch, 60s soak, no crashes)'
@@ -369,7 +433,7 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    observable: true
+    showcase: true
     actual_cost: 5.0
     acceptance:
     - make ge/<platform>-debug (or equivalent) produces a debug binary / .app / APK distinct from the release build — assertions enabled, debug symbols retained
@@ -385,7 +449,7 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    observable: true
+    showcase: true
     actual_cost: 5.0
     acceptance:
     - Android player reads a `ged_addr` intent extra (e.g. `adb shell am start -n com.squz.player/.GeActivity --es ged_addr host:port`) and connects directly, skipping QR onboarding
@@ -412,7 +476,7 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    observable: true
+    showcase: true
     acceptance:
     - '`make cell.android-emu-phone-dist` and `make cell.android-debug-dist` both pass end-to-end on the current canonical phone AVD'
     - Failure mode (GL-context error) either fixed at the bgfx config layer or worked around with a documented AVD requirement in Module.mk
@@ -436,7 +500,7 @@ targets:
     status: converging
     value: 0.0
     cost: 0.0
-    observable: true
+    showcase: true
     acceptance:
     - '`make cell.ios-sim-tablet-player` passes the reconnect sub-check end-to-end'
     - '`make cell.android-emu-phone-player` passes the reconnect sub-check end-to-end'
@@ -449,7 +513,7 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    observable: true
+    showcase: true
     actual_cost: 3.0
     acceptance:
     - '`make cell.android-emu-phone-player` passes the startup-flash sub-check end-to-end with no false positive and no genuine flash'
@@ -471,7 +535,7 @@ targets:
     status: identified
     value: 0.0
     cost: 0.0
-    observable: true
+    showcase: true
     acceptance:
     - Per-cell soak sub-check runs for ~10s by default
     - A single dedicated long-soak cell runs the 60s sweep
@@ -498,7 +562,7 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    observable: true
+    showcase: true
     acceptance:
     - DirectRenderHost::pumpEvents routes each SDL event through synth->handle() (when synth is active) before forwarding to the user event handler; consumed events are NOT forwarded
     - DirectRenderHost drives synth->update() once per frame (beginFrame or endFrame) so the ease-back after Shift-release animates
@@ -513,7 +577,7 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    observable: true
+    showcase: true
     acceptance:
     - In a distribution build using DirectRenderHost, Shift-dragging produces a visible viewport tilt matching the player binary's visual behaviour on the same app
     - The tilt compose shader in DirectRenderHost is fed the current AccelSynth tilt each frame (same convention as PlayerRender.cpp ~line 346)
@@ -529,7 +593,7 @@ targets:
     status: converging
     value: 0.0
     cost: 0.0
-    observable: true
+    showcase: true
     acceptance:
     - On an iOS simulator running a distribution build of a tilt-driven sample app, SDL reports zero real sensors and AccelSynth activates
     - Shift+mouse-drag inside the simulator window tilts the viewport and drives sensor-driven gameplay
@@ -547,7 +611,7 @@ targets:
     status: identified
     value: 0.0
     cost: 0.0
-    observable: true
+    showcase: true
     acceptance:
     - On an Android emulator running a distribution build of a tilt-driven sample app, SDL reports zero real sensors (or emulator's virtual sensors pass a simulator-detection check) and AccelSynth activates
     - Shift+mouse-drag inside the emulator window tilts the viewport and drives sensor-driven gameplay
@@ -560,7 +624,7 @@ targets:
     discovered: 2026-04-19
   T29:
     name: smoke-test.sh default bundle ID is updated to com.squz.tiltbuggy
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -569,6 +633,7 @@ targets:
     context: smoke-test.sh hardcodes default bundle ID as com.squz.yourworld2 (line 47). Running it against tiltbuggy without --bundle-id causes launch to fail with the wrong app ID. Discovered while verifying T28.3.
     origin: discovered while working on T28.3
     discovered: 2026-04-19
+    achieved: 2026-04-26
   T3:
     name: Player sends mip cache manifest before rendering begins
     status: identified
@@ -581,7 +646,7 @@ targets:
     discovered: 2026-04-12
   T30:
     name: ge has a single integration path on every platform — consumers do add_subdirectory(ge) and get everything
-    status: achieved
+    status: identified
     value: 0.0
     cost: 0.0
     acceptance:
@@ -592,13 +657,12 @@ targets:
     context: 'Discovered 2026-04-19 while investigating Android tilt testing. ge currently has two Android integration paths: (a) add_subdirectory(ge) + link ge — the documented path, used by multimaze2, broken because ge''s Android CMakeLists branch doesn''t link SDL3_ttf and Text.cpp''s FontLoader dependency is Apple-only; (b) hand-picked GE_SOURCES list — used by sample/tiltbuggy/android, works by explicitly omitting Text.cpp and FontLoader_apple.mm (see sample/tiltbuggy/android/app/src/main/cpp/CMakeLists.txt:76-78). Having two paths is the bug — consumers have to reason about which subset of ge is safe on which platform, and bit-rot is inevitable (multimaze2''s Android CMakeLists already omits Text.cpp quietly). Principle: one path, everyone gets everything. Decomposes into T30.1 (SDL3_ttf + deps for Android), T30.2 (FontLoader_android implementation so Text.cpp compiles cross-platform), T30.3 (migrate sample/tiltbuggy Android to add_subdirectory(ge)), and a CLAUDE.md doc update baked into acceptance.'
     origin: 'forked-from: 🎯T28.4 / Android tilt-testing investigation 2026-04-19'
     discovered: 2026-04-19
-    achieved: 2026-04-21
   T30.1:
     name: ge's Android build links SDL3_ttf + freetype/harfbuzz/plutosvg/plutovg
     status: achieved
     value: 0.0
     cost: 0.0
-    observable: true
+    showcase: true
     acceptance:
     - SDL_ttf is vendored under ge/vendor/github.com/libsdl-org/SDL_ttf — added as a git submodule (matching the existing SDL submodule at the same parent path) pinned to release-3.2.2 (requires SDL ≥ 3.2.6; ge's SDL is 3.4.0 so compatible)
     - ge/CMakeLists.txt's Android branch (currently lines 217-234) does add_subdirectory for SDL_ttf and links SDL3_ttf::SDL3_ttf into the ge target via PUBLIC
@@ -614,7 +678,7 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    observable: true
+    showcase: true
     acceptance:
     - A FontLoader implementation exists that works on Android (and is portable to desktop Linux/Windows if/when those are added) — likely FontLoader_sdl.cpp using SDL_IOStream + SDL_ttf directly, or FontLoader_android.cpp using AAssetManager. Name and approach at author's discretion.
     - 'ge/CMakeLists.txt selects the right FontLoader source per platform (FontLoader_apple.mm on Apple, the new one everywhere else) — no #ifdef sprawl inside a single file'
@@ -628,10 +692,10 @@ targets:
     achieved: 2026-04-20
   T30.3:
     name: sample/tiltbuggy Android build consumes ge via add_subdirectory(ge), not a hand-picked source list
-    status: achieved
+    status: identified
     value: 0.0
     cost: 0.0
-    observable: true
+    showcase: true
     acceptance:
     - sample/tiltbuggy/android/app/src/main/cpp/CMakeLists.txt calls add_subdirectory(${GE_ROOT}) and target_link_libraries(main PRIVATE ge)
     - The inline GE_SOURCES block (currently lines 79-96) and its accompanying Apple-only comment (lines 76-78) are deleted
@@ -642,13 +706,12 @@ targets:
     - T30.2
     origin: 'forked-from: T30 on 2026-04-19'
     discovered: 2026-04-19
-    achieved: 2026-04-21
   T31:
     name: Triangle's non-commercial licence is investigated and either removed, replaced, or formally cleared
     status: achieved
     value: 0.0
     cost: 0.0
-    observable: true
+    showcase: true
     acceptance:
     - 'Confirmed where Triangle code actually lands. Inventory: vendor/src/triangle.c + vendor/include/triangle.h are vendored in ge''s repo; Module.mk exposes ge/TRIANGLE_OBJ as an opt-in object (built with -DTRILIBRARY -DREAL=double -DANSI_DECLARATORS -DNO_TIMER); no ge/src/ file #includes triangle.h or calls triangulate(); ge/CMakeLists.txt does not compile triangle.c into libge; the only known consumer is yourworld/yourworld2/tools/precompute.cpp (build-time tool, not a runtime artifact)'
     - 'Confirmed exactly what the licence permits and forbids. The text in vendor/src/triangle.c grants free use for private, research, and institutional use; permits redistribution if (a) copyright notices are kept, (b) no compensation is received for redistribution, (c) modifications keep original copyright + free source/object availability; **explicitly forbids distribution as part of a commercial system without direct arrangement with Shewchuk (jrs@cs.berkeley.edu)**, with one carve-out: if you don''t supply the code directly to the customer but instead point them at a free download, no arrangement needed'
@@ -664,7 +727,7 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    observable: true
+    showcase: true
     acceptance:
     - VideoDecoder's frame callback on Android delivers NV12 planar data (Y plane + interleaved UV plane with their respective strides), not pre-converted BGRA. The hand-rolled nv12ToBgra() function and reusable frameBuffer member in src/bridge/VideoDecoder_android.cpp (and the equivalent libswscale conversion in src/bridge/VideoDecoder_ffmpeg.cpp) are deleted
     - PlayerRender uploads Y as a bgfx R8 texture (w×h) and UV as a bgfx RG8 texture (w/2 × h/2) with proper pitch handling for MediaCodec's row stride
@@ -675,9 +738,179 @@ targets:
     origin: 'forked-from: \ud83c\udfafT31 / FFmpeg-vs-MediaCodec discussion 2026-04-19'
     discovered: 2026-04-20
     achieved: 2026-04-20
+  T33:
+    name: ge's mobile test infrastructure runs on spyder CLI — exit-code-driven, reservation-safe, with device-state post-run validation
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - 'ge/tools/smoke-test.sh and ge/tools/matrix-cell.sh shell out to `spyder` for every device-touching operation: device discovery, install, launch, terminate, screenshot, log retrieval, crash retrieval, reservation acquire/release. No direct calls to `xcrun simctl`, `xcrun devicectl`, `pymobiledevice3`, `idevice_id`, `adb`, or platform-branched equivalents remain in those scripts.'
+    - Cells use `spyder run --device <alias> --as <cell-id>` to acquire a reservation under their own owner identity (e.g. owner=ios-sim-tablet-dist), perform work, release on exit, and forward exit codes. Parallel cells targeting different devices proceed concurrently; cells racing for the same device receive exit code 13 (reservation-conflict) and either back off with retry or fail loudly per the cell's policy.
+    - 'Scripts branch on spyder''s exit-code taxonomy (cliexit constants) instead of grepping prose: 10 daemon-unreachable → fail loudly with setup-instructions; 11 device-not-found → emit the alias spyder didn''t recognise; 12 device-not-connected → distinguishable from 11 in the report; 30 timeout → cell-level retry budget; 40/41/42 (trust/developer-mode/locked) → human-gate prompt. The `set -e` + `case $? in` pattern replaces the current ad hoc grep-stderr.'
+    - 'Visual regression: matrix cells that produce a renderable frame call `spyder screenshot <device>` (returns just a file path on stdout, script-friendly), feed it into `spyder diff --suite=<cell-id> --case=<scenario>` for SSIM/pixel comparison against committed baselines. Baseline updates land via `spyder baseline_update` invoked from a separate `make update-baselines` rule, reviewed in PR like any other diff.'
+    - Soak-style cells (matrix-cell-long-soak, the 🎯T25 reconnect sub-check, 🎯T28.4 Android AccelSynth) call `spyder device_power_state <device>` immediately before exit. If the device's screen has fallen asleep mid-soak (autoawake faltered, KeepAwake crashed, profile expired), the cell reports it explicitly rather than silently passing or failing for the wrong reason.
+    - Pre-warmed sim/emu pool reduces per-cell startup time. ~/.spyder/pool.yaml is checked into ge's repo (or generated from a ge-controlled template) so contributors get the same pool layout. matrix-cell.sh prefers `spyder reserve --on platform=ios-sim,...` over creating new sims per run; the pool maintains warm instances of the matrix's standard targets. Per-cell startup time drops by the sim/emu boot cost (~10–30 s on a cold sim).
+    - make check completes faster than the current ~8 minute target (🎯T27). Concrete number to be measured during the migration; expect at least 30% improvement from pool warming alone, more if reservation-based cell parallelism can be raised beyond the current per-platform cap.
+    - 'Documentation: ge/CLAUDE.md''s `## Mobile smoke testing` section is rewritten to describe the spyder-CLI-based workflow. The ''Always exhaust programmatic checks first'' directive becomes more concrete because spyder''s exit codes give scripts more diagnostic signal before falling back to user prompts.'
+    context: 'Filed 2026-04-26 after spyder v0.17.0 landed the CLI overhaul (🎯T37 in spyder, decomposed across T37.1–T37.7 in v0.16.0). The CLI surface that landed there is the precondition that turns ''spyder is useful for ge testing'' from speculation into a concrete migration.\n\nKey spyder v0.16.0 features that unlock this:\n- 17-code exit taxonomy (cliexit package) — distinct codes for daemon-unreachable, device-not-found, device-not-connected, reservation-conflict, not-reserved-by-you, app-not-installed, install/launch/terminate/PID-verify failures, timeout, trust-not-granted, developer-mode-disabled, device-locked. Means scripts can branch deterministically on $? without parsing prose.\n- Universal --timeout DURATION on every subcommand with sensible defaults (10s reads, 60s launch ops, 5m install, 10m deploy, 30s screenshot/reserve, 60s record, 0 for log --follow).\n- spyder reserve --on PREDICATE selectors (parse_string in internal/selector) parsing the same key=value grammar as the MCP reserve tool: platform=ios,os>=17,tags=phone+test,attr.serial=ABC.\n- spyder run --device --as -- <cmd> wraps a child command in an auto-acquired reservation, opportunistically renews during long runs, releases on exit, forwards exit code. Owner defaults to filepath.Base(cwd). Replaces hand-rolled reserve/release-in-trap patterns.\n- spyder screenshot prints just the file path on stdout (script-friendly OUT=$(spyder screenshot Pippa)); human-readable size+mime on stderr behind -v.\n- spyder diff and spyder baseline now reachable (were defined but unregistered pre-v0.16.0).\n- Hermeticity: TestCLIHermeticity verifies postTool doesn''t write to ~/.spyder/. Scripts can rely on spyder not littering state.\n\nv0.17.0 added device_power_state (🎯T29) — the mechanical signal for ''is the device''s display on/off/asleep'' via DVT Screenshot probe (which doesn''t itself reset the idle timer, ruling out the ioregistry false-positive trap). Returns awake|display_off|asleep|unknown. Lets soak-style cells distinguish ''completed normally with screen on'' from ''autoawake faltered, screen went off, results invalid''.\n\nv0.17.0 also fixed brewservices-supervised tunneld loopback hiccups (🎯T36) and stale-install recovery on Code=1002 (🎯T34) — the kind of fragility that would have plagued ge''s matrix runs without these fixes.\n\nWhat this target does NOT include (deferred / out of scope):\n- Network shaping for iOS sim / physical devices (still Android emu only in spyder; Apple Link Conditioner is host-level not per-sim).\n- Screen recording on iOS physical devices (pmd3/devicectl don''t expose a clean CLI path).\n- Replacing ge''s existing imgdiff binary — spyder''s diff uses SSIM and an unimplemented VLM interface; ge''s pixel-RMS imgdiff might still be the right tool for some cells. Use both side-by-side.\n- Wholesale removal of platform-specific tooling from ge: certain things (e.g. xcodebuild for iOS app builds, gradle for Android APKs) stay where they are. spyder is for runtime device interaction, not build orchestration.\n\nDecomposition follows in T33.1–T33.5.'
+    tags:
+    - spyder
+    - testing
+    - cli
+    - matrix
+    - automation
+    origin: manual
+    discovered: 2026-04-26
+  T33.1:
+    name: smoke-test.sh shells out to spyder CLI for device discovery, install, launch, log/crash retrieval — no direct platform tooling
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - ge/tools/smoke-test.sh's --platform branches (ios-sim, ios-device, android-emu, android-device, desktop) collapse into a unified flow that calls `spyder devices --json` for discovery and `spyder` subcommands for everything device-side. The --device flag's per-platform meaning (form-factor for ios-sim, name/UDID for ios-device, serial/model substring for android) is replaced by spyder's selector grammar passed via --on.
+    - Direct calls to xcrun simctl, xcrun devicectl, pymobiledevice3, idevice_id, and adb are removed from smoke-test.sh. The only platform-specific shells that remain are for the build steps (xcodebuild, gradle) — runtime device interaction goes through spyder.
+    - Each check (ged reachable, game-server running, device reachable, app deployed and running, player connected, player logs) is implemented as a function that returns a spyder exit code or an internal sentinel; the script's PASS/FAIL/WARN summary keys off those codes deterministically.
+    - smoke-test.sh's --install <path> flag becomes `spyder deploy_app --device <selector> --path <path>` (atomic terminate→install→launch→verify-pid). The current per-platform install branches are deleted.
+    - Help text and CLAUDE.md's mobile-smoke-testing section are updated to reflect the spyder-CLI-driven flow. The 'don't ask the user about visual output until smoke test passes' directive remains, with spyder-CLI exit codes called out as the diagnostic surface.
+    context: First leaf of 🎯T33. Replaces ge/tools/smoke-test.sh's platform-branched plumbing with spyder CLI calls. Pure mechanical migration — no semantic change, just substituting the implementation. Validates that spyder's CLI is sufficient for ge's smoke needs and surfaces any gaps before the more invasive matrix-cell migration in T33.2.
+    depends_on:
+    - T33
+    tags:
+    - spyder
+    - smoke-test
+    - cli-migration
+    origin: manual
+    discovered: 2026-04-26
+  T33.2:
+    name: matrix-cell.sh wraps each cell in `spyder run` so reservations are race-safe under parallel make
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - matrix-cell.sh's per-cell entry point becomes `spyder run --device <selector> --as <cell-id> --timeout <budget> -- <inner-cell-cmd>`. Reservation acquire/release is no longer hand-rolled in the script; spyder run handles it including opportunistic renewal during long-running cells.
+    - Cells use selector predicates (--on platform=ios-sim,model_family=iPad,os>=17) instead of pinned device names where appropriate, so the matrix can target a class of devices and let spyder pick from the available pool.
+    - Parallel make rules can launch multiple matrix cells without races. Cells targeting different devices proceed concurrently; cells targeting the same device serialise via spyder's reservation queue. Cells losing a reservation race receive exit code 13 (reservation-conflict) and either back off or fail per their policy.
+    - matrix-cell.sh removes its hand-rolled `lsof | xargs kill` cleanup of stuck device processes (and similar). spyder's reservation cleanup on cell exit handles port/process hygiene transitively (via release → autoawake re-armed → no leaked DVT sessions).
+    - 'make check''s parallelism cap is lifted from ''one cell per platform'' to ''one cell per device.'' Concretely: with 2 booted iOS sims + 1 booted Android emu + 1 desktop, four cells run concurrently. Confirmed by timing or by a debug log showing concurrent-cell IDs.'
+    context: Second leaf of 🎯T33. The reservation-based concurrency story. Builds on T33.1 (matrix-cell already calling spyder for device ops) by adding the `spyder run` wrapper that makes parallel cells safe. Pre-condition for the `make check` time-reduction acceptance criterion in T33's parent acceptance.
+    depends_on:
+    - T33.1
+    tags:
+    - spyder
+    - matrix-cell
+    - reservations
+    - parallelism
+    origin: manual
+    discovered: 2026-04-26
+  T33.3:
+    name: Visual regression cells use spyder screenshot + spyder diff against committed baselines, with `make update-baselines` for refresh
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - At least one matrix cell (e.g. ios-sim-tablet-dist or android-emu-dist) captures a screenshot via `spyder screenshot <device>` after rendering reaches a known-stable point, then calls `spyder diff --suite=<cell> --case=<scenario>` to compare against a baseline stored in spyder's baseline directory.
+    - Baselines are committed to spyder's baseline tree (or to a ge-controlled location, depending on layout — pick whichever keeps the diff visible in PR review). Baseline format is whatever spyder's `baseline_update` produces (PNG + manifest).
+    - A `make update-baselines` rule runs the same cells but invokes `spyder baseline_update` instead of `spyder diff`, regenerating the baselines. Reviewers see baseline changes as image diffs in PR.
+    - spyder diff's exit code (success / pixel-mismatch / SSIM-below-threshold) drives the cell's pass/fail. The cell's failure output points to spyder's diff report path so a reviewer can see the visual difference.
+    - Where spyder's SSIM-based diff is insufficient (some cells need pixel-exact comparison), ge's existing imgdiff utility is invoked instead — both can coexist; spyder for high-level visual regression, imgdiff for byte-level checks.
+    context: 'Third leaf of 🎯T33. Visual regression infrastructure. Worth doing because ge has a non-trivial render-correctness surface (bgfx-on-mobile, the YUV→RGB shader path from 🎯T32, the AccelSynth tilt composite from 🎯T28, the iOS rotation magenta-flash issue) that today has no programmatic check beyond ''agent looks at a screenshot.'' Spyder''s diff infrastructure was wired but unregistered before v0.16.0; both diff and baseline subcommands are reachable now.\n\nNote: spyder''s STABILITY.md flags diff as ''Needs Review — SSIM stubbed (NaN); VLM interface unimplemented; report shape expected to gain fields.'' So this target rides on spyder evolution; ge can adopt a basic version now and benefit from upstream improvements automatically.'
+    depends_on:
+    - T33.1
+    tags:
+    - spyder
+    - visual-regression
+    - screenshot
+    - baseline
+    origin: manual
+    discovered: 2026-04-26
+  T33.4:
+    name: Soak-style cells call `spyder device_power_state` post-run to distinguish 'screen-asleep' false-pass from real success
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - matrix-cell-long-soak, the 🎯T25 reconnect sub-check cell, the 🎯T28.4 Android AccelSynth distribution cell, and any other cell with a soak phase >60 s call `spyder device_power_state <device>` immediately before exit (or before the success-marker is emitted).
+    - 'If the post-run state is `display_off` or `asleep` on a cell that should have kept the device awake throughout, the cell exits with a distinct code (suggested: 50 or similar — outside spyder''s reserved 10–42 range) and the report flags the device-state regression rather than reporting the cell as a normal pass or fail.'
+    - The `unknown` state (returned when device_power_state can't be determined — e.g. tunneld unavailable, developer mode off) is logged but does not flip the cell to fail; treat as 'no signal,' continue with the prior pass/fail decision.
+    - Documentation in matrix-cell.sh and the ge CLAUDE.md mobile-smoke section explains the post-run device_power_state check and the distinction between 'cell failed' and 'cell passed but device fell asleep.'
+    context: Fourth leaf of 🎯T33. Closes a real diagnostic gap in soak runs. Today, if autoawake falters (KeepAwake crashes, profile expires, the bridge hits the EHOSTUNREACH window before T36 was fixed), a soak cell can complete 'successfully' against a device that's been asleep most of the time — meaning the test result is meaningless. spyder v0.17.0's device_power_state gives ge a way to detect this without any per-platform plumbing.\n\nThe DVT-Screenshot-based probe (the only path that actually works without resetting the idle timer — see spyder docs/papers/t29-device-state-detection.md) is the right primitive here. ge's role is just to call it and branch.
+    depends_on:
+    - T33.1
+    tags:
+    - spyder
+    - device-power-state
+    - soak-test
+    - diagnostics
+    origin: manual
+    discovered: 2026-04-26
+  T33.5:
+    name: Pre-warmed sim/emu pool reduces matrix-cell startup time; pool config lives in ge's repo
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - 'A pool.yaml file is committed to ge (under tools/ or a similar discoverable location) declaring the matrix''s sim and emu templates: at minimum the iOS tablet sim, iOS phone sim, Android phone emu (Pixel 9 Pro XL AVD per 🎯T24), each with a target warm count.'
+    - ge's `make init` (or a dedicated `make pool-init`) symlinks tools/pool.yaml to ~/.spyder/pool.yaml, or copies it, or invokes `spyder pool_warm` per template — whichever path keeps the developer setup minimal. CLAUDE.md documents the one-time setup.
+    - matrix-cell.sh prefers reserving from the pool (selectors that match pool templates) over creating fresh sims/emus per run. `spyder reserve --on platform=ios-sim,model_family=iPad,os>=17` returns a pre-warmed instance from the pool when available.
+    - Per-cell startup time on a cell that previously created+booted a fresh sim drops by ~10–30 s (the sim boot cost). Cells that previously reused a sim see no change. Net `make check` reduction measurable; expect ~20–40 % depending on cell mix.
+    - Pool drain happens automatically on `make check` exit (or via a separate `make pool-drain` rule for manual cleanup). Released-but-still-warm instances don't pile up across runs.
+    context: 'Fifth leaf of 🎯T33. The biggest direct attack on 🎯T27 (`make check` under 8 min). Sim/emu boot is the dominant cost in cold-cell scenarios; pre-warming amortises it. spyder''s pool infrastructure (T24 in spyder) is in place but has no default config — pool_list returns ''pool not configured'' until ~/.spyder/pool.yaml exists. This target makes the pool config part of ge''s source tree so contributors get the same warming behaviour out of the box.\n\nDeferred / out of scope: dynamic pool sizing based on observed concurrency (ge uses fixed warm counts); cross-host pool sharing (single-developer-laptop assumption holds for now).'
+    depends_on:
+    - T33.2
+    tags:
+    - spyder
+    - pool
+    - performance
+    - make-check
+    origin: manual
+    discovered: 2026-04-26
+  T34:
+    name: The player is a regular ge app — bespoke networking and decoding stay, but rendering, windowing, and per-platform entry points come from ge like any other consumer
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - 'The player''s main() is a thin ge app that calls ge::run(Factory) and returns a RunConfig with onUpdate / onRender / onEvent / onShutdown. ge owns the SDL window, the bgfx context, the frame loop, the SDL event pump, the tilt composite. The player''s app code provides only: wire connection setup, decoder management, the per-frame texture upload, and the bgfx draw call.'
+    - tools/player.cpp and tools/player_core.cpp are deleted. The player's source moves to a ge-app layout (probably sample/player/main.cpp + sample/player/Net.cpp/h or similar) that mirrors how sample/tiltbuggy is laid out. The player has its own Makefile / android/ / ios/ trees the way every ge app does — generated from ge's templates via tools/init-android.sh / tools/init-ios.sh, not hand-maintained.
+    - tools/ios/main.mm, tools/android/app/src/main/cpp/main.cpp, tools/ios/CMakeLists.txt, tools/android/* — the bespoke per-platform entry points that exist solely because the current player isn't a ge app — are deleted. The player rides on ge's standard iOS xcframework path and Android add_subdirectory(ge) path established by 🎯T30.
+    - 'src/render/PlayerRender.cpp and include/ge/PlayerRender.h are deleted. The functionality those provided (window, video texture upload, aspect-fit blit, portrait-in-landscape rotation, tilt composite, event coordinate mapping) is replaced by: (a) ge''s existing render layer (window, bgfx draw, tilt composite already shared with DirectRenderHost), (b) a small per-frame YUV/BGRA texture upload in the player''s onRender, (c) event coordinate mapping that becomes a small ge-provided utility if it isn''t already (since other apps may want it too).'
+    - The player no longer uses SDL_Renderer for video display. The decoded frame is uploaded as a bgfx texture (via the YUV multi-plane path from 🎯T32 on platforms that support it, BGRA fallback otherwise) and drawn via a normal bgfx textured-quad pass. The 'no bgfx — just blits a video texture via SDL_RenderGeometry' comment in PlayerRender.h disappears with the file.
+    - 'Bespoke surfaces that stay bespoke: the WebSocket / pigeon wire connection, ged handshake, pairing-artifact handling, H.264 decoder lifecycle (VideoDecoder_apple.mm and VideoDecoder_ffmpeg.cpp), and the upstream-event forwarding. These are app code, not engine code, and live in the player''s source tree the way Physics.cpp lives in multimaze2''s source tree.'
+    - 'tools/AudioPlayer.h/.cpp moves into the player''s app code (or is deleted if ge''s audio surface absorbs it). The dormancy noted in 🎯T7''s PR #43 (AudioPlayer not currently compiled into any build target) resolves naturally: the player either uses ge''s audio path or carries AudioPlayer as part of its own sources.'
+    - ge's server-side bgfx-encode path (the headless modality that turns onRender output into an H.264 stream) is unchanged. A player app instance running in headless server mode will encode whatever its onRender drew — i.e. the upstream video stream — and emit it. This is the precondition for 🎯T34.1's recursion test-bed; no changes are needed to ge's server side to make it work.
+    - 'CLAUDE.md''s ''Server/player architecture'' section is rewritten to describe the new shape: ge apps can run in either server mode (headless, encoding for streaming) or windowed mode (rendering locally); the player happens to be a ge app whose onRender blits a video texture and whose app code handles the wire/decoder. The ''two parallel rendering frameworks'' framing goes away.'
+    context: 'Filed 2026-04-26 after a design conversation. The player is currently a bespoke application: tools/player.cpp + tools/player_core.cpp + tools/ios/main.mm + tools/android/.../main.cpp + src/render/PlayerRender.cpp + include/ge/PlayerRender.h. It has its own SDL window setup, its own SDL_Renderer-based drawing path, its own per-platform entry points, its own tilt-composite math (parallel to DirectRenderHost.mm), its own event coordinate mapping, and its own iOS/Android bootstrap.\n\nThe insight: that''s an enormous amount of plumbing that ge already provides to every other consumer. tiltbuggy / multimaze2 / yourworld and any future ge consumer get window + frame loop + bgfx + tilt composite + event delivery + per-platform mobile builds for free, because ge is exactly the framework designed to make app authoring easy across iOS / Android / desktop. The player is just another ge app whose onRender happens to draw a video texture instead of simulated geometry, and whose app code happens to manage a wire connection and an H.264 decoder instead of a physics simulation.\n\nWhat changes:\n- The player''s main() becomes a ~50-line ge app that calls ge::run(Factory) the same way tiltbuggy does.\n- The bespoke parts (network, decoder, wire framing, pairing-artifact handling, upstream event forwarding) stay bespoke. They live in the player''s app code, not in ge. ge has no notion of ''player mode'' — the player is just a ge app whose onUpdate pumps the wire and whose onRender blits a texture.\n- The platform-specific bootstrap (tools/ios/main.mm, tools/android/app/src/main/cpp/main.cpp) goes away. The player gets iOS xcframework + Android add_subdirectory(ge) builds for free, the same way every ge consumer does.\n- src/render/PlayerRender.cpp and the SDL_Renderer-based path go away. bgfx is the rendering layer.\n- The tilt composite stops being duplicated between PlayerRender.cpp and DirectRenderHost.mm. ge''s existing render-side tilt composite (used by direct-mode samples) serves the player too.\n- The YUV multi-plane texture upload from 🎯T32 lives natively in the player''s onRender (since bgfx is now the renderer, not SDL_Renderer).\n\nNon-goals:\n- ge does NOT gain a ''client mode'' or ''player mode'' role. ge::run is unchanged. The player is a regular ge app, period.\n- The wire protocol, decoder, and connection logic are NOT moved into ge. They''re app code, owned by the player''s source tree.\n- Performance characteristics stay the same or improve — the bgfx path replaces SDL_Renderer, which means the YUV-on-shader and tilt-composite paths get the engine''s normal performance instead of the player-specific bypass.\n\nRelation to other in-flight targets:\n- 🎯T7 audio-pause: AudioPlayer is currently dormant (per PR #43). Resolution: AudioPlayer either folds into the player''s app code, or ge''s audio surface absorbs the lifecycle, or AudioPlayer is deleted in favour of whichever path makes the player''s audio the same as any other ge app''s audio. T34 settles this naturally.\n- 🎯T11 pigeon migration: when ge''s transport switches to pigeon, the player picks it up automatically because the player''s bespoke wire code consumes whichever transport ge surfaces. The pigeon migration becomes simpler — there''s no separate ''now port the player'' phase.\n- 🎯T30 single-path-integration: the player retiring its bespoke entry points and consuming ge via add_subdirectory(ge) is exactly the principle T30 closed for tiltbuggy applied to the player. T34 inherits T30''s plumbing for free.\n- 🎯T32 YUV-on-shader: the player gains the YUV path natively when SDL_Renderer goes away.\n\nSequencing: substantial refactor; comparable in scope to T30''s single-path work or larger. Probably best landed after the 🎯T33 test-infrastructure family is in (so the new player can be exercised by the new spyder-driven matrix cells immediately), but before any pigeon migration so the pigeon work has only one player-shape to reason about.'
+    tags:
+    - player
+    - architecture
+    - ge-app
+    - single-path
+    - render-unification
+    origin: manual
+    discovered: 2026-04-26
+  T34.1:
+    name: 'The player-as-ge-app enables recursion-as-test-bed: a player connects to another player''s headless-server output, all the way down'
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - 'A matrix cell exists that runs three processes on the same host: a server (e.g. tiltbuggy in headless mode), a player A that connects to the server, and a player B that connects to player A in *its* headless mode. Player B''s framebuffer should match (within visual-regression tolerance) the server''s framebuffer, modulo encode/decode round-trips.'
+    - 'The cell is implemented via spyder reservations and the visual-regression infrastructure from 🎯T33.3 (committed baselines, spyder diff). End-to-end coverage: if any change to ge''s wire format, encoder, decoder, or render layer breaks the round trip, this cell catches it.'
+    - A debugging mode (or just a `make demo-recursion` target) lets a developer launch the same three-process stack interactively. Useful for the latency-stack measurement use case (timing each hop independently) and for the showcase demonstration ('phone watching laptop watching iPad watching laptop').
+    context: 'Sub-target of 🎯T34. Once the player is a regular ge app, ge''s existing server-side bgfx-encode path (the headless modality that turns onRender output into an H.264 stream) applies to the player without any extra work — running the player in headless mode means it encodes whatever its onRender drew, which IS the upstream video stream. A second player connecting to that headless first player would see the first player''s video (which is itself the original server''s video).\n\nNo player-side networking changes are needed for this. The player''s app code is unchanged — it still has its bespoke connect-to-upstream-server logic. What''s new is that ge''s existing ''server'' role applies to it equally well; it''s a ge app, ge can encode it.\n\nWhy it''s useful (not just a curiosity):\n- Wire-protocol invariant test bed: any assumption that ''I''m one or the other'' breaks immediately when the player runs as both encoder and decoder simultaneously.\n- Latency-stack measurement: stack three deep (server → A → B) and measure each hop independently. Relevant to 🎯T11.4 LAN-bypass evaluation.\n- End-to-end test cells: matrix cells assert on the final framebuffer, exercising the full encode → wire → decode → render → encode → wire → decode → render path with no mocking.\n- Showcase demonstration: viscerally communicates ge''s symmetry. Plays well in release videos.\n\nDeferred: optimisations specific to the recursion case (e.g. could the inner player skip re-encode if it knows downstream wants the same H.264 stream? Probably yes, but that''s an optimisation target, not a correctness target).'
+    depends_on:
+    - T34
+    tags:
+    - player
+    - recursion
+    - test-bed
+    - wire-protocol
+    - showcase
+    origin: manual
+    discovered: 2026-04-26
   T4:
     name: playerLoop takes a config struct with named fields
-    status: identified
+    status: achieved
     value: 3.0
     cost: 2.0
     acceptance:
@@ -685,6 +918,7 @@ targets:
     context: '`playerLoop` accumulated parameters across iterations (discover → checkOverride + discover + name). Positional args are opaque at call sites. Named fields via a config struct make the API self-documenting and easier to extend.'
     origin: migrated from docs/targets.md
     discovered: 2026-04-12
+    achieved: 2026-04-26
   T5:
     name: Player has a connection management screen
     status: identified
