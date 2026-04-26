@@ -835,6 +835,66 @@ check-list:
 	@echo "Cells excluded:"
 	@printf '  %s\n' $(filter-out $(ge/CHECK_CELLS),$(ge/CELLS))
 
+# ────────────────────────────────────────────────
+# Spyder pool management
+#
+# `make pool-init` symlinks tools/spyder-pool.yaml to ~/.spyder/pool.yaml so
+# spyder's daemon picks up pre-warm templates for the matrix's sim/emu cells.
+# This is a one-time setup step; re-running is safe (idempotent).
+#
+# `make pool-drain` shuts down all pool instances and removes the symlink.
+# Run before the machine goes idle for an extended period to avoid leaving
+# background emulators running.
+#
+# Pool template names mirror the three matrix platforms that benefit from
+# pre-warming:
+#   ios-phone   — iPhone 16 Pro sim, iOS 18.4
+#   ios-tablet  — iPad Air 11-inch (M4) sim, iOS 18.4
+#   android-phone — Pixel 9 Pro XL AVD (android-36, google_apis_playstore)
+# ────────────────────────────────────────────────
+
+ge/POOL_YAML    := $(ge)/tools/spyder-pool.yaml
+ge/POOL_DEST    := $(HOME)/.spyder/pool.yaml
+ge/POOL_TMPLS   := ios-phone ios-tablet android-phone
+
+.PHONY: pool-init
+pool-init:
+	@echo "── Spyder pool setup ──"
+	@command -v spyder >/dev/null 2>&1 || { echo "WARN: spyder not found; skipping pool setup. Install spyder v0.17.0+ to enable pre-warming."; exit 0; }
+	@mkdir -p "$(dir $(ge/POOL_DEST))"
+	@if [ -e "$(ge/POOL_DEST)" ] && [ ! -L "$(ge/POOL_DEST)" ]; then \
+	    echo "WARN: $(ge/POOL_DEST) exists and is not a symlink; leaving it alone."; \
+	    echo "  To adopt ge's pool config, remove the existing file and re-run."; \
+	else \
+	    ln -sf "$(abspath $(ge/POOL_YAML))" "$(ge/POOL_DEST)"; \
+	    echo "  Symlinked: $(ge/POOL_DEST) -> $(abspath $(ge/POOL_YAML))"; \
+	fi
+	@echo "  Restarting spyder daemon to pick up new pool config..."
+	@spyder daemon restart 2>/dev/null || spyder daemon start 2>/dev/null || \
+	    echo "  WARN: could not restart spyder daemon; restart it manually."
+	@echo "  Warming pool instances (this may take 30-60 s)..."
+	@for tmpl in $(ge/POOL_TMPLS); do \
+	    echo "    spyder pool_warm $$tmpl --count 1"; \
+	    spyder pool_warm "$$tmpl" --count 1 2>&1 || \
+	        echo "    WARN: pool_warm $$tmpl failed (daemon may still be starting; retry with 'make pool-init')"; \
+	done
+	@echo "  Pool ready. Run 'make pool-drain' to shut down instances."
+
+.PHONY: pool-drain
+pool-drain:
+	@echo "── Spyder pool drain ──"
+	@command -v spyder >/dev/null 2>&1 || { echo "WARN: spyder not found; nothing to drain."; exit 0; }
+	@for tmpl in $(ge/POOL_TMPLS); do \
+	    echo "  spyder pool_drain $$tmpl"; \
+	    spyder pool_drain "$$tmpl" 2>&1 || \
+	        echo "  WARN: pool_drain $$tmpl failed (may already be empty)"; \
+	done
+	@if [ -L "$(ge/POOL_DEST)" ]; then \
+	    rm "$(ge/POOL_DEST)"; \
+	    echo "  Removed symlink: $(ge/POOL_DEST)"; \
+	fi
+	@echo "  Pool drained."
+
 # Canned recipe for the parent to expand at the end of its init target.
 define ge/INIT_DONE
 	@echo ""

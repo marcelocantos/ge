@@ -1,0 +1,52 @@
+# ge spyder pool configuration
+#
+# Declares pre-warmed sim/emu templates for the ge matrix.  Symlink or copy
+# this file to ~/.spyder/pool.yaml and run `make pool-init` to activate.
+#
+# Schema reference: spyder/internal/pool/config.go (TemplateConfig)
+#   name                   — unique template identifier
+#   platform               — "ios" or "android"
+#   device_type            — simctl device-type ID (iOS) or template AVD name (Android)
+#   runtime_or_system_image — simctl runtime ID (iOS) or system-image package (Android)
+#   available_min          — floor for created-but-not-booted instances
+#   available_max          — cap before excess instances are deleted on linger expiry
+#   running_warm           — number of pre-booted idle instances
+#   tags                   — optional selector labels for spyder reserve --on
+
+templates:
+  # iOS phone simulator — iPhone 16 Pro, iOS 18.4
+  - name: ios-phone
+    platform: ios
+    device_type: com.apple.CoreSimulator.SimDeviceType.iPhone-16-Pro
+    runtime_or_system_image: com.apple.CoreSimulator.SimRuntime.iOS-18-4
+    available_min: 1
+    available_max: 2
+    running_warm: 1
+    tags:
+      - phone
+      - ios-sim
+
+  # iOS tablet simulator — iPad Air 11-inch (M4), iOS 18.4
+  - name: ios-tablet
+    platform: ios
+    device_type: com.apple.CoreSimulator.SimDeviceType.iPad-Air-11-inch-M4
+    runtime_or_system_image: com.apple.CoreSimulator.SimRuntime.iOS-18-4
+    available_min: 1
+    available_max: 2
+    running_warm: 1
+    tags:
+      - tablet
+      - ios-sim
+
+  # Android phone emulator — Pixel 9 Pro XL (android-36, google_apis_playstore, arm64-v8a)
+  # Cloned from the Pixel_9_Pro_XL template AVD (must exist; created by `make init`).
+  - name: android-phone
+    platform: android
+    device_type: Pixel_9_Pro_XL
+    runtime_or_system_image: "system-images;android-36;google_apis_playstore;arm64-v8a"
+    available_min: 1
+    available_max: 2
+    running_warm: 1
+    tags:
+      - phone
+      - android-emu
