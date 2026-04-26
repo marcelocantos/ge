@@ -79,6 +79,18 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
+# ── Visual regression helpers ────────────────────────────────────────
+# Source visual-regression.sh so visual_regression_check / visual_regression_update
+# are available to cell runners. The file is optional (graceful no-op if absent).
+# shellcheck source=tools/visual-regression.sh
+if [[ -f "$SCRIPT_DIR/visual-regression.sh" ]]; then
+    # shellcheck disable=SC1090
+    source "$SCRIPT_DIR/visual-regression.sh"
+fi
+
+# Resolve VR_ARTIFACTS_DIR to the cell's artifact directory once it is set up.
+# The actual assignment happens after ARTIFACTS is defined (see "Artifacts dir" block).
+
 # ── Parse args ──────────────────────────────────────────────────────
 
 CELL=""
@@ -397,6 +409,10 @@ ARTIFACTS="$ARTIFACTS_ROOT/$CELL"
 mkdir -p "$ARTIFACTS"
 REFS_DIR="$APP_DIR/test/refs"
 mkdir -p "$REFS_DIR"
+
+# Point visual-regression helpers at the same artifact directory so screenshots
+# and diff reports land alongside the rest of the cell's artifacts.
+VR_ARTIFACTS_DIR="$ARTIFACTS"
 
 echo "matrix-cell: $CELL  app=$APP_NAME  dir=$APP_DIR"
 [[ -n "$PINNED_DEVICE" ]] && echo "device:      $PINNED_DEVICE"
@@ -1984,6 +2000,11 @@ run_ios_sim_dist() {
     check_soak_ios_sim "$SIM_UDID" "$APP_ID" || true
     check_rotation_ios_sim "$SIM_UDID" "$APP_ID" || true
     check_bgfg_ios "$SIM_UDID" "$APP_ID" || true
+    # Visual regression: capture at known-stable state (post-soak, post-bg/fg, pre-exit).
+    # Uses spyder screenshot + diff against baseline in ~/.spyder/visualdiff/ge-tiltbuggy/<cell>/...
+    # On mismatch, exits with code 51 (visual-regression-mismatch).
+    # Run 'make update-baselines' in the app directory to refresh baselines.
+    visual_regression_check "$SIM_UDID" "$CELL" || exit 51
     check_clean_exit_ios_sim "$SIM_UDID" "$APP_ID"
 }
 
@@ -2081,6 +2102,11 @@ run_android_emu_dist() {
     check_soak_android "$ANDROID_SERIAL" "$APP_ID" || true
     check_rotation_android_emu "$ANDROID_SERIAL" "$APP_ID" || true
     check_bgfg_android "$ANDROID_SERIAL" "$APP_ID" "$activity" || true
+    # Visual regression: capture at known-stable state (post-soak, post-bg/fg, pre-exit).
+    # Uses spyder screenshot + diff against baseline in ~/.spyder/visualdiff/ge-tiltbuggy/<cell>/...
+    # On mismatch, exits with code 51 (visual-regression-mismatch).
+    # Run 'make update-baselines' in the app directory to refresh baselines.
+    visual_regression_check "$ANDROID_SERIAL" "$CELL" || exit 51
     check_clean_exit_android "$ANDROID_SERIAL" "$APP_ID"
 }
 

@@ -491,3 +491,44 @@ Each check prints PASS/FAIL/WARN. The script exits non-zero if any check fails. 
 Only after the smoke test passes and the problem is still unclear, ask the user what they see — but state what you already verified: "Smoke test passed (ged connected, player session active, no crash reports) — can you confirm whether the globe is rendering?"
 
 **Device preference**: When the user tells you which device to test on (e.g. "use Pippa"), save it to auto-memory so you remember across sessions. Always pass the preferred device via `--device`. If the smoke test fails because that device isn't found, tell the user which device was expected and list the devices that *are* available (the script prints them), then ask how they'd like to proceed.
+
+### Visual regression
+
+ge uses spyder's `screenshot` + `diff` commands to catch rendering regressions in matrix cells. Two cells wire in visual regression checks today:
+
+- `ios-sim-tablet-dist` — after the soak + bg/fg pass, before `check_clean_exit`
+- `android-emu-tablet-dist` — same position
+
+The check is implemented in `ge/tools/visual-regression.sh` (sourced by `matrix-cell.sh`). It calls `spyder screenshot <device>` to capture the current screen, then `spyder diff` to compare against the stored baseline.
+
+**Where baselines live**: spyder stores baselines in `~/.spyder/visualdiff/<suite>/<case>/` on the developer's machine. They are **not** committed to ge's source tree — binary PNG baselines require their own large-binary git practice, and spyder's own data directory is the canonical location. The trade-off is that baselines are not visible in PR diffs; a note in the PR body explains the baseline-storage choice.
+
+- Suite: `ge-tiltbuggy`
+- Case: the matrix cell name (e.g. `ios-sim-tablet-dist`, `android-emu-tablet-dist`)
+
+**Updating baselines**: after a deliberate rendering change, run:
+
+```bash
+cd sample/tiltbuggy
+make update-baselines
+```
+
+This re-runs the two cells with `VR_UPDATE_MODE=1`, which calls `spyder baseline_update` instead of `spyder diff` at the capture point, writing a new PNG to `~/.spyder/visualdiff/ge-tiltbuggy/<cell-id>/...`.
+
+**Pixel tolerance**: the default is `VR_PIXEL_TOLERANCE=8` (on a 0–255 scale). To override for a specific run:
+
+```bash
+VR_PIXEL_TOLERANCE=12 make cell.ios-sim-tablet-dist
+```
+
+Or when updating baselines:
+
+```bash
+VR_PIXEL_TOLERANCE=12 make update-baselines
+```
+
+**Exit code 51**: a visual regression mismatch causes the cell to exit with code 51 (deliberately outside spyder's reserved 10–42 range). The artifact directory for the cell contains `vr-<cell>-report.json` (spyder's diff report) and `vr-<cell>-<ts>.png` (the captured screenshot) for inspection.
+
+**Coexistence with imgdiff**: ge's `imgdiff` utility (built by `make ge/imgdiff`) performs byte-exact RMS comparison against committed reference images in `test/refs/`. The two systems complement each other: spyder diff for high-level visual regression (full-frame, device-level screenshots), imgdiff for pixel-exact comparison of specific rendered outputs. Neither replaces the other.
+
+**spyder not installed**: if `spyder` is not in `PATH`, the visual regression check emits a WARN (not a FAIL) and the cell continues. This keeps the cell runnable in environments without spyder. Install spyder and run `spyder serve` before relying on visual regression in CI.
