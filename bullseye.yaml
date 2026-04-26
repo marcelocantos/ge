@@ -581,7 +581,7 @@ targets:
     discovered: 2026-04-12
   T30:
     name: ge has a single integration path on every platform — consumers do add_subdirectory(ge) and get everything
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -592,9 +592,10 @@ targets:
     context: 'Discovered 2026-04-19 while investigating Android tilt testing. ge currently has two Android integration paths: (a) add_subdirectory(ge) + link ge — the documented path, used by multimaze2, broken because ge''s Android CMakeLists branch doesn''t link SDL3_ttf and Text.cpp''s FontLoader dependency is Apple-only; (b) hand-picked GE_SOURCES list — used by sample/tiltbuggy/android, works by explicitly omitting Text.cpp and FontLoader_apple.mm (see sample/tiltbuggy/android/app/src/main/cpp/CMakeLists.txt:76-78). Having two paths is the bug — consumers have to reason about which subset of ge is safe on which platform, and bit-rot is inevitable (multimaze2''s Android CMakeLists already omits Text.cpp quietly). Principle: one path, everyone gets everything. Decomposes into T30.1 (SDL3_ttf + deps for Android), T30.2 (FontLoader_android implementation so Text.cpp compiles cross-platform), T30.3 (migrate sample/tiltbuggy Android to add_subdirectory(ge)), and a CLAUDE.md doc update baked into acceptance.'
     origin: 'forked-from: 🎯T28.4 / Android tilt-testing investigation 2026-04-19'
     discovered: 2026-04-19
+    achieved: 2026-04-21
   T30.1:
     name: ge's Android build links SDL3_ttf + freetype/harfbuzz/plutosvg/plutovg
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     observable: true
@@ -607,9 +608,10 @@ targets:
     context: First of the two leaves under T30. Source-build approach (not prebuilt .a) for parity with existing SDL3/SDL3_image strategy on Android and to avoid prebuilt drift. This alone doesn't close T30 — FontLoader_android (T30.2) is the paired piece that makes Text.cpp actually compile and work.
     origin: 'forked-from: T30 on 2026-04-19'
     discovered: 2026-04-19
+    achieved: 2026-04-20
   T30.2:
     name: FontLoader has a non-Apple implementation so Text.cpp compiles on every platform
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     observable: true
@@ -623,9 +625,10 @@ targets:
     - T30.1
     origin: 'forked-from: T30 on 2026-04-19'
     discovered: 2026-04-19
+    achieved: 2026-04-20
   T30.3:
     name: sample/tiltbuggy Android build consumes ge via add_subdirectory(ge), not a hand-picked source list
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     observable: true
@@ -639,6 +642,39 @@ targets:
     - T30.2
     origin: 'forked-from: T30 on 2026-04-19'
     discovered: 2026-04-19
+    achieved: 2026-04-21
+  T31:
+    name: Triangle's non-commercial licence is investigated and either removed, replaced, or formally cleared
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    observable: true
+    acceptance:
+    - 'Confirmed where Triangle code actually lands. Inventory: vendor/src/triangle.c + vendor/include/triangle.h are vendored in ge''s repo; Module.mk exposes ge/TRIANGLE_OBJ as an opt-in object (built with -DTRILIBRARY -DREAL=double -DANSI_DECLARATORS -DNO_TIMER); no ge/src/ file #includes triangle.h or calls triangulate(); ge/CMakeLists.txt does not compile triangle.c into libge; the only known consumer is yourworld/yourworld2/tools/precompute.cpp (build-time tool, not a runtime artifact)'
+    - 'Confirmed exactly what the licence permits and forbids. The text in vendor/src/triangle.c grants free use for private, research, and institutional use; permits redistribution if (a) copyright notices are kept, (b) no compensation is received for redistribution, (c) modifications keep original copyright + free source/object availability; **explicitly forbids distribution as part of a commercial system without direct arrangement with Shewchuk (jrs@cs.berkeley.edu)**, with one carve-out: if you don''t supply the code directly to the customer but instead point them at a free download, no arrangement needed'
+    - 'Decided which scenarios are at risk. At minimum: (i) any commercial app that statically links ge/TRIANGLE_OBJ into its shipped binary; (ii) ambiguously, ge itself being publicly distributed (the ''free download'' loophole probably covers this since ge is open-source); (iii) precompute tool outputs (derived mesh data) are almost certainly *not* covered by the licence — derived data isn''t redistribution of Triangle code'
+    - 'Picked a resolution path and executed it. Options, ranked by preference: (1) remove Triangle from ge/vendor entirely and move precompute-style use into yourworld2/tools where it''s actually consumed (clean licence boundary, ge becomes commercially-clean); (2) replace Triangle with earcut.hpp (already vendored, ISC-licensed) for any polygon triangulation — viable if precompute only needs simple polygon triangulation, *not* viable if it needs constrained Delaunay or quality refinement that only Triangle provides; (3) keep Triangle but explicitly document the constraint in CLAUDE.md + NOTICES.md and add a build-time guard (e.g. require an opt-in -DGE_USES_TRIANGLE flag) so it''s impossible to accidentally link into a commercial app without conscious choice; (4) negotiate a commercial arrangement with Shewchuk — last resort, expensive, and brittle'
+    - NOTICES.md and README.md updated to reflect the chosen resolution. If Triangle is removed, both files no longer mention it and the 'Licensing gaps and warnings' section shrinks accordingly. If retained, the warning becomes more prominent and explicit about which builds are safe for commercial use
+    context: 'Surfaced 2026-04-19 during the FFmpeg/LGPL discussion under \ud83c\udfafT30. NOTICES.md already flags Triangle as ''non-standard, restrictive licence'' but the implications weren''t fully internalised \u2014 the licence text in vendor/src/triangle.c forbids commercial distribution without direct arrangement with the author. ge is positioned as a reusable game engine, so any consumer that ships a paid game (i.e. most consumers) is at risk if they end up linking Triangle code into their binary. Initial reconnaissance shows ge does not currently link Triangle into libge.a (only Module.mk''s opt-in ge/TRIANGLE_OBJ exposes it, and no ge source file uses it); the only confirmed user is yourworld2''s build-time precompute tool. So the realistic exposure may be small \u2014 but it needs verification, not assumption. The target is investigation-led: confirm the exposure, then act. The natural endpoint is option (1) \u2014 remove Triangle from ge entirely and let consumers vendor it themselves if they need it, since (a) ge doesn''t use it, (b) the only known consumer is a build tool that lives in a different repo, and (c) the licence makes ge less commercially-friendly than its other deps. earcut.hpp is already vendored as the permissive fallback for simple cases.'
+    origin: 'forked-from: NOTICES.md audit during \ud83c\udfafT30.1 work, 2026-04-19'
+    discovered: 2026-04-20
+    achieved: 2026-04-20
+  T32:
+    name: Android H.264 colour-space conversion happens in the fragment shader, not in a CPU loop
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    observable: true
+    acceptance:
+    - VideoDecoder's frame callback on Android delivers NV12 planar data (Y plane + interleaved UV plane with their respective strides), not pre-converted BGRA. The hand-rolled nv12ToBgra() function and reusable frameBuffer member in src/bridge/VideoDecoder_android.cpp (and the equivalent libswscale conversion in src/bridge/VideoDecoder_ffmpeg.cpp) are deleted
+    - PlayerRender uploads Y as a bgfx R8 texture (w×h) and UV as a bgfx RG8 texture (w/2 × h/2) with proper pitch handling for MediaCodec's row stride
+    - 'The fragment shader on Android samples both planes and computes YUV→RGB inline. Implementation: either a separate Android-only shader variant, or a uniform flag on the existing shader — whichever keeps the platform branching cleaner'
+    - iOS and macOS paths are completely untouched. VideoDecoder_apple.mm continues to request kCVPixelFormatType_32BGRA from VideoToolbox, PlayerRender uploads a single BGRA texture, and the original shader path serves Apple unchanged
+    - Validated on the Android emulator and at least one real Android device (Pippa-equivalent, or whichever device is the current Android test target). Visual output matches the existing CPU-converted result — no green tints, no chroma offset, no bias from getting the YUV→RGB matrix coefficients (BT.601 vs BT.709) wrong
+    context: 'Surfaced 2026-04-19 during the FFmpeg/MediaCodec discussion. The Android decode pipeline currently runs a per-pixel CPU loop (src/bridge/VideoDecoder_android.cpp:30-55 nv12ToBgra, plus the libswscale BGRA conversion inside src/bridge/VideoDecoder_ffmpeg.cpp) to convert NV12 to BGRA before texture upload. Wins from moving this to the fragment shader: (1) ~62% less texture-upload bandwidth (3.1MB vs 8.3MB per 1080p frame, ~155MB/s saved at 30fps); (2) eliminates ~2M iterations per frame of CPU work; (3) GPU cost of the YUV\u2192RGB matrix multiply is negligible; (4) two textures instead of one, slightly more state but trivial. The change is decoder-agnostic \u2014 same shader works whether the underlying Android decoder is FFmpeg today or hardware MediaCodec later (so this is a useful step independently of any MediaCodec rewrite). Apple path stays as-is because VideoToolbox + Apple silicon does CSC in dedicated hardware; the conversion is reliable and free there. The conversion problem is genuinely Android-specific and the fix should be too \u2014 no cross-platform unification creep.'
+    origin: 'forked-from: \ud83c\udfafT31 / FFmpeg-vs-MediaCodec discussion 2026-04-19'
+    discovered: 2026-04-20
+    achieved: 2026-04-20
   T4:
     name: playerLoop takes a config struct with named fields
     status: identified

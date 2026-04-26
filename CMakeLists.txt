@@ -30,6 +30,11 @@ if(APPLE)
 endif()
 if(CMAKE_SYSTEM_NAME STREQUAL "Android")
     list(APPEND BGFX_COMPILE_FLAGS -DBGFX_CONFIG_MULTITHREADED=0)
+    # Vulkan-only on Android: the Android emulator's Apple-Metal-backed EGL
+    # translator only exposes GLES 3.0, so any GLES 3.1 context request
+    # triggers EGL_BAD_CONFIG → bgfx fatal. Forcing Vulkan bypasses bgfx's
+    # auto-detect block that would otherwise enable both GLES and Vulkan.
+    list(APPEND BGFX_COMPILE_FLAGS -DBGFX_CONFIG_RENDERER_VULKAN=1)
 endif()
 
 # bx
@@ -38,15 +43,18 @@ target_include_directories(bx PUBLIC
     ${BX_DIR}/include
     ${BX_DIR}/3rdparty
 )
-# Apple platforms need the osx compat header
+# Apple needs osx compat; Android uses the linux compat path (bx handles
+# platform-specific bits internally via __ANDROID__).
 if(APPLE)
     target_include_directories(bx PUBLIC ${BX_DIR}/include/compat/osx)
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Android")
+    target_include_directories(bx PUBLIC ${BX_DIR}/include/compat/linux)
 endif()
 target_include_directories(bx PRIVATE
     ${BIMG_DIR}/include
     ${BGFX_DIR}/include
 )
-target_compile_options(bx PRIVATE ${BGFX_COMPILE_FLAGS})
+target_compile_options(bx PUBLIC ${BGFX_COMPILE_FLAGS})
 set_target_properties(bx PROPERTIES CXX_STANDARD 20)
 
 # bimg (image.cpp + image_gnf.cpp — decode/encode not needed for bgfx runtime)
@@ -64,10 +72,8 @@ target_include_directories(bimg PRIVATE
 if(APPLE)
     target_include_directories(bimg PRIVATE ${BX_DIR}/include/compat/osx)
 endif()
-target_compile_options(bimg PRIVATE
-    ${BGFX_COMPILE_FLAGS}
-    -DBIMG_CONFIG_DECODE_ENABLE=0
-)
+target_compile_options(bimg PUBLIC ${BGFX_COMPILE_FLAGS})
+target_compile_options(bimg PRIVATE -DBIMG_CONFIG_DECODE_ENABLE=0)
 set_target_properties(bimg PROPERTIES CXX_STANDARD 20)
 
 # bgfx (amalgamated; Metal backend requires ObjC++ on Apple)
@@ -86,7 +92,7 @@ if(APPLE)
     set_source_files_properties(${BGFX_DIR}/src/amalgamated.cpp
         PROPERTIES LANGUAGE OBJCXX)
 endif()
-target_compile_options(bgfx PRIVATE ${BGFX_COMPILE_FLAGS})
+target_compile_options(bgfx PUBLIC ${BGFX_COMPILE_FLAGS})
 set_target_properties(bgfx PROPERTIES CXX_STANDARD 20)
 
 # ── Box2D (uses its own CMakeLists.txt) ───────────────
@@ -139,21 +145,33 @@ set(GE_CORE_SOURCES
 
 if(APPLE)
     list(APPEND GE_CORE_SOURCES
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/FontLoader_apple.mm)
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/FontLoader_apple.mm
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/SdlContext.cpp)
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Android")
     list(APPEND GE_CORE_SOURCES
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/FontLoader_android.cpp)
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/FontLoader_android.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/SdlContext_android.cpp)
 endif()
 
+# Sources that live in both direct and wire modes — bgfx init + session
+# plumbing + the direct-rendering composite path. These are .mm on Apple
+# (ObjC++) and .mm compiled as CXX on Android (same files, but the .mm
+# extension is just symmetry with the Apple build).
+set(GE_DIRECT_RENDER_SOURCES
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/BgfxContext.mm
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/SessionHost.mm
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/render/DirectRenderHost.mm
+)
+
 if(GE_DIRECT)
-    # Direct mode: app initializes bgfx itself; ge provides utilities only
-    set(GE_SOURCES ${GE_CORE_SOURCES})
+    # Direct mode: app owns the frame loop; ge provides bgfx init,
+    # DirectRenderHost, SDL context, font loader, and utilities.
+    set(GE_SOURCES ${GE_CORE_SOURCES} ${GE_DIRECT_RENDER_SOURCES})
 else()
-    # Wire mode: includes bgfx init, networking, and H.264 encode/decode
-    set(GE_SOURCES ${GE_CORE_SOURCES}
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/BgfxContext.mm
+    # Wire mode: direct-render sources plus networking and H.264 codec
+    # services for the brokered ged/player modality.
+    set(GE_SOURCES ${GE_CORE_SOURCES} ${GE_DIRECT_RENDER_SOURCES}
         ${CMAKE_CURRENT_SOURCE_DIR}/src/WebSocketClient.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/SessionHost.mm
         ${CMAKE_CURRENT_SOURCE_DIR}/src/VideoEncoder_apple.mm
         ${CMAKE_CURRENT_SOURCE_DIR}/src/VideoDecoder_apple.mm
     )
@@ -161,16 +179,21 @@ endif()
 
 add_library(ge STATIC ${GE_SOURCES})
 
-# ── ObjC++ for .mm files (Apple only) ─────────────────
-
-if(NOT GE_DIRECT AND NOT CMAKE_SYSTEM_NAME STREQUAL "Android")
-    set_source_files_properties(
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/BgfxContext.mm
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/SessionHost.mm
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/VideoEncoder_apple.mm
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/VideoDecoder_apple.mm
-        PROPERTIES LANGUAGE OBJCXX
-    )
+# ── ObjC++ for .mm files ──────────────────────────────
+# On Apple, .mm files are ObjC++. On Android, the .mm extension is symmetry
+# with the Apple build — compile as plain CXX since there's no ObjC runtime.
+if(CMAKE_SYSTEM_NAME STREQUAL "Android")
+    set_source_files_properties(${GE_DIRECT_RENDER_SOURCES}
+        PROPERTIES LANGUAGE CXX)
+else()
+    set(MM_FILES ${GE_DIRECT_RENDER_SOURCES})
+    if(NOT GE_DIRECT)
+        list(APPEND MM_FILES
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/VideoEncoder_apple.mm
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/VideoDecoder_apple.mm
+        )
+    endif()
+    set_source_files_properties(${MM_FILES} PROPERTIES LANGUAGE OBJCXX)
 endif()
 
 # ── Public include directories ────────────────────────
@@ -199,7 +222,11 @@ target_compile_definitions(ge PUBLIC
 )
 
 if(GE_DIRECT)
-    target_compile_definitions(ge PUBLIC GE_DIRECT)
+    # GE_DIRECT — general "direct mode is enabled" marker.
+    # GE_DIRECT_ONLY — specifically signals the brokered session code (and
+    #                  its asio/WebSocket dependency tree) is absent, so
+    #                  SessionHost.mm stubs runBrokered at compile time.
+    target_compile_definitions(ge PUBLIC GE_DIRECT GE_DIRECT_ONLY)
 else()
     target_include_directories(ge PUBLIC
         ${GE_VENDOR}/github.com/chriskohlhoff/asio/include
