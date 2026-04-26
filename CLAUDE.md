@@ -444,59 +444,78 @@ Protocol changes require updating both `SessionHost.mm` (server side) and `playe
 
 **Before asking the user whether something is rendering on a mobile device, exhaust all programmatic checks first.** The user cannot easily tell you what's on screen during an automated workflow — treat "ask user to look at device" as a last resort, not a first step.
 
-After building and deploying to a device/simulator, run the smoke test script:
+The smoke test script uses the **spyder CLI** for all device-side operations. Spyder must be installed and `spyder serve` must be running (or auto-started) before running the script. After building and deploying to a device/simulator, run:
 
 ```bash
-# iOS Simulator — specify phone or tablet form factor
-ge/tools/smoke-test.sh --platform ios-sim --device tablet
-ge/tools/smoke-test.sh --platform ios-sim --device phone
+# Named device (inventory alias)
+ge/tools/smoke-test.sh --device Pippa
 
-# iOS Device — specific device by name or UDID
-ge/tools/smoke-test.sh --platform ios-device --device Pippa
+# Selector predicate — any booted iPad sim running iOS 18+
+ge/tools/smoke-test.sh --device platform=ios-sim,model=ipad,os>=18
 
-# Android emulator
-ge/tools/smoke-test.sh --platform android-emu --package com.squz.player
+# Selector predicate — Android emulator
+ge/tools/smoke-test.sh --device platform=android-emu
 
-# Android device — specific device by serial
-ge/tools/smoke-test.sh --platform android-device --device R5CT900XYZ
-
-# Desktop player
+# Desktop player (no device checks)
 ge/tools/smoke-test.sh --platform desktop
+
+# Sole connected device (errors if multiple)
+ge/tools/smoke-test.sh
 ```
 
-The `--device` flag meaning varies by platform:
-- **ios-sim**: `phone` or `tablet` — picks the latest booted simulator of that form factor. Omit to use any sole booted sim (errors if multiple are booted).
-- **ios-device**: device name or UDID (substring match, case-insensitive). Omit for the sole connected device. Lists all registered physical devices with `[connected]`/`[disconnected]` state when the target isn't found.
-- **android**: serial or model substring. Omit for the sole connected device.
+The `--device` flag accepts any spyder selector:
+- **Inventory alias**: a name registered in `~/.spyder/inventory.json` (e.g. `Pippa`).
+- **Selector predicate**: comma-separated `key=value` pairs understood by `spyder reserve --on`
+  (e.g. `platform=ios-sim,model=ipad`, `platform=android,os>=12`).
+- **Raw UUID / serial**: passed directly to spyder subcommands.
 
-Use `--install <path>` to ensure the device runs the latest build. This performs an atomic terminate → install → launch cycle and verifies the new process starts:
+Use `--install <path>` to ensure the device runs the latest build. This performs an atomic
+terminate → install → launch → verify-pid via `spyder deploy`:
 
 ```bash
-# Deploy latest build to simulator before testing
-ge/tools/smoke-test.sh --platform ios-sim --device tablet \
+# Deploy latest iOS build before testing
+ge/tools/smoke-test.sh --device Pippa \
+    --install ios/build/xcode/Debug-iphoneos/YourWorld.app
+
+# Deploy iOS Simulator build
+ge/tools/smoke-test.sh --device platform=ios-sim,model=ipad \
     --install ios/build/xcode/Debug-iphonesimulator/YourWorld.app
 
-# Deploy APK to Android
-ge/tools/smoke-test.sh --platform android-emu \
+# Deploy Android APK
+ge/tools/smoke-test.sh --device platform=android-emu \
     --install ge/tools/android/app/build/outputs/apk/debug/app-debug.apk
 ```
 
-Without `--install`, the script checks passively (is the app installed? is it running? is the running process newer than the binary?). **Always prefer `--install`** after a rebuild to avoid debugging stale binaries.
+Without `--install`, the script checks passively (is the app installed? is it in the foreground?). **Always prefer `--install`** after a rebuild to avoid debugging stale binaries.
 
 The script checks, in order:
 
 1. **ged reachable** — port listening, `/api/info` responds, game server connected, active session count
 2. **Game server running** — process alive (if `--server-pid` given)
-3. **Device/simulator reachable** — `simctl`, `devicectl`, or `adb` confirms device present
-4. **App deployed and running** — with `--install`: terminate → install → launch → verify PID. Without: check installation, process state, and binary freshness.
+3. **Device reachable** — `spyder devices` / `spyder resolve` confirms device found and connected; branches on spyder exit codes (11 = not found, 12 = not connected, 40 = trust not granted, 41 = developer mode off, 42 = locked)
+4. **App deployed and running** — with `--install`: `spyder deploy` (atomic terminate→install→launch→PID-verify); without: `spyder list-apps` + `spyder device-state` for foreground app
 5. **Player connected** — polls ged `/api/info` for active sessions (up to `--timeout` seconds)
-6. **Player logs** — checks logcat (Android) or crash reports (iOS) for recent errors
+6. **Player logs** — `spyder log <device>` filtered to error/fatal/crash; falls back to `~/Library/Logs/DiagnosticReports` crash scan
 
-Each check prints PASS/FAIL/WARN. The script exits non-zero if any check fails. **Do not ask the user about visual output until this script passes.** If it fails, diagnose and fix the failure — don't escalate to the user.
+Each check prints PASS/FAIL/WARN. The script exits non-zero if any check fails. **Do not ask the user about visual output until this script passes.** If it fails, read the spyder exit code in the FAIL message and branch accordingly:
+
+| Exit code | Meaning | Action |
+|-----------|---------|--------|
+| 10 | spyder daemon unreachable | Run `spyder serve` |
+| 11 | device not in inventory | Check alias spelling; run `spyder devices` |
+| 12 | device not connected | Plug in / boot the device |
+| 20 | app not installed | Re-run with `--install` |
+| 21 | install failed | Check signing / provisioning profile |
+| 22 | launch failed | Check bundle ID; look at crash logs |
+| 24 | PID verify failed | App crashed at startup — check logs |
+| 30 | timeout | Increase `--timeout` or check device health |
+| 40 | trust not granted | Accept the "Trust this Computer" dialog |
+| 41 | Developer Mode off | Enable in iOS Settings → Privacy & Security |
+| 42 | device locked | Unlock the device |
 
 Only after the smoke test passes and the problem is still unclear, ask the user what they see — but state what you already verified: "Smoke test passed (ged connected, player session active, no crash reports) — can you confirm whether the globe is rendering?"
 
-**Device preference**: When the user tells you which device to test on (e.g. "use Pippa"), save it to auto-memory so you remember across sessions. Always pass the preferred device via `--device`. If the smoke test fails because that device isn't found, tell the user which device was expected and list the devices that *are* available (the script prints them), then ask how they'd like to proceed.
+**Device preference**: When the user tells you which device to test on (e.g. "use Pippa"), save it to auto-memory so you remember across sessions. Always pass the preferred device via `--device`. If the smoke test fails because that device isn't found, tell the user which device was expected and list the devices that *are* available (the script prints them via `spyder devices`), then ask how they'd like to proceed.
 
 ### Visual regression
 
