@@ -71,6 +71,10 @@
 #   1 — one or more sub-checks failed
 #   2 — setup error (cell name invalid, APP_ID auto-detect failed, prereq missing)
 #   13 — reservation conflict: another cell holds this device (all retries exhausted)
+#   50 — cell sub-checks passed but post-run device_power_state was display_off or
+#        asleep — the soak result is unreliable (device may have been sleeping most
+#        of the run). Distinct from 1 so CI can flag "device fell asleep" separately
+#        from "cell logic failed". spyder exit codes 10–42 are reserved; 50 is safe.
 
 set -euo pipefail
 
@@ -443,6 +447,69 @@ warn_check() {
     local name="$1"; local msg="${2:-}"
     SUBCHECKS_PASSED+=("$name")
     printf "  ~ %-22s WARN%s\n" "$name" "${msg:+  — $msg}"
+}
+
+# ── Post-run device power state check (🎯T33.4) ─────────────────────
+# check_device_awake <spyder-device-id>
+#
+# Calls `spyder device_power_state <id>` (35s timeout — spyder's recommended
+# budget for the DVT-screenshot probe). Interprets the JSON {"state": "..."}.
+#
+#   awake       → return 0 (pass — device was on during the soak)
+#   unknown     → warn and return 0 (tunneld unavailable, dev mode off, etc.;
+#                 treat as no-signal; don't flip a passing cell to fail)
+#   display_off → print diagnostic and exit 50
+#   asleep      → print diagnostic and exit 50
+#
+# Exit 50 is outside spyder's reserved 10–42 range. It means "cell logic passed
+# but the device fell asleep, so the soak result is unreliable."
+#
+# If spyder is not installed or the call itself times out, warn and return 0
+# (absence of evidence is not evidence of absence).
+#
+# Only call this after a soak sub-check has passed; skip when the cell already
+# failed (caller should guard with: if [[ ${#SUBCHECKS_FAILED[@]} -eq 0 ]]).
+DEVICE_ASLEEP_EXIT=50
+
+check_device_awake() {
+    local device_id="$1"
+    local subcheck="device-power-state"
+
+    if ! command -v spyder >/dev/null 2>&1; then
+        warn_check "$subcheck" "spyder not installed — skipping power-state probe"
+        return 0
+    fi
+
+    local raw
+    if ! raw=$(spyder device_power_state "$device_id" --timeout 35 2>/dev/null); then
+        warn_check "$subcheck" "spyder device_power_state call failed — skipping"
+        return 0
+    fi
+
+    local state
+    state=$(python3 -c "import sys,json; print(json.loads(sys.stdin.read()).get('state','unknown'))" \
+        <<< "$raw" 2>/dev/null || echo "unknown")
+
+    case "$state" in
+        awake)
+            pass_check "$subcheck" "device awake post-soak"
+            return 0
+            ;;
+        unknown)
+            warn_check "$subcheck" "state=unknown (tunneld unavailable or dev mode off) — no signal"
+            return 0
+            ;;
+        display_off|asleep)
+            printf "  ✗ %-22s FAIL  — device state=%s post-soak; soak result is unreliable\n" \
+                "$subcheck" "$state"
+            SUBCHECKS_FAILED+=("$subcheck")
+            return "$DEVICE_ASLEEP_EXIT"
+            ;;
+        *)
+            warn_check "$subcheck" "unrecognised state='$state' — treating as no signal"
+            return 0
+            ;;
+    esac
 }
 
 # Run a command, respecting VERBOSE. Returns exit code.
@@ -2041,6 +2108,11 @@ run_ios_sim_player() {
     check_reconnect_ios_sim_player "$SERVER_PID" "$SIM_UDID" || true
     SERVER_PID=""
     check_clean_exit_ios_sim "$SIM_UDID" "$PLAYER_BUNDLE_ID"
+    # Post-run device power state probe (🎯T33.4): verify the device stayed awake.
+    # On a sim, spyder returns 'unknown' (no tunneld) — treated as no-signal (warn only).
+    if [[ ${#SUBCHECKS_FAILED[@]} -eq 0 ]]; then
+        check_device_awake "$SIM_UDID" || exit $DEVICE_ASLEEP_EXIT
+    fi
 }
 
 run_ios_device_dist() {
@@ -2055,6 +2127,10 @@ run_ios_device_dist() {
     check_soak_ios_device "$IOS_DEVICE_UDID" "$APP_ID" || true
     check_bgfg_ios_device "$IOS_DEVICE_UDID" "$APP_ID" || true
     check_clean_exit_ios_device "$IOS_DEVICE_UDID" "$APP_ID"
+    # Post-run device power state probe (🎯T33.4): physical iOS devices can auto-lock.
+    if [[ ${#SUBCHECKS_FAILED[@]} -eq 0 ]]; then
+        check_device_awake "$IOS_DEVICE_UDID" || exit $DEVICE_ASLEEP_EXIT
+    fi
 }
 
 run_ios_device_player() {
@@ -2085,6 +2161,11 @@ run_ios_device_player() {
     stop_server
     SERVER_PID=""
     check_clean_exit_ios_device "$IOS_DEVICE_UDID" "$PLAYER_BUNDLE_ID"
+    # Post-run device power state probe (🎯T33.4): verify the physical device stayed awake.
+    # Physical iOS devices can auto-lock during long sessions; this catches that case.
+    if [[ ${#SUBCHECKS_FAILED[@]} -eq 0 ]]; then
+        check_device_awake "$IOS_DEVICE_UDID" || exit $DEVICE_ASLEEP_EXIT
+    fi
 }
 
 run_android_emu_dist() {
@@ -2108,6 +2189,11 @@ run_android_emu_dist() {
     # Run 'make update-baselines' in the app directory to refresh baselines.
     visual_regression_check "$ANDROID_SERIAL" "$CELL" || exit 51
     check_clean_exit_android "$ANDROID_SERIAL" "$APP_ID"
+    # Post-run device power state probe (🎯T33.4 / 🎯T28.4 AccelSynth cell).
+    # Emulators don't auto-lock; spyder returns 'unknown' — treated as no-signal.
+    if [[ ${#SUBCHECKS_FAILED[@]} -eq 0 ]]; then
+        check_device_awake "$ANDROID_SERIAL" || exit $DEVICE_ASLEEP_EXIT
+    fi
 }
 
 run_android_emu_player() {
@@ -2136,6 +2222,11 @@ run_android_emu_player() {
     check_reconnect_android_player "$SERVER_PID" "$ANDROID_SERIAL" || true
     SERVER_PID=""
     check_clean_exit_android "$ANDROID_SERIAL" "$PLAYER_ANDROID_PKG"
+    # Post-run device power state probe (🎯T33.4): verify the emulator stayed awake.
+    # Android emulators don't auto-lock but spyder returns 'unknown' — treated as no-signal.
+    if [[ ${#SUBCHECKS_FAILED[@]} -eq 0 ]]; then
+        check_device_awake "$ANDROID_SERIAL" || exit $DEVICE_ASLEEP_EXIT
+    fi
 }
 
 run_android_device_dist() {
@@ -2153,6 +2244,10 @@ run_android_device_dist() {
     check_soak_android "$ANDROID_SERIAL" "$APP_ID" || true
     check_bgfg_android "$ANDROID_SERIAL" "$APP_ID" "$activity" || true
     check_clean_exit_android "$ANDROID_SERIAL" "$APP_ID"
+    # Post-run device power state probe (🎯T33.4): physical Android devices can auto-lock.
+    if [[ ${#SUBCHECKS_FAILED[@]} -eq 0 ]]; then
+        check_device_awake "$ANDROID_SERIAL" || exit $DEVICE_ASLEEP_EXIT
+    fi
 }
 
 run_android_device_player() {
@@ -2188,6 +2283,10 @@ run_android_device_player() {
     stop_server
     SERVER_PID=""
     check_clean_exit_android "$ANDROID_SERIAL" "$PLAYER_ANDROID_PKG"
+    # Post-run device power state probe (🎯T33.4): physical Android devices can auto-lock.
+    if [[ ${#SUBCHECKS_FAILED[@]} -eq 0 ]]; then
+        check_device_awake "$ANDROID_SERIAL" || exit $DEVICE_ASLEEP_EXIT
+    fi
 }
 
 run_debug_dist() {
@@ -2332,15 +2431,35 @@ case "$CELL" in
 esac
 
 # ── Final summary ────────────────────────────────────────────────────
+# Exit-code legend:
+#   0  — all sub-checks passed (including device_power_state if applicable)
+#   1  — one or more sub-checks failed
+#  50  — all other sub-checks passed but device_power_state was display_off/asleep;
+#         soak result is unreliable. Distinct from 1 so CI can report it separately.
 
 echo
 pass_count=${#SUBCHECKS_PASSED[@]}
 fail_count=${#SUBCHECKS_FAILED[@]}
 total=$((pass_count + fail_count))
+
+# Detect whether the only failure is the device-power-state sub-check, which
+# means the cell logic passed but the device fell asleep during the soak.
+device_asleep=0
+if [[ $fail_count -eq 1 && "${SUBCHECKS_FAILED[*]}" == "device-power-state" ]]; then
+    device_asleep=1
+fi
+
 echo "── $CELL: $pass_count/$total passed ──"
 if [[ $fail_count -gt 0 ]]; then
-    echo "  Failed: ${SUBCHECKS_FAILED[*]}"
+    if [[ $device_asleep -eq 1 ]]; then
+        echo "  Failed: ${SUBCHECKS_FAILED[*]}  (device fell asleep — soak unreliable; exit $DEVICE_ASLEEP_EXIT)"
+    else
+        echo "  Failed: ${SUBCHECKS_FAILED[*]}"
+    fi
     echo "  Artifacts: $ARTIFACTS"
+    if [[ $device_asleep -eq 1 ]]; then
+        exit "$DEVICE_ASLEEP_EXIT"
+    fi
     exit 1
 fi
 echo "  Artifacts: $ARTIFACTS"

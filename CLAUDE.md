@@ -517,6 +517,24 @@ Only after the smoke test passes and the problem is still unclear, ask the user 
 
 **Device preference**: When the user tells you which device to test on (e.g. "use Pippa"), save it to auto-memory so you remember across sessions. Always pass the preferred device via `--device`. If the smoke test fails because that device isn't found, tell the user which device was expected and list the devices that *are* available (the script prints them via `spyder devices`), then ask how they'd like to proceed.
 
+### Post-run device power state check (matrix cells)
+
+Soak-style matrix cells call `spyder device_power_state <device>` after all sub-checks complete (🎯T33.4). This guards against a class of false-pass where the device auto-locked during the soak — rendering the soak result meaningless.
+
+Qualifying cells: all `*-device-*` and `*-emu-*` player cells (🎯T25 reconnect), `android-emu-*-dist` (🎯T28.4 AccelSynth), and any future cell with a soak phase longer than 60 s.
+
+**Exit-code semantics**:
+- Exit `0` — all sub-checks passed and device was `awake` post-soak (or state was `unknown`, which is no-signal).
+- Exit `1` — one or more sub-checks failed (normal cell failure).
+- Exit `50` — all sub-checks passed, but `device_power_state` returned `display_off` or `asleep`. The soak ran against a sleeping device; its result is unreliable. CI should report this as "FAIL (device fell asleep)" rather than a plain pass or fail.
+
+**State handling**:
+- `awake` → pass, no action.
+- `unknown` → warn but do not fail; `unknown` means tunneld was unavailable or developer mode was off — absence of evidence, not evidence of absence.
+- `display_off` / `asleep` → exit 50.
+
+The probe uses spyder's DVT Screenshot instrument, which does not itself reset the idle timer, so calling it at the end of a soak does not make the test self-defeating.
+
 ### Visual regression
 
 ge uses spyder's `screenshot` + `diff` commands to catch rendering regressions in matrix cells. Two cells wire in visual regression checks today:
