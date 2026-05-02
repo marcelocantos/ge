@@ -19,17 +19,19 @@
 #   <cell-name>       One of the 24 canonical cell names (see list below).
 #
 # Options:
-#   --app <dir>       App root dir (default: current dir).
-#   --timeout <s>     Sub-check timeout override.
-#                     Defaults: cold-launch=8s, soak=60s, debug-soak=10s.
-#   --capture-refs    Record reference screenshots instead of comparing.
-#   --rms <f>         Image-diff RMS threshold (default 0.08).
-#   --verbose         Echo sub-command output.
-#   --device <alias>  Pin a specific device alias (skip spyder reserve --on).
-#                     Normally passed internally by the self-wrap; callers can
-#                     also use it to target a known inventory alias directly.
-#   --skip-spyder-run Internal flag. Means this invocation is already running
-#                     inside a `spyder run` wrapper — skip the self-wrap.
+#   --app <dir>           App root dir (default: current dir).
+#   --timeout <s>         Cold-launch timeout override (default 8s).
+#   --soak-timeout <s>    Soak phase duration override (default 10s; use 60 for
+#                         the long-soak cell).  Debug cells always use 10s
+#                         regardless of this value.
+#   --capture-refs        Record reference screenshots instead of comparing.
+#   --rms <f>             Image-diff RMS threshold (default 0.08).
+#   --verbose             Echo sub-command output.
+#   --device <alias>      Pin a specific device alias (skip spyder reserve --on).
+#                         Normally passed internally by the self-wrap; callers can
+#                         also use it to target a known inventory alias directly.
+#   --skip-spyder-run     Internal flag. Means this invocation is already running
+#                         inside a `spyder run` wrapper — skip the self-wrap.
 #
 # Canonical cell names:
 #   desktop-dist  desktop-player
@@ -100,7 +102,7 @@ fi
 CELL=""
 APP_DIR="$(pwd)"
 COLD_LAUNCH_TIMEOUT=8
-SOAK_TIMEOUT=60
+SOAK_TIMEOUT=10
 DEBUG_SOAK_TIMEOUT=10
 CAPTURE_REFS=0
 RMS=0.08
@@ -124,7 +126,8 @@ CELL="$1"; shift
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --app)             APP_DIR="$(cd "$2" && pwd)"; shift 2 ;;
-        --timeout)         COLD_LAUNCH_TIMEOUT="$2"; SOAK_TIMEOUT="$2"; shift 2 ;;
+        --timeout)         COLD_LAUNCH_TIMEOUT="$2"; shift 2 ;;
+        --soak-timeout)    SOAK_TIMEOUT="$2"; shift 2 ;;
         --capture-refs)    CAPTURE_REFS=1; shift ;;
         --rms)             RMS="$2"; shift 2 ;;
         --verbose)         VERBOSE=1; shift ;;
@@ -343,6 +346,7 @@ resolve_and_wrap() {
     retry_spyder_run "$alias" "$owner" "$0" "$CELL" \
         --app "$APP_DIR" \
         --timeout "$COLD_LAUNCH_TIMEOUT" \
+        --soak-timeout "$SOAK_TIMEOUT" \
         --rms "$RMS" \
         --device "$alias" \
         --skip-spyder-run \
@@ -367,6 +371,7 @@ if [[ $NEEDS_DEVICE -eq 1 && $SKIP_SPYDER_RUN -eq 0 ]]; then
         retry_spyder_run "$resolved_alias" "$owner" "$0" "$CELL" \
             --app "$APP_DIR" \
             --timeout "$COLD_LAUNCH_TIMEOUT" \
+            --soak-timeout "$SOAK_TIMEOUT" \
             --rms "$RMS" \
             --device "$resolved_alias" \
             --skip-spyder-run \
