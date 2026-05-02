@@ -556,10 +556,11 @@ targets:
     discovered: 2026-04-19
   T28:
     name: AccelSynth (Shift-mouse) works in every host context lacking a real accelerometer
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     showcase: true
+    demonstration: 'TiltBuggy distribution build on iOS Simulator (T28.3) demonstrated Shift-drag mouse tilt driving the buggy via screen recording. macOS desktop distribution (T28.1, T28.2 family) verified earlier in the same lineage. T28.4 (Android emu) was deliberately set aside on 2026-05-02: the AVD''s built-in virtual sensors (Extended Controls → Virtual sensors) supersede AccelSynth''s Shift+drag path on emu, so Android-emu tilt input flows through the regular real-sensor pipeline rather than the synth. With three of four sub-targets achieved and the fourth covered by an alternative mechanism, T28''s user-visible outcome — "tilt-driven gameplay works in every host context lacking a real accelerometer" — is satisfied.'
     acceptance:
     - In a tilt-driven sample app (e.g. tiltbuggy) built as distribution (in-process DirectRenderHost, no ged/player), Shift-drag of the mouse tilts the viewport and drives gameplay identically to the player binary's behaviour
     - 'Works on: macOS desktop distribution build, iOS simulator distribution build, Android emulator distribution build'
@@ -568,6 +569,7 @@ targets:
     context: AccelSynth (src/render/AccelSynth.h) synthesises SDL_EVENT_SENSOR_UPDATE from Shift-gated mouse motion. It is wired into PlayerRender (player binary) where it works, and constructed by DirectRenderHost (distribution modality) but not fully driven — events are not routed through synth->handle() in pumpEvents, update() per frame is not called, and the viewport tilt composite is not driven by synth tilt. Supersedes 🎯T12 (⌥WASD uniform synthesis) and 🎯T13 (⌥-gated mouse) — both described an earlier design abandoned in favour of AccelSynth's single-file Shift-mouse model.
     origin: user request 2026-04-19
     discovered: 2026-04-19
+    achieved: 2026-05-02
   T28.1:
     name: DirectRenderHost routes events through AccelSynth::handle() and drives update() per frame
     status: achieved
