@@ -1,5 +1,6 @@
 #include <ge/Resource.h>
 #include <SDL3/SDL.h>
+#include <bgfx/bgfx.h>
 #if defined(__APPLE__)
 #include <TargetConditionals.h>
 #endif
@@ -34,6 +35,29 @@ std::string resource(const std::string& relativePath) {
     }();
 
     return base + relativePath;
+}
+
+namespace {
+const char* shaderProfileSuffix() {
+#if defined(__ANDROID__)
+    switch (bgfx::getRendererType()) {
+    case bgfx::RendererType::Vulkan:   return "-spirv";
+    case bgfx::RendererType::OpenGLES: return "-gles";
+    default: break;  // shouldn't happen on Android
+    }
+    return "-gles";   // safer fallback (no SPIR-V mismatch)
+#else
+    return "";        // Apple → Metal, single canonical "shaders/" dir
+#endif
+}
+}
+
+std::string shaderDir() {
+    return std::string("build/shaders") + shaderProfileSuffix();
+}
+
+std::string renderShaderDir() {
+    return std::string("build/ge/shaders") + shaderProfileSuffix();
 }
 
 } // namespace ge

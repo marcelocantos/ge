@@ -69,6 +69,13 @@ public:
     // True when the render subsystem has signalled shutdown (window close,
     // wire closed, SIGINT, etc.).
     virtual bool shouldQuit() const = 0;
+
+    // True while the render path is suspended (Android: activity in
+    // background, swap chain torn down). The engine's run loop must
+    // skip beginFrame / onRender / bgfx::frame / endFrame while this
+    // is true — bgfx::frame() against a dead Android swap chain crashes.
+    // Default false; only DirectRenderHost on Android ever returns true.
+    virtual bool paused() const { return false; }
 };
 
 } // namespace ge

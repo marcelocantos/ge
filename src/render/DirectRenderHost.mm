@@ -9,6 +9,8 @@
 #include <ge/Resource.h>
 #include <ge/Signal.h>
 
+#include "../../tools/player_orientation.h"
+
 #include <iterator>
 #include <vector>
 
@@ -45,6 +47,47 @@ bgfx::VertexLayout composeLayout() {
     return l;
 }
 
+// Rotate a 3-axis accelerometer sample from the device-hardware frame
+// (SDL3's reported convention: +X = physical right edge up, +Y = physical
+// top edge up, +Z = screen up) into the game's screen frame.
+//
+// The rotation is keyed on the LIVE display orientation reported by SDL
+// (SDL_GetCurrentDisplayOrientation) — not on SessionConfig.orientation,
+// which only records what the app *requested*. The live value reflects
+// what the OS actually rotated to (post-lock-if-honoured, or the live
+// rotation when no lock was requested), so this stays correct in both
+// locked and free-orientation modes and across the brief window between
+// a lock request and the OS settling.
+//
+// Touch and mouse coordinates are NOT rotated — both iOS and Android
+// already deliver those in the rotated UI frame. Accelerometer is the
+// outlier because the sensor chip is fixed to the chassis and has no
+// notion of UI orientation. Z (out of screen) is invariant under any
+// in-plane UI rotation, so it passes through.
+//
+// Each case is a 2D rotation expressed as a swap-and-sign on (x, y):
+//
+//   Portrait        identity            ( x,  y)
+//   Landscape       device rotated CW   (-y,  x)
+//   PortraitFlipped device upside down  (-x, -y)
+//   LandscapeFlip   device rotated CCW  ( y, -x)
+void rotateAccelToScreen(SDL_DisplayOrientation orient, float d[/*≥3*/]) {
+    const float x = d[0];
+    const float y = d[1];
+    switch (orient) {
+    case SDL_ORIENTATION_LANDSCAPE:
+        d[0] = -y; d[1] =  x; break;
+    case SDL_ORIENTATION_LANDSCAPE_FLIPPED:
+        d[0] =  y; d[1] = -x; break;
+    case SDL_ORIENTATION_PORTRAIT_FLIPPED:
+        d[0] = -x; d[1] = -y; break;
+    case SDL_ORIENTATION_PORTRAIT:
+    case SDL_ORIENTATION_UNKNOWN:
+    default:
+        break;  // identity — fall back to device frame on unknown
+    }
+}
+
 bgfx::ShaderHandle loadShader(const char* path) {
     auto stream = ge::openFile(path, /*binary=*/true);
     if (!stream || !*stream) {
@@ -72,6 +115,7 @@ struct DirectRenderHost::Impl {
     bool quit = false;
 
     std::optional<AccelSynth> synth;
+    SDL_Sensor* accelSensor = nullptr;
 
     // Offscreen pipeline — lazily created on first non-zero tilt.
     bool offscreenReady = false;
@@ -111,8 +155,8 @@ struct DirectRenderHost::Impl {
         bgfx::TextureHandle atts[] = { colorTex, depthTex };
         offFB = bgfx::createFrameBuffer(2, atts, /*destroyTextures=*/false);
 
-        bgfx::ShaderHandle vs = loadShader(ge::resource("build/ge/shaders/ge_compose_vs.bin").c_str());
-        bgfx::ShaderHandle fs = loadShader(ge::resource("build/ge/shaders/ge_compose_fs.bin").c_str());
+        bgfx::ShaderHandle vs = loadShader(ge::resource(ge::renderShaderDir() + "/ge_compose_vs.bin").c_str());
+        bgfx::ShaderHandle fs = loadShader(ge::resource(ge::renderShaderDir() + "/ge_compose_fs.bin").c_str());
         if (!bgfx::isValid(vs) || !bgfx::isValid(fs)) {
             SPDLOG_ERROR("DirectRenderHost: compose shaders missing — viewport tilt disabled");
             return;
@@ -153,26 +197,55 @@ DirectRenderHost::DirectRenderHost(const SessionHostConfig& config)
     if (i_->bgfxCtx->width()  > 0) i_->width  = i_->bgfxCtx->width();
     if (i_->bgfxCtx->height() > 0) i_->height = i_->bgfxCtx->height();
 
-    if ((config.sensors & wire::kSensorAccelerometer) &&
-        !AccelSynth::realSensorAvailable()) {
-        i_->synth.emplace();
-        i_->synth->setWindow(i_->bgfxCtx->window());
-        SPDLOG_INFO("DirectRenderHost: Shift-mouse accelerometer synthesis enabled");
+    if (config.sensors & wire::kSensorAccelerometer) {
+        // Try a real sensor first (real device, Android emulator virtual sensors).
+        int count = 0;
+        SDL_SensorID* sensors = SDL_GetSensors(&count);
+        if (sensors) {
+            for (int k = 0; k < count; k++) {
+                if (SDL_GetSensorTypeForID(sensors[k]) == SDL_SENSOR_ACCEL) {
+                    i_->accelSensor = SDL_OpenSensor(sensors[k]);
+                    if (i_->accelSensor) {
+                        SPDLOG_INFO("DirectRenderHost: opened real accelerometer");
+                        break;
+                    }
+                }
+            }
+            SDL_free(sensors);
+        }
+        // Fall back to Shift-mouse synthesis.
+        if (!i_->accelSensor) {
+            i_->synth.emplace();
+            i_->synth->setWindow(i_->bgfxCtx->window());
+            SPDLOG_INFO("DirectRenderHost: Shift-mouse accelerometer synthesis enabled");
+        }
     }
 
     SPDLOG_INFO("DirectRenderHost: {}x{}", i_->width, i_->height);
 }
 
 DirectRenderHost::~DirectRenderHost() {
+    if (i_->accelSensor) {
+        SDL_CloseSensor(i_->accelSensor);
+        i_->accelSensor = nullptr;
+    }
     i_->destroyOffscreen();
 }
 
 int DirectRenderHost::width() const  { return i_->width; }
 int DirectRenderHost::height() const { return i_->height; }
 DeviceClass DirectRenderHost::deviceClass() const { return DeviceClass::Desktop; }
+bool DirectRenderHost::paused() const { return i_->bgfxCtx && i_->bgfxCtx->paused(); }
 
-void DirectRenderHost::send(const wire::SessionConfig&) {
-    // Direct mode applies orientation/sensor hints in-process; no-op for now.
+void DirectRenderHost::send(const wire::SessionConfig& cfg) {
+    // iPadOS 26 ignores Info.plist orientation restrictions on iPad — the
+    // only working lock is the prefersInterfaceOrientationLocked swizzle in
+    // player_orientation_ios.mm. See ge/CLAUDE.md "iOS orientation lock".
+    playerForceOrientation(cfg.orientation);  // 0 = no-op
+    // Sensors are opened in the constructor from SessionHostConfig.
+    // Sensor-frame rotation is keyed on the LIVE display orientation in
+    // pumpEvents — cfg.orientation is just the lock request, not ground
+    // truth, and tells us nothing in the no-lock case.
 }
 
 void DirectRenderHost::setEventHandler(std::function<void(const SDL_Event&)> h) {
@@ -185,6 +258,35 @@ void DirectRenderHost::pumpEvents() {
     while (SDL_PollEvent(&e)) {
         if (e.type == SDL_EVENT_QUIT) {
             i_->quit = true;
+            continue;
+        }
+        // Activity lifecycle on Android. SDL3 doesn't deliver the
+        // higher-level SDL_EVENT_DID_ENTER_BACKGROUND/_FOREGROUND
+        // events to the C side on Android (only iOS); we use the
+        // window-level focus + minimize/restore events instead.
+        // FOCUS_LOST is the earliest signal we get when the activity
+        // starts backgrounding — gate bgfx immediately to avoid the
+        // BLAST BufferQueue-abandoned spam from a dead surface.
+        // RESTORED / FOCUS_GAINED is the resumption signal — re-acquire
+        // the new ANativeWindow and rebuild the swap chain.
+        // Both no-op on Apple (BgfxContext::onForeground is #if Android).
+        if (e.type == SDL_EVENT_WINDOW_FOCUS_LOST ||
+            e.type == SDL_EVENT_WINDOW_HIDDEN     ||
+            e.type == SDL_EVENT_WINDOW_MINIMIZED) {
+            i_->bgfxCtx->onBackground();
+            continue;
+        }
+        if (e.type == SDL_EVENT_WINDOW_RESTORED   ||
+            e.type == SDL_EVENT_WINDOW_FOCUS_GAINED ||
+            e.type == SDL_EVENT_WINDOW_SHOWN) {
+            i_->bgfxCtx->onForeground();
+            // bgfxCtx may have picked up a resized backbuffer; sync our
+            // view of it so the next frame's viewports match.
+            i_->width  = i_->bgfxCtx->width();
+            i_->height = i_->bgfxCtx->height();
+            // Offscreen pipeline references the old swap chain — drop it
+            // so it's recreated on demand against the new backbuffer.
+            i_->destroyOffscreen();
             continue;
         }
         // Any event that could signal a drawable-size change. On iOS the
@@ -205,11 +307,29 @@ void DirectRenderHost::pumpEvents() {
             continue;
         }
         if (i_->synth && i_->synth->handle(e)) continue;
+        // Rotate real-sensor accel into screen frame using the live
+        // display orientation. AccelSynth events bypass — they arrive
+        // via setEmit() callback, already in screen frame
+        // (mouse-displacement physics).
+        if (e.type == SDL_EVENT_SENSOR_UPDATE) {
+            SDL_DisplayOrientation o = SDL_ORIENTATION_UNKNOWN;
+            if (SDL_DisplayID disp = SDL_GetDisplayForWindow(i_->bgfxCtx->window())) {
+                o = SDL_GetCurrentDisplayOrientation(disp);
+            }
+            rotateAccelToScreen(o, e.sensor.data);
+        }
         if (i_->eventHandler) i_->eventHandler(e);
     }
 }
 
 void DirectRenderHost::beginFrame() {
+    // While the activity is backgrounded the swap chain is gone (Android)
+    // and any bgfx::reset / view setup we do here will reference a stale
+    // ANativeWindow and crash on next bgfx::frame(). Skip everything; SDL3
+    // also blocks the main loop on Android during background, so this
+    // path is mostly a no-op until the OS resumes us.
+    if (i_->bgfxCtx->paused()) return;
+
     // Apply any staged resize at the frame boundary so all bgfx state
     // (backbuffer, offscreen RT, view rects) moves together.
     if (i_->pendingResize) {

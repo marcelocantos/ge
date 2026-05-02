@@ -5,6 +5,41 @@
 // This is Apple's official replacement for UIRequiresFullScreen (TN3192).
 // We swizzle UIViewController to override the property because SDL's
 // view controller doesn't know about our SessionConfig.
+//
+// HOW THE LOCK ACTUALLY WORKS — read this before "simplifying" anything.
+//
+// The swizzle below alone CANNOT force a specific orientation. All it can do
+// is freeze the current orientation against the user's swivel gesture, and
+// the orientation it freezes to is bounded by supportedInterfaceOrientations
+// (which on iPad UIKit derives from Info.plist UISupportedInterfaceOrientations).
+//
+// To get "always landscape, ignore device orientation at launch", you need
+// BOTH pieces:
+//   1. Narrow UISupportedInterfaceOrientations in Info.plist to just the
+//      orientations you want. UIKit rotates the UI to a supported orientation
+//      at launch if the device is held in an unsupported one. (iPad
+//      multitasking ignores this list as a runtime restriction — the user
+//      can still resize the window — but the launch rotation still happens
+//      and the swizzle's lock is bounded by it.)
+//   2. The swizzle below, which overrides
+//      UIViewController.prefersInterfaceOrientationLocked (Apple TN3192,
+//      iPadOS 26+) to return YES, locking the post-launch orientation
+//      against swivel.
+//
+// Things that DON'T work and should not be re-tried:
+//   * UIRequiresFullScreen                         — deprecated, ignored on iPad.
+//   * SDL_HINT_ORIENTATIONS                        — limits the supported set
+//                                                    only; no runtime force.
+//   * UIWindowScene requestGeometryUpdate          — silently no-ops on iPad.
+//   * setNeedsUpdateOfSupportedInterfaceOrientations alone — only flips
+//                                                    UIKit's view of the
+//                                                    supported set; doesn't
+//                                                    create a lock.
+// History: e0da016 reverted the "plist alone" experiment; 5c2f2a5 added
+// this swizzle. Both commits are needed context if you're touching this.
+//
+// Direct-render apps (DirectRenderHost) call playerForceOrientation from
+// DirectRenderHost::send when SessionConfig.orientation is non-zero.
 
 #include "player_orientation.h"
 
