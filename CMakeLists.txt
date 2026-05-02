@@ -29,12 +29,24 @@ if(APPLE)
     list(APPEND BGFX_COMPILE_FLAGS -DBGFX_CONFIG_RENDERER_METAL=1)
 endif()
 if(CMAKE_SYSTEM_NAME STREQUAL "Android")
+    # Single-threaded mode is non-negotiable on Android: bgfx's default
+    # multi-thread mode spawns a render thread that keeps hammering the
+    # SurfaceView's BufferQueue after the activity backgrounds (the queue
+    # is "abandoned" but bgfx's thread doesn't know). Forcing single-thread
+    # routes every bgfx call through the main thread, where the SDL3
+    # WINDOW_FOCUS_LOST / RESTORED handler in DirectRenderHost gates them
+    # via BgfxContext::paused().
     list(APPEND BGFX_COMPILE_FLAGS -DBGFX_CONFIG_MULTITHREADED=0)
-    # Vulkan-only on Android: the Android emulator's Apple-Metal-backed EGL
-    # translator only exposes GLES 3.0, so any GLES 3.1 context request
-    # triggers EGL_BAD_CONFIG → bgfx fatal. Forcing Vulkan bypasses bgfx's
-    # auto-detect block that would otherwise enable both GLES and Vulkan.
-    list(APPEND BGFX_COMPILE_FLAGS -DBGFX_CONFIG_RENDERER_VULKAN=1)
+    # Compile in BOTH backends. BgfxContext.mm picks one at runtime per
+    # device:
+    #   * Real Adreno / Mali devices → OpenGL ES 3.1 (Vulkan path stalls;
+    #     see docs/papers/adreno-830-bgfx-vulkan-crash.md).
+    #   * Apple-Silicon AVD emulator → Vulkan (the AVD's Apple-Metal-backed
+    #     EGL translator exposes only GLES 3.0, so a 3.1 request fails).
+    list(APPEND BGFX_COMPILE_FLAGS
+        -DBGFX_CONFIG_RENDERER_VULKAN=1
+        -DBGFX_CONFIG_RENDERER_OPENGLES=31
+    )
 endif()
 
 # bx
@@ -269,8 +281,9 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Android")
     )
     target_link_libraries(ge PUBLIC SDL3_ttf::SDL3_ttf)
 
-    # Android system libs
-    target_link_libraries(ge INTERFACE android log EGL GLESv2)
+    # Android system libs. GLESv3 (not GLESv2) for the OpenGL ES 3.1
+    # backend bgfx uses on real Adreno/Mali devices.
+    target_link_libraries(ge INTERFACE android log EGL GLESv3)
 
 elseif(CMAKE_SYSTEM_NAME STREQUAL "iOS")
     # SDL3 and friends — pre-built xcframeworks
