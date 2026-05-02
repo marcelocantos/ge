@@ -59,7 +59,7 @@ protected:
 
 namespace {
 
-constexpr float kWorldHalfExtent = 10.0f;
+constexpr float kWorldHalfExtent = 0.625f;
 
 struct State {
     std::unique_ptr<tiltbuggy::Scene> scene;
@@ -115,7 +115,7 @@ int main(int argc, char* argv[]) {
             },
             .onRender = [&](int w, int h) {
                 if (!state.rendererInited) {
-                    state.renderer->init(ge::resource("build/shaders").c_str());
+                    state.renderer->init(ge::resource(ge::shaderDir()).c_str());
                     state.rendererInited = true;
                 }
                 state.renderer->drawFrame(*state.scene, w, h);
@@ -123,9 +123,14 @@ int main(int argc, char* argv[]) {
             .onEvent = [&](const SDL_Event& e) {
                 SPDLOG_INFO("onEvent type=0x{:x}", e.type);
                 if (e.type == SDL_EVENT_SENSOR_UPDATE) {
-                    state.gravity.x = e.sensor.data[0];
-                    state.gravity.y = e.sensor.data[1];
-                    SPDLOG_INFO("  → gravity=[{:.2f},{:.2f}]",
+                    // Engine delivers device acceleration in screen frame.
+                    // The world/board accelerates in that direction, so the
+                    // buggy (free on the board) experiences gravity in the
+                    // opposite direction — hence the negation.
+                    state.gravity.x = -e.sensor.data[0];
+                    state.gravity.y = -e.sensor.data[1];
+                    SPDLOG_INFO("ACCEL accel=[{:+.2f},{:+.2f},{:+.2f}] gravity=[{:+.2f},{:+.2f}]",
+                                e.sensor.data[0], e.sensor.data[1], e.sensor.data[2],
                                 state.gravity.x, state.gravity.y);
                 }
             },
