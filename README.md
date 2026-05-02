@@ -23,6 +23,15 @@ include ge/Module.mk
 
 This exports variables (`ge/LIB`, `ge/OBJ`, `ge/FRAMEWORK_LIBS`, etc.) and pattern rules for compiling engine sources, test sources, and shaders. There is no standalone build.
 
+### iOS / iPad orientation lock
+
+iPadOS 26+ ignores the usual single-knob orientation locks (`UIRequiresFullScreen`, `SDL_HINT_ORIENTATIONS`, `requestGeometryUpdate`, even narrowing `UISupportedInterfaceOrientations` alone). To lock orientation on iPad you need **two things together**:
+
+1. Narrow `UISupportedInterfaceOrientations` in your `Info.plist` to the orientation(s) you want allowed (e.g. just `LandscapeLeft` and `LandscapeRight` for a landscape-only game).
+2. Set `SessionHostConfig.orientation = wire::kOrientationLandscape` (or any other non-zero `wire::kOrientation*`) when calling `ge::run`. The engine handles the swizzle (Apple TN3192 — `prefersInterfaceOrientationLocked`) for you, and the orientation source is linked into `libge` from v0.3.0+.
+
+Plist alone won't survive iPad multitasking; the swizzle alone locks "whatever orientation the user happened to be holding the device in at launch." Ship both. Setting different `kOrientation*` constants is currently a boolean ("lock yes/no"); the plist decides *which* orientation. See `agents-guide.md` and `CLAUDE.md` (search for "iOS orientation lock") for the full background and history.
+
 ## Structure
 
 ```

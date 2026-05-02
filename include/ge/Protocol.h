@@ -75,6 +75,24 @@ struct SessionConfig {
 constexpr uint8_t kSensorAccelerometer = 1;
 
 // Orientation constants — assigned from SDL_DisplayOrientation.
+//
+// CAVEAT (v0.3.0): playerForceOrientation() treats this field as a
+// boolean — any non-zero value enables the iPad orientation lock; the
+// SPECIFIC constant is not honoured at runtime. The orientation that
+// gets locked is whichever one iOS picked at launch, constrained by
+// the app bundle's UISupportedInterfaceOrientations in Info.plist.
+//
+// To force a specific orientation, narrow the plist:
+//   * "any landscape"   → LandscapeLeft + LandscapeRight
+//   * "LandscapeLeft only" → LandscapeLeft
+//   * "portrait only"   → Portrait + PortraitUpsideDown (or just Portrait)
+//
+// Setting kOrientationLandscape vs kOrientationLandscapeFlipped today
+// is a no-op difference; both are simply "non-zero, lock please."
+//
+// 🎯T36 tracks aligning the API with its behaviour (either collapse to
+// a boolean field, or make these constants authoritative by having the
+// engine narrow supportedInterfaceOrientations at runtime).
 constexpr uint8_t kOrientationLandscape        = SDL_ORIENTATION_LANDSCAPE;
 constexpr uint8_t kOrientationLandscapeFlipped = SDL_ORIENTATION_LANDSCAPE_FLIPPED;
 constexpr uint8_t kOrientationPortrait         = SDL_ORIENTATION_PORTRAIT;

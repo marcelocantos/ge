@@ -326,14 +326,23 @@ The Vite dev server proxies `/api`, `/ws`, and `/mcp` to ged at `localhost:42069
 
 ### iOS orientation lock (iPadOS 26+)
 
-**Do not edit `Info.plist` to lock orientation on iPad. It does not work.** iPadOS 26 ignores `UISupportedInterfaceOrientations`, `UIRequiresFullScreen`, `SDL_HINT_ORIENTATIONS`, and `requestGeometryUpdate` on iPad — every app is treated as resizable for multitasking. This has been tried and failed; see commit `e0da016` ("Revert Info.plist portrait-only experiment").
+**Locking iPad orientation is a TWO-knob setup, and you need both:**
 
-The **only** working mechanism is the swizzle in [`tools/player_orientation_ios.mm`](tools/player_orientation_ios.mm), which overrides `UIViewController.prefersInterfaceOrientationLocked` (Apple TN3192, the official replacement for `UIRequiresFullScreen`). Commit `5c2f2a5` introduced it; tested working on iPadOS 26.4.
+1. **`Info.plist` — `UISupportedInterfaceOrientations`** narrows the *set* iOS will rotate to at launch. Narrow this to the orientations you want allowed.
+2. **`SessionHostConfig.orientation` — non-zero** tells the engine to call `playerForceOrientation()`, which activates the `prefersInterfaceOrientationLocked` swizzle (Apple TN3192) and freezes the UI in whatever orientation iOS picked at launch.
 
-- **Player apps** get this for free — `wire::SessionConfig.orientation` from the server triggers `playerForceOrientation()` automatically.
-- **Direct-render apps** (`DirectRenderHost`-mode, e.g. TiltBuggy) must call `playerForceOrientation(wire::kOrientationLandscape)` themselves at startup, and link `tools/player_orientation_ios.mm` (or its stub on non-iOS) into the app bundle. `DirectRenderHost::applyHints` is the natural call site.
+`Info.plist` *alone* is **not** enough on iPadOS 26+ — the OS treats every iPad app as resizable under multitasking, so the swivel gesture would re-rotate you mid-play. The swizzle *alone* without a narrowed plist locks "whatever orientation the user happened to be holding the device in at launch," which is also rarely what you want. Ship both.
 
-If you find yourself editing `UISupportedInterfaceOrientations` to fix an orientation problem, stop and read this section again.
+This was the takeaway of a long debugging session in v0.1.0 (see commit `e0da016`, "Revert Info.plist portrait-only experiment", for the failed plist-only attempt; and `5c2f2a5` for the swizzle that completed the picture, tested on iPadOS 26.4). Things that *also* don't work alone and have all been tried: `UIRequiresFullScreen`, `SDL_HINT_ORIENTATIONS`, `requestGeometryUpdate`, `setNeedsUpdateOfSupportedInterfaceOrientations`. The full list is in the banner comment at the top of `tools/player_orientation_ios.mm`.
+
+**How games request the lock:**
+
+- **Direct-render apps** (`DirectRenderHost`-mode, e.g. TiltBuggy): set `SessionHostConfig.orientation = wire::kOrientationLandscape` (or any non-zero `wire::kOrientation*` constant). The engine calls `playerForceOrientation` from `DirectRenderHost::send` automatically. The orientation stub/swizzle is now linked into `libge` (v0.3.0+), so apps don't need to add anything to their build.
+- **Player apps** get this for free — `wire::SessionConfig.orientation` from the server triggers `playerForceOrientation()` over the wire.
+
+**API caveat (v0.3.0):** the `wire::kOrientation*` enum has four constants (Landscape, LandscapeFlipped, Portrait, PortraitFlipped) but `playerForceOrientation` currently treats the field as a **boolean** — any non-zero value enables the lock; the *specific* value is not honoured. The orientation that gets locked is whichever one iOS picked at launch, bounded by your `UISupportedInterfaceOrientations`. To force "specifically LandscapeLeft only," narrow the plist to `LandscapeLeft` only — don't rely on passing `kOrientationLandscape` vs `kOrientationLandscapeFlipped` to differentiate, because today they don't. 🎯T36 tracks aligning the API with its behaviour (either collapse to a boolean or make the constants authoritative).
+
+If you find yourself editing `UISupportedInterfaceOrientations` to fix an orientation problem, you're in the right place — but make sure you've also set `SessionHostConfig.orientation` non-zero, or the lock won't survive the iPad's swivel gesture.
 
 ## ged Features
 
