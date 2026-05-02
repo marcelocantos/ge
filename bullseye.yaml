@@ -947,6 +947,52 @@ targets:
       Trigger for re-prioritising: each future bug caused by source-list drift is evidence the tax is biting. If a few weeks pass without drift causing a problem, defer further. The release skill's discover.sh and homebrew-tap status checks remain orthogonal.
     origin: filed-during-v0.3.0-prep — surfaced repeatedly during v0.1.0 → v0.2.0 development as the same kind of bug kept hitting the same source-list-drift problem
     discovered: 2026-05-02
+  T36:
+    name: SessionConfig.orientation API matches its behaviour — either authoritative per-orientation lock or a clean boolean
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - 'Either: SessionConfig.orientation is renamed/repurposed as a boolean (option 1), or: passing different kOrientation* constants produces different runtime behaviour (option 2)'
+    - The API surface in Protocol.h matches what the implementation does — no constant in the enum is silently equivalent to another
+    - TiltBuggy and any other consuming app declare their orientation intent in one place that's actually authoritative
+    - iOS direct-render apps work correctly when the user wants exactly one specific orientation that the plist alone can't enforce (e.g., 'LandscapeLeft only, even if device is held in LandscapeRight at launch')
+    - v0.4.0 docs (CLAUDE.md, README, agents-guide, Protocol.h comment) get updated again to drop the 'specific value reserved for future use' caveat once the API is honest
+    context: |-
+      The orientation-lock API surface is misleading as of v0.3.0:
+
+      The header in `include/ge/Protocol.h` defines four specific constants:
+
+          constexpr uint8_t kOrientationLandscape        = SDL_ORIENTATION_LANDSCAPE;
+          constexpr uint8_t kOrientationLandscapeFlipped = SDL_ORIENTATION_LANDSCAPE_FLIPPED;
+          constexpr uint8_t kOrientationPortrait         = SDL_ORIENTATION_PORTRAIT;
+          constexpr uint8_t kOrientationPortraitFlipped  = SDL_ORIENTATION_PORTRAIT_FLIPPED;
+
+      …suggesting per-orientation lock control. But `playerForceOrientation()` in `tools/player_orientation_ios.mm` only branches on 0-vs-non-0:
+
+          void playerForceOrientation(uint8_t orientation) {
+              if (orientation == 0) return;
+              g_orientationLocked = YES;
+              …
+          }
+
+      The actual orientation that gets locked is whatever iOS chose at launch, bounded by `UISupportedInterfaceOrientations` in `Info.plist` — never by the constant value. So `kOrientationLandscape` and `kOrientationLandscapeFlipped` are functionally identical inputs at runtime.
+
+      A game dev passing `wire::kOrientationLandscape` expecting "lock to LandscapeLeft regardless of how the user is holding the device" gets "lock to whatever iOS picked, which the plist's allowed set decides." That mismatch will cost time the next time someone integrates ge for a portrait-or-landscape-specific app.
+
+      Three design options were discussed (2026-05-02) and the user deferred to keep release momentum, choosing to ship v0.4.0 as a doc-only update describing current behaviour:
+
+      1. **Collapse to boolean.** Rename `SessionConfig.orientation` → `SessionConfig.lockOrientation` (bool). Plist owns the "which orientation" axis. Honest, simple. Loses the option to add per-orientation lock without an API break.
+
+      2. **Make the constant authoritative.** When the engine sees `kOrientationLandscape`, it programmatically narrows `supportedInterfaceOrientations` to `{LandscapeLeft, LandscapeRight}` via swizzling that property too, regardless of Info.plist. Plist becomes the *fallback*. Fully expressive; adds a runtime override of a launch-time decision.
+
+      3. **Document and live with it.** Currently shipped path (v0.4.0).
+
+      The trigger for picking between #1 and #2: a game wants per-orientation-only lock that the plist alone can't easily express (e.g., "lock to LandscapeLeft, never LandscapeRight, never adapt to device flip mid-play"). At that point, #2 is the right choice. Until then, #1 is honesty.
+
+      Constraint to remember: the only iPad orientation-lock mechanism that survives iPadOS 26 multitasking is the `prefersInterfaceOrientationLocked` swizzle (Apple TN3192). Both options have to keep using it; only the input shape changes.
+    origin: filed-during-v0.4.0-prep — surfaced when user asked 'do we allow setting any landscape or a specific landscape or both?' and the honest answer was 'the API suggests per-orientation control but the implementation treats the field as a boolean'
+    discovered: 2026-05-02
   T4:
     name: playerLoop takes a config struct with named fields
     status: achieved
