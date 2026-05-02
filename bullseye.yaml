@@ -47,9 +47,10 @@ targets:
     achieved: 2026-04-26
   T11:
     name: ge's player↔server transport runs on pigeon (E2E-encrypted relay) instead of plain WebSocket through ged
-    status: identified
+    status: set_aside
     value: 13.0
     cost: 20.0
+    set_aside_reason: Deferred while pigeon's redesign is in flight (longer than the original 1-2 day estimate). Player↔server transport on pigeon is the right architecture but pigeon isn't ready and ge's current focus is the demo-on-every-non-player-platform/sim/emu/device path, which doesn't depend on pigeon. Re-activate when pigeon's redesign lands.
     acceptance:
     - The player connects to the game server via pigeon's relay (Register/Connect or LAN bypass) — not via a WebSocket through ged. Wire framing is pigeon's stream + datagram protocol; payloads are ciphertext at the relay layer. ged's role is reduced to (a) issuing PairingArtifacts via pigeon.PairingHost so newly-installed players can establish first-contact with a server, and (b) the dashboard. ged is no longer on the runtime data path between server and player.
     - All session traffic is end-to-end encrypted via pigeon's X25519 ECDH + AES-256-GCM channel. Neither ged nor the relay can read plaintext. The QR scan that today carries a server name + port now carries a pigeon PairingArtifact (base64url) — one-time-use, TTL-bound (default 30 days), persistable on the player so reconnects skip the ceremony.
@@ -71,9 +72,10 @@ targets:
     discovered: 2026-04-12
   T11.1:
     name: ge's wire protocol has a single source of truth — magic numbers and message structs are generated for Go (ged), C / C++ (engine + Apple .mm), Kotlin / Java (Android), and Swift (iOS) instead of hand-rolled in parallel
-    status: identified
+    status: set_aside
     value: 3.0
     cost: 2.0
+    set_aside_reason: Deferred. The wire protocol's single-source-of-truth codegen only matters for player/server interaction, which is itself deferred while pigeon's redesign is in flight. Re-activate when player work resumes.
     acceptance:
     - 'A single canonical declaration of ge''s wire protocol exists in the repo — file format and tool choice are open (candidates: protobuf with `protoc`, FlatBuffers with `flatc`, Cap''n Proto, a small bespoke YAML+templated generator, or a hand-written C/C++ header authored as the source of truth and exported to other languages by tooling). The declaration covers every message currently defined in include/ge/Protocol.h: DeviceInfo, SafeAreaUpdate, AspectLock, MessageHeader, plus the eleven magic-number constants (kVideoStreamMagic, kSdlEventMagic, kSessionEndMagic, kStreamStartMagic, kStreamStopMagic, kServerAssignedMagic, kSafeAreaMagic, kAspectLockMagic, kSqlpipeMsgMagic, kDeviceInfoMagic, kProtocolVersion).'
     - A make-rule (or equivalent) regenerates language bindings from the canonical source. ge's build wires it as a normal codegen step; CI fails if the generated outputs are out of sync with the source.
@@ -93,9 +95,10 @@ targets:
     discovered: 2026-04-12
   T11.2:
     name: First-contact between player and server uses pigeon's PairingArtifact (QR scan delivers the artifact; player persists it for reconnect)
-    status: identified
+    status: set_aside
     value: 8.0
     cost: 5.0
+    set_aside_reason: Deferred while pigeon's redesign is in flight. PairingArtifact is pigeon-specific; can't proceed until pigeon ships its redesign.
     acceptance:
     - ged's web dashboard mints a PairingArtifact via pigeon.PairingHost.Mint() for each newly-launched server (server-side PairingRecord stored in ged's state). The QR code displayed by the dashboard now encodes the artifact (base64url text, ~few hundred bytes), not a name+port pair.
     - Player on first launch scans the QR, parses the PairingArtifact, calls pigeon.ConnectWithArtifact(), and is now in an E2E-encrypted session with the server.
@@ -115,9 +118,10 @@ targets:
     discovered: 2026-04-12
   T11.3:
     name: 'Server↔player runtime traffic flows over pigeon channels: video on datagrams, input/control on reliable streams'
-    status: identified
+    status: set_aside
     value: 5.0
     cost: 5.0
+    set_aside_reason: Deferred while pigeon's redesign is in flight. Datagram channels are pigeon-specific.
     acceptance:
     - The H.264 NAL-unit stream from server to player rides on a pigeon DatagramChannel. Pigeon's automatic fragmentation handles NAL units larger than the QUIC datagram MTU; the 5-second incomplete-set discard window is acceptable because lost frames are recoverable via the next keyframe.
     - Input events (SdlEvent, SafeAreaUpdate) from player to server ride on a pigeon reliable StreamChannel. Loss of an input event is unacceptable; reliable framing matches.
@@ -138,9 +142,10 @@ targets:
     discovered: 2026-04-12
   T11.4:
     name: LAN-co-located peers bypass the relay via pigeon's LAN server; falls back automatically when the network changes
-    status: identified
+    status: set_aside
     value: 8.0
     cost: 5.0
+    set_aside_reason: Deferred while pigeon's redesign is in flight. LAN bypass is a pigeon-side feature.
     acceptance:
     - When player and server detect they're on the same Wi-Fi (or wired LAN), pigeon's LAN bypass kicks in via pigeon.Config.LANServer + LAN-IP discovery. Traffic goes peer-to-peer over QUIC, the relay sees only the initial introduction handshake.
     - 'Player surfaces the connection mode in its UI (or at least logs it): ''connected via LAN'' vs ''connected via relay''. Useful for debugging and for users to understand performance characteristics.'
@@ -159,9 +164,10 @@ targets:
     discovered: 2026-04-12
   T11.5:
     name: Mobile players (bgfx-direct iOS + Android distribution builds) speak pigeon natively via the C library, with no Go runtime
-    status: identified
+    status: set_aside
     value: 8.0
     cost: 5.0
+    set_aside_reason: Deferred while pigeon's redesign is in flight. Pigeon's C library is the pigeon-side runtime that ge mobile would link.
     acceptance:
     - The bgfx-direct iOS and Android distribution players link pigeon's C library (dist/pigeon.h + dist/pigeon.c) plus libsodium and ngtcp2 (vendored as submodules under ge/vendor/github.com/<org>/, per CLAUDE.md). No Go runtime is shipped to the device.
     - 'The mobile player can connect to a server via a stored PairingArtifact and run a session end-to-end: receive video, send input, decode, render. Functional parity with the desktop player on the same server.'
@@ -184,9 +190,10 @@ targets:
     discovered: 2026-04-12
   T11.6:
     name: All WebSocket plumbing is removed from ge and ged once every consumer has cut over to pigeon
-    status: identified
+    status: set_aside
     value: 3.0
     cost: 3.0
+    set_aside_reason: Deferred. Cleanup tail of the WebSocket→pigeon migration; can't happen until T11.3/T11.4/T11.5 land, which are themselves deferred until pigeon's redesign lands.
     acceptance:
     - ge/src/bridge/WebSocketClient.cpp and the matching WebSocketClient.h are deleted. No remaining call sites in ge.
     - PlayerWireBridge.cpp's WebSocket-specific code paths are deleted (the class itself may still exist as a thin wrapper around pigeon, or be replaced entirely — author's discretion).
@@ -298,9 +305,10 @@ targets:
     achieved: 2026-04-17
   T16:
     name: TiltBuggy vehicle dynamics feel right
-    status: identified
+    status: set_aside
     value: 3.0
     cost: 3.0
+    set_aside_reason: Deferred. "TiltBuggy vehicle dynamics feel right" is design-iteration territory that depends on a working tiltbuggy demo across the matrix; the matrix is the current focus. Re-activate once the demo runs cleanly on every non-player platform/sim/emu/device combo and there's a stable surface to iterate on feel against.
     acceptance:
     - Tilting in a steady direction produces a smooth predictable arc with no oscillation
     - Releasing tilt lets the buggy decelerate without strange angular spinning
@@ -387,9 +395,10 @@ targets:
     achieved: 2026-04-19
   T2:
     name: Smoke test validates network connectivity between laptop and device
-    status: identified
+    status: set_aside
     value: 1.0
     cost: 2.0
+    set_aside_reason: Mostly subsumed by 🎯T33.1's spyder-CLI rewrite (now merged), which surfaces device-not-connected as exit code 12 and routes through `spyder devices`/`spyder resolve` for diagnosis. The remaining specific piece — a `ge-probe` iOS app for definitive device→laptop HTTP connectivity testing — is a player-shaped artefact and follows the player-deferral. Re-activate as a smaller, ge-probe-specific target when player work resumes.
     acceptance:
     - '`smoke-test.sh` detects when the device cannot reach ged over the network, before any player launch or code debugging begins. Reports the specific failure (no WiFi IP, firewall blocking, device unreachable, or device→laptop path broken) with actionable remediation.'
     context: 'Lost 2+ hours debugging code when the actual problem was laptop WiFi silently stopped accepting incoming connections. All local checks passed (ged listening, device registered via USB). The device→laptop network path was broken but nothing detected it. Need two layers: local network sanity checks (WiFi IP, firewall, ping device) and a `ge-probe` iOS app for definitive device→laptop HTTP connectivity testing.'
@@ -497,10 +506,11 @@ targets:
     achieved: 2026-04-19
   T25:
     name: Player-mode cells pass the reconnect sub-check on iOS sim and Android emu
-    status: converging
+    status: set_aside
     value: 0.0
     cost: 0.0
     showcase: true
+    set_aside_reason: Deferred. Player-mode reconnect sub-check; player-mode work as a class is deferred until pigeon's redesign lands. The current focus is non-player matrix cells (-dist mode) which don't exercise the reconnect path.
     acceptance:
     - '`make cell.ios-sim-tablet-player` passes the reconnect sub-check end-to-end'
     - '`make cell.android-emu-phone-player` passes the reconnect sub-check end-to-end'
@@ -549,6 +559,7 @@ targets:
     status: identified
     value: 0.0
     cost: 0.0
+    showcase: true
     acceptance:
     - In a tilt-driven sample app (e.g. tiltbuggy) built as distribution (in-process DirectRenderHost, no ged/player), Shift-drag of the mouse tilts the viewport and drives gameplay identically to the player binary's behaviour
     - 'Works on: macOS desktop distribution build, iOS simulator distribution build, Android emulator distribution build'
@@ -636,9 +647,10 @@ targets:
     achieved: 2026-04-26
   T3:
     name: Player sends mip cache manifest before rendering begins
-    status: identified
+    status: set_aside
     value: 8.0
     cost: 5.0
+    set_aside_reason: Deferred. Mip cache manifest is a player↔server protocol concern; player-mode work as a class is deferred until pigeon's redesign lands. Re-activate when player work resumes.
     acceptance:
     - On connect, player sends all cached mip hash values to the server (via ge) before the first wire command. Server skips texture upload commands for any mip already cached on the device. Rendering pipeline is only mutated for uncached textures. Reconnection with a fully-cached device produces no texture upload wire commands.
     context: Currently the server sends all texture data and the player reactively checks its local mip cache (hit/miss). This still mutates the rendering pipeline with large WriteTexture commands even when the player already has the data. For ~270MB of initial textures, this dominates reconnection time. A preemptive cache manifest exchange would let the server skip cached uploads entirely.
@@ -646,7 +658,7 @@ targets:
     discovered: 2026-04-12
   T30:
     name: ge has a single integration path on every platform — consumers do add_subdirectory(ge) and get everything
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -657,6 +669,7 @@ targets:
     context: 'Discovered 2026-04-19 while investigating Android tilt testing. ge currently has two Android integration paths: (a) add_subdirectory(ge) + link ge — the documented path, used by multimaze2, broken because ge''s Android CMakeLists branch doesn''t link SDL3_ttf and Text.cpp''s FontLoader dependency is Apple-only; (b) hand-picked GE_SOURCES list — used by sample/tiltbuggy/android, works by explicitly omitting Text.cpp and FontLoader_apple.mm (see sample/tiltbuggy/android/app/src/main/cpp/CMakeLists.txt:76-78). Having two paths is the bug — consumers have to reason about which subset of ge is safe on which platform, and bit-rot is inevitable (multimaze2''s Android CMakeLists already omits Text.cpp quietly). Principle: one path, everyone gets everything. Decomposes into T30.1 (SDL3_ttf + deps for Android), T30.2 (FontLoader_android implementation so Text.cpp compiles cross-platform), T30.3 (migrate sample/tiltbuggy Android to add_subdirectory(ge)), and a CLAUDE.md doc update baked into acceptance.'
     origin: 'forked-from: 🎯T28.4 / Android tilt-testing investigation 2026-04-19'
     discovered: 2026-04-19
+    achieved: 2026-05-02
   T30.1:
     name: ge's Android build links SDL3_ttf + freetype/harfbuzz/plutosvg/plutovg
     status: achieved
@@ -692,10 +705,11 @@ targets:
     achieved: 2026-04-20
   T30.3:
     name: sample/tiltbuggy Android build consumes ge via add_subdirectory(ge), not a hand-picked source list
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     showcase: true
+    demonstration: sample/tiltbuggy/android/app/src/main/cpp/CMakeLists.txt.in collapsed from 145 lines of hand-picked engine sources to ~45 lines of `add_subdirectory(ge)`; regenerated tiltbuggy android/ from the new template, built libmain.so end-to-end via NDK 29 (49 MB ELF aarch64, no missing symbols), confirmed clean link, demonstrated parity with the prior hand-picked path. Closes the T30 single-path-integration principle.
     acceptance:
     - sample/tiltbuggy/android/app/src/main/cpp/CMakeLists.txt calls add_subdirectory(${GE_ROOT}) and target_link_libraries(main PRIVATE ge)
     - The inline GE_SOURCES block (currently lines 79-96) and its accompanying Apple-only comment (lines 76-78) are deleted
@@ -706,6 +720,7 @@ targets:
     - T30.2
     origin: 'forked-from: T30 on 2026-04-19'
     discovered: 2026-04-19
+    achieved: 2026-05-02
   T31:
     name: Triangle's non-commercial licence is investigated and either removed, replaced, or formally cleared
     status: achieved
@@ -740,7 +755,7 @@ targets:
     achieved: 2026-04-20
   T33:
     name: ge's mobile test infrastructure runs on spyder CLI — exit-code-driven, reservation-safe, with device-state post-run validation
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -761,9 +776,10 @@ targets:
     - automation
     origin: manual
     discovered: 2026-04-26
+    achieved: 2026-05-02
   T33.1:
     name: smoke-test.sh shells out to spyder CLI for device discovery, install, launch, log/crash retrieval — no direct platform tooling
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -781,9 +797,10 @@ targets:
     - cli-migration
     origin: manual
     discovered: 2026-04-26
+    achieved: 2026-05-02
   T33.2:
     name: matrix-cell.sh wraps each cell in `spyder run` so reservations are race-safe under parallel make
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -802,9 +819,10 @@ targets:
     - parallelism
     origin: manual
     discovered: 2026-04-26
+    achieved: 2026-05-02
   T33.3:
     name: Visual regression cells use spyder screenshot + spyder diff against committed baselines, with `make update-baselines` for refresh
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -823,9 +841,10 @@ targets:
     - baseline
     origin: manual
     discovered: 2026-04-26
+    achieved: 2026-05-02
   T33.4:
     name: Soak-style cells call `spyder device_power_state` post-run to distinguish 'screen-asleep' false-pass from real success
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -843,9 +862,10 @@ targets:
     - diagnostics
     origin: manual
     discovered: 2026-04-26
+    achieved: 2026-05-02
   T33.5:
     name: Pre-warmed sim/emu pool reduces matrix-cell startup time; pool config lives in ge's repo
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -864,11 +884,13 @@ targets:
     - make-check
     origin: manual
     discovered: 2026-04-26
+    achieved: 2026-05-02
   T34:
     name: The player is a regular ge app — bespoke networking and decoding stay, but rendering, windowing, and per-platform entry points come from ge like any other consumer
-    status: identified
+    status: set_aside
     value: 0.0
     cost: 0.0
+    set_aside_reason: Deferred. Player-as-ge-app refactor; player work as a class is deferred until pigeon's redesign lands. Re-activate after pigeon resumes.
     acceptance:
     - 'The player''s main() is a thin ge app that calls ge::run(Factory) and returns a RunConfig with onUpdate / onRender / onEvent / onShutdown. ge owns the SDL window, the bgfx context, the frame loop, the SDL event pump, the tilt composite. The player''s app code provides only: wire connection setup, decoder management, the per-frame texture upload, and the bgfx draw call.'
     - tools/player.cpp and tools/player_core.cpp are deleted. The player's source moves to a ge-app layout (probably sample/player/main.cpp + sample/player/Net.cpp/h or similar) that mirrors how sample/tiltbuggy is laid out. The player has its own Makefile / android/ / ios/ trees the way every ge app does — generated from ge's templates via tools/init-android.sh / tools/init-ios.sh, not hand-maintained.
@@ -890,9 +912,10 @@ targets:
     discovered: 2026-04-26
   T34.1:
     name: 'The player-as-ge-app enables recursion-as-test-bed: a player connects to another player''s headless-server output, all the way down'
-    status: identified
+    status: set_aside
     value: 0.0
     cost: 0.0
+    set_aside_reason: Deferred. Recursion test-bed depends on T34, which is deferred until pigeon's redesign lands.
     acceptance:
     - 'A matrix cell exists that runs three processes on the same host: a server (e.g. tiltbuggy in headless mode), a player A that connects to the server, and a player B that connects to player A in *its* headless mode. Player B''s framebuffer should match (within visual-regression tolerance) the server''s framebuffer, modulo encode/decode round-trips.'
     - 'The cell is implemented via spyder reservations and the visual-regression infrastructure from 🎯T33.3 (committed baselines, spyder diff). End-to-end coverage: if any change to ge''s wire format, encoder, decoder, or render layer breaks the round trip, this cell catches it.'
@@ -921,9 +944,10 @@ targets:
     achieved: 2026-04-26
   T5:
     name: Player has a connection management screen
-    status: identified
+    status: set_aside
     value: 3.0
     cost: 3.0
+    set_aside_reason: Deferred. Player UI work; player as a class is deferred until pigeon's redesign lands.
     acceptance:
     - Player has a gesture-accessible screen to scan a new QR code, manually enter a server address, or forget the saved address. Accessible from the connected state (not just on startup).
     context: The persistence mechanism works (player remembers server address), but there's no UI for the user to manage saved connections.
@@ -931,9 +955,10 @@ targets:
     discovered: 2026-04-12
   T6:
     name: Player can switch between active servers without QR
-    status: identified
+    status: set_aside
     value: 2.0
     cost: 2.0
+    set_aside_reason: Deferred. Player navigation feature; player as a class is deferred until pigeon's redesign lands.
     acceptance:
     - Dashboard has a "move player to server" control. Player switches seamlessly via `kServerAssignedMagic`. No disconnect/reconnect visible to user.
     context: With persistent address, player auto-connects to saved server. If two servers are on the same network, player has no reason to fall back to QR. Dashboard is the natural control plane.
@@ -941,7 +966,7 @@ targets:
     discovered: 2026-04-12
   T7:
     name: Audio pauses when the app is backgrounded
-    status: identified
+    status: achieved
     value: 5.0
     cost: 2.0
     acceptance:
@@ -949,11 +974,13 @@ targets:
     context: User reported music keeps playing when the iOS app is backgrounded. Currently `ge::Audio` (server-side) sends play/stop/volume commands, and `AudioPlayer` (player-side, wire mode) or equivalent direct-mode playback handles them. Neither layer responds to app lifecycle events. The engine should intercept `SDL_EVENT_DID_ENTER_BACKGROUND` / `SDL_EVENT_DID_ENTER_FOREGROUND` and pause/resume audio automatically. In wire mode this means the player pauses its `AudioPlayer`; in direct mode the session or audio subsystem does it directly.
     origin: manual (user-reported from yourworld)
     discovered: 2026-04-12
+    achieved: 2026-05-02
   T8:
     name: Distribution iOS builds support accelerometer simulation in the simulator
-    status: identified
+    status: set_aside
     value: 3.0
     cost: 5.0
+    set_aside_reason: Subsumed by 🎯T28.3 (iOS simulator distribution build exposes working AccelSynth). T8 was filed pre-AccelSynth — about Apple's built-in ⌥+WASD sim accelerometer in distribution builds. T28.3 covers the equivalent capability via ge's own AccelSynth (Shift-mouse). Same user-visible outcome via the modern path.
     acceptance:
     - ⌥+WASD tilts the simulated device's accelerometer in distribution/release iOS Simulator builds (not just Debug builds)
     - Test on a Release-configuration iOS Simulator build of any ge-based app
@@ -962,9 +989,10 @@ targets:
     discovered: 2026-04-15
   T9:
     name: ge exposes device tilt as optional parallax input to games
-    status: identified
+    status: set_aside
     value: 5.0
     cost: 5.0
+    set_aside_reason: Deferred. Device-tilt-as-parallax-input is a player-mode feature (Core Motion attitude is captured by the player and forwarded to the server). Player work as a class is deferred until pigeon's redesign lands.
     acceptance:
     - RunConfig has a parallaxFactor field (float, default 0)
     - When parallaxFactor > 0, the player captures Core Motion attitude and sends deltas to the server
