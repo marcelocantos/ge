@@ -40,6 +40,8 @@ struct BgfxContext::M {
     int width, height;
     bool headless;
     SDL_Window* window = nullptr;
+    uint32_t resetFlags = 0;  // remembered for onForeground() rebuild
+    bool paused = false;      // true between onBackground / onForeground
 
     ~M() {
         bgfx::shutdown();
@@ -199,7 +201,8 @@ BgfxContext::BgfxContext(const BgfxConfig& config)
 
     // Backbuffer/swap-chain resize after init. On Android Vulkan the
     // native window size isn't fully reflected until reset() is called.
-    bgfx::reset(m->width, m->height, init.resolution.reset);
+    m->resetFlags = init.resolution.reset;
+    bgfx::reset(m->width, m->height, m->resetFlags);
 
     SPDLOG_INFO("BgfxContext: {}x{} {} {}",
                 m->width, m->height,
@@ -218,5 +221,42 @@ int BgfxContext::width() const { return m->width; }
 int BgfxContext::height() const { return m->height; }
 bool BgfxContext::shouldQuit() const { return ge::shouldQuit(); }
 SDL_Window* BgfxContext::window() const { return m->window; }
+bool BgfxContext::paused() const { return m->paused; }
+
+void BgfxContext::onBackground() {
+    // No-op on Apple — the CAMetalLayer survives backgrounding and
+    // rendering can resume on foreground without a swap-chain rebuild.
+    // On Android, just flip the flag; the host will skip beginFrame /
+    // endFrame and SDL3 will block the main loop until foreground anyway.
+    m->paused = true;
+    SPDLOG_INFO("BgfxContext: backgrounded (paused)");
+}
+
+void BgfxContext::onForeground() {
+#if defined(__ANDROID__)
+    // Re-fetch the new ANativeWindow from SDL — the old one is invalid
+    // because SurfaceView destroyed the surface during background.
+    if (m->window) {
+        SDL_PropertiesID props = SDL_GetWindowProperties(m->window);
+        void* nwh = SDL_GetPointerProperty(props,
+            SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER, nullptr);
+        if (nwh) {
+            bgfx::PlatformData pd{};
+            pd.nwh = nwh;
+            bgfx::setPlatformData(pd);
+        }
+        // Pick up any resize the OS may have applied while we were away.
+        int w = 0, h = 0;
+        if (SDL_GetWindowSizeInPixels(m->window, &w, &h) && w > 0 && h > 0) {
+            m->width = w;
+            m->height = h;
+        }
+        bgfx::reset(uint32_t(m->width), uint32_t(m->height), m->resetFlags);
+        SPDLOG_INFO("BgfxContext: foregrounded, swap-chain rebuilt {}x{}",
+                    m->width, m->height);
+    }
+#endif
+    m->paused = false;
+}
 
 } // namespace ge

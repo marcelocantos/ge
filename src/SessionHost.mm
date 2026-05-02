@@ -73,6 +73,18 @@ static void runDirect(Factory factory, const SessionHostConfig& config) {
         last = now;
         if (dt > 0.1f) dt = 0.1f;
 
+        // While the host is paused (Android backgrounded, swap chain
+        // torn down), skip the entire render bracket — bgfx::frame()
+        // against a dead surface crashes. SDL3 also blocks the main
+        // loop on Android during background, but we belt-and-brace the
+        // gate here. Game's onUpdate keeps running so timers don't
+        // freeze; reset `last` so the first foreground frame doesn't
+        // see a multi-second dt.
+        if (host.paused()) {
+            last = SDL_GetPerformanceCounter();
+            continue;
+        }
+
         if (rc.onUpdate) rc.onUpdate(dt);
 
         host.beginFrame();
