@@ -17,12 +17,26 @@
     <string>$(EXECUTABLE_NAME)</string>
     <key>UILaunchScreen</key>
     <dict/>
+    <!-- This list and the prefersInterfaceOrientationLocked swizzle in
+         ge/tools/player_orientation_ios.mm WORK TOGETHER. Neither alone
+         locks orientation on iPadOS 26+; both are needed:
+           * This list bounds supportedInterfaceOrientations. UIKit
+             consults it at launch (rotating to a supported orientation
+             if the device is held in an unsupported one) and uses it
+             as the bound on prefersInterfaceOrientationLocked. iPad
+             multitasking ignores it as a hard runtime restriction
+             (apps remain resizable), but the launch orientation and
+             the swizzle's lock target both come from here.
+           * The swizzle (Apple TN3192) prevents the user from
+             swivelling out of the locked orientation during play.
+         History: e0da016 was the failed "plist alone" experiment;
+         5c2f2a5 added the swizzle that completes the picture.
+         If you change this list, you change BOTH the launch orientation
+         and what the swizzle can lock to. -->
     <key>UISupportedInterfaceOrientations</key>
     <array>
-        <string>UIInterfaceOrientationPortrait</string>
         <string>UIInterfaceOrientationLandscapeLeft</string>
         <string>UIInterfaceOrientationLandscapeRight</string>
-        <string>UIInterfaceOrientationPortraitUpsideDown</string>
     </array>
     <key>UIApplicationSupportsIndirectInputEvents</key>
     <true/>

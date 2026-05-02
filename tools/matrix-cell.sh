@@ -982,6 +982,7 @@ LAUNCH_PID=""    # desktop only; sim/emu/device don't give us a local PID
 SIM_UDID=""      # set by ios launch helpers
 ANDROID_SERIAL=""  # set by android launch helpers
 DESKTOP_BIN=""   # overridden by debug cells to point at bin/$APP_NAME-debug
+SERVER_ARGS=""   # extra args passed to the desktop server; player cells set --brokered
 
 cold_launch_desktop() {
     local subcheck="cold-launch"
@@ -1362,7 +1363,8 @@ check_reconnect_desktop_player() {
     # Restart server.
     local serverlog="$ARTIFACTS/server-reconnect.log"
     local srv_bin="${DESKTOP_BIN:-$APP_DIR/bin/$APP_NAME}"
-    ( cd "$APP_DIR" && exec "$srv_bin" > "$serverlog" 2>&1 ) &
+    # shellcheck disable=SC2086
+    ( cd "$APP_DIR" && exec "$srv_bin" $SERVER_ARGS > "$serverlog" 2>&1 ) &
     local new_srv_pid=$!
 
     # Wait for at least one session to be bridged to the new server.
@@ -1395,7 +1397,8 @@ check_reconnect_ios_sim_player() {
 
     local serverlog="$ARTIFACTS/server-reconnect.log"
     local srv_bin="${DESKTOP_BIN:-$APP_DIR/bin/$APP_NAME}"
-    ( cd "$APP_DIR" && exec "$srv_bin" > "$serverlog" 2>&1 ) &
+    # shellcheck disable=SC2086
+    ( cd "$APP_DIR" && exec "$srv_bin" $SERVER_ARGS > "$serverlog" 2>&1 ) &
     local new_srv_pid=$!
 
     # Wait for at least one session to be bridged to the new server.
@@ -1427,7 +1430,8 @@ check_reconnect_android_player() {
 
     local serverlog="$ARTIFACTS/server-reconnect.log"
     local srv_bin="${DESKTOP_BIN:-$APP_DIR/bin/$APP_NAME}"
-    ( cd "$APP_DIR" && exec "$srv_bin" > "$serverlog" 2>&1 ) &
+    # shellcheck disable=SC2086
+    ( cd "$APP_DIR" && exec "$srv_bin" $SERVER_ARGS > "$serverlog" 2>&1 ) &
     local new_srv_pid=$!
 
     # Wait for at least one session to be bridged to the new server.
@@ -1627,7 +1631,8 @@ check_reconnect_ios_device_player() {
     local baseline
     baseline=$(current_sessions)
     local srv_bin="${DESKTOP_BIN:-$APP_DIR/bin/$APP_NAME}"
-    ( cd "$APP_DIR" && exec "$srv_bin" > "$serverlog" 2>&1 ) &
+    # shellcheck disable=SC2086
+    ( cd "$APP_DIR" && exec "$srv_bin" $SERVER_ARGS > "$serverlog" 2>&1 ) &
     local new_srv_pid=$!
 
     if ! wait_for_sessions $((baseline + 1)); then
@@ -1776,7 +1781,8 @@ SERVER_PID=""
 start_server() {
     local logf="$ARTIFACTS/server.log"
     local srv_bin="${DESKTOP_BIN:-$APP_DIR/bin/$APP_NAME}"
-    ( cd "$APP_DIR" && exec "$srv_bin" > "$logf" 2>&1 ) &
+    # shellcheck disable=SC2086
+    ( cd "$APP_DIR" && exec "$srv_bin" $SERVER_ARGS > "$logf" 2>&1 ) &
     SERVER_PID=$!
     sleep 2
 }
@@ -1808,6 +1814,7 @@ run_desktop_dist() {
 run_desktop_player() {
     build_player_desktop || { fail_check "cold-launch" "build failed"; return; }
     ensure_ged
+    SERVER_ARGS="--brokered"
     start_server
     cold_launch_player_desktop || { stop_server; return; }
     check_soak_desktop "$LAUNCH_PID" || true
@@ -1866,6 +1873,7 @@ run_ios_sim_player() {
     # Build and start desktop server.
     ( cd "$APP_DIR" && run make ) || { fail_check "cold-launch" "build (server) failed"; return; }
     ensure_ged
+    SERVER_ARGS="--brokered"
     start_server
 
     # Pass ged address as launch arg so the player connects directly (no QR scan).
@@ -1908,6 +1916,7 @@ run_ios_device_player() {
     # Build and start desktop server.
     ( cd "$APP_DIR" && run make ) || { fail_check "cold-launch" "build (server) failed"; return; }
     ensure_ged
+    SERVER_ARGS="--brokered"
     start_server
 
     # Physical device needs the host's LAN IP (not localhost) to reach ged.
@@ -1966,6 +1975,7 @@ run_android_emu_player() {
 
     ( cd "$APP_DIR" && run make ) || { fail_check "cold-launch" "build (server) failed"; return; }
     ensure_ged
+    SERVER_ARGS="--brokered"
     start_server
 
     # Pass ged address as intent extra so the player connects directly (no QR scan).
@@ -2013,6 +2023,7 @@ run_android_device_player() {
 
     ( cd "$APP_DIR" && run make ) || { fail_check "cold-launch" "build (server) failed"; return; }
     ensure_ged
+    SERVER_ARGS="--brokered"
     start_server
 
     # Physical device needs the host's LAN IP (not 10.0.2.2 which is emulator-only).
@@ -2091,6 +2102,7 @@ run_debug_player() {
             build_player_desktop_debug || { fail_check "cold-launch" "debug build failed"; return; }
             DESKTOP_BIN="$APP_DIR/bin/$APP_NAME-debug"
             ensure_ged
+            SERVER_ARGS="--brokered"
             start_server
             cold_launch_player_desktop || { stop_server; DESKTOP_BIN=""; return; }
             check_soak_desktop "$LAUNCH_PID" || true
@@ -2119,6 +2131,7 @@ run_debug_player() {
             build_desktop_debug || { fail_check "cold-launch" "debug server build failed"; return; }
             DESKTOP_BIN="$APP_DIR/bin/$APP_NAME-debug"
             ensure_ged
+            SERVER_ARGS="--brokered"
             start_server
             cold_launch_ios_sim "$PLAYER_BUNDLE_ID" "$app_path" "phone" \
                 "-ged_addr localhost:$GED_PORT" || { stop_server; DESKTOP_BIN=""; return; }
@@ -2138,6 +2151,7 @@ run_debug_player() {
             build_desktop_debug || { fail_check "cold-launch" "debug server build failed"; return; }
             DESKTOP_BIN="$APP_DIR/bin/$APP_NAME-debug"
             ensure_ged
+            SERVER_ARGS="--brokered"
             start_server
             cold_launch_android_emu "$PLAYER_ANDROID_PKG" "$apk" "" "$PLAYER_ANDROID_ACTIVITY" \
                 "--es ged_addr 10.0.2.2:$GED_PORT" || { stop_server; DESKTOP_BIN=""; return; }

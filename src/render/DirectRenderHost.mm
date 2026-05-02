@@ -9,6 +9,8 @@
 #include <ge/Resource.h>
 #include <ge/Signal.h>
 
+#include "../../tools/player_orientation.h"
+
 #include <iterator>
 #include <vector>
 
@@ -72,6 +74,7 @@ struct DirectRenderHost::Impl {
     bool quit = false;
 
     std::optional<AccelSynth> synth;
+    SDL_Sensor* accelSensor = nullptr;
 
     // Offscreen pipeline — lazily created on first non-zero tilt.
     bool offscreenReady = false;
@@ -153,17 +156,38 @@ DirectRenderHost::DirectRenderHost(const SessionHostConfig& config)
     if (i_->bgfxCtx->width()  > 0) i_->width  = i_->bgfxCtx->width();
     if (i_->bgfxCtx->height() > 0) i_->height = i_->bgfxCtx->height();
 
-    if ((config.sensors & wire::kSensorAccelerometer) &&
-        !AccelSynth::realSensorAvailable()) {
-        i_->synth.emplace();
-        i_->synth->setWindow(i_->bgfxCtx->window());
-        SPDLOG_INFO("DirectRenderHost: Shift-mouse accelerometer synthesis enabled");
+    if (config.sensors & wire::kSensorAccelerometer) {
+        // Try a real sensor first (real device, Android emulator virtual sensors).
+        int count = 0;
+        SDL_SensorID* sensors = SDL_GetSensors(&count);
+        if (sensors) {
+            for (int k = 0; k < count; k++) {
+                if (SDL_GetSensorTypeForID(sensors[k]) == SDL_SENSOR_ACCEL) {
+                    i_->accelSensor = SDL_OpenSensor(sensors[k]);
+                    if (i_->accelSensor) {
+                        SPDLOG_INFO("DirectRenderHost: opened real accelerometer");
+                        break;
+                    }
+                }
+            }
+            SDL_free(sensors);
+        }
+        // Fall back to Shift-mouse synthesis.
+        if (!i_->accelSensor) {
+            i_->synth.emplace();
+            i_->synth->setWindow(i_->bgfxCtx->window());
+            SPDLOG_INFO("DirectRenderHost: Shift-mouse accelerometer synthesis enabled");
+        }
     }
 
     SPDLOG_INFO("DirectRenderHost: {}x{}", i_->width, i_->height);
 }
 
 DirectRenderHost::~DirectRenderHost() {
+    if (i_->accelSensor) {
+        SDL_CloseSensor(i_->accelSensor);
+        i_->accelSensor = nullptr;
+    }
     i_->destroyOffscreen();
 }
 
@@ -171,8 +195,12 @@ int DirectRenderHost::width() const  { return i_->width; }
 int DirectRenderHost::height() const { return i_->height; }
 DeviceClass DirectRenderHost::deviceClass() const { return DeviceClass::Desktop; }
 
-void DirectRenderHost::send(const wire::SessionConfig&) {
-    // Direct mode applies orientation/sensor hints in-process; no-op for now.
+void DirectRenderHost::send(const wire::SessionConfig& cfg) {
+    // iPadOS 26 ignores Info.plist orientation restrictions on iPad — the
+    // only working lock is the prefersInterfaceOrientationLocked swizzle in
+    // player_orientation_ios.mm. See ge/CLAUDE.md "iOS orientation lock".
+    playerForceOrientation(cfg.orientation);  // 0 = no-op
+    // Sensors are opened in the constructor from SessionHostConfig.
 }
 
 void DirectRenderHost::setEventHandler(std::function<void(const SDL_Event&)> h) {

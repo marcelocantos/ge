@@ -50,7 +50,7 @@ BgfxContext::BgfxContext(const BgfxConfig& config)
 
     ge::installSignalHandlers();
 
-    if (!SDL_Init(SDL_INIT_VIDEO)) {
+    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_SENSOR)) {
         SPDLOG_ERROR("SDL_Init failed: {}", SDL_GetError());
         return;
     }
