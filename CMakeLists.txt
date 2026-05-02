@@ -175,6 +175,18 @@ set(GE_DIRECT_RENDER_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/render/DirectRenderHost.mm
 )
 
+# DirectRenderHost calls playerForceOrientation() in send(); the symbol
+# lives in tools/player_orientation_{ios,stub}.{mm,cpp}. iOS bundles want
+# the swizzle (Apple TN3192); every other platform takes the no-op stub.
+# Bundling either one into libge so consuming apps don't have to remember.
+if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    list(APPEND GE_DIRECT_RENDER_SOURCES
+        ${CMAKE_CURRENT_SOURCE_DIR}/tools/player_orientation_ios.mm)
+else()
+    list(APPEND GE_DIRECT_RENDER_SOURCES
+        ${CMAKE_CURRENT_SOURCE_DIR}/tools/player_orientation_stub.cpp)
+endif()
+
 if(GE_DIRECT)
     # Direct mode: app owns the frame loop; ge provides bgfx init,
     # DirectRenderHost, SDL context, font loader, and utilities.

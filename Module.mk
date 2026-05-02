@@ -111,7 +111,8 @@ ge/SRC_DIRECT = \
 	$(ge)/src/BgfxContext.mm \
 	$(ge)/src/Signal.cpp \
 	$(ge)/src/SessionHost.mm \
-	$(ge)/src/render/DirectRenderHost.mm
+	$(ge)/src/render/DirectRenderHost.mm \
+	$(ge)/tools/player_orientation_stub.cpp
 
 ge/SRC_BROKERED = \
 	$(ge)/src/bridge/SessionHost_brokered.mm \
@@ -124,8 +125,10 @@ ge/SRC_BROKERED = \
 
 ge/SRC = $(ge/SRC_DIRECT) $(ge/SRC_BROKERED)
 
-ge/OBJ = $(patsubst $(ge)/src/%.cpp,$(BUILD_DIR)/ge/src/%.o,$(filter %.cpp,$(ge/SRC))) \
-         $(patsubst $(ge)/src/%.mm,$(BUILD_DIR)/ge/src/%.o,$(filter %.mm,$(ge/SRC)))
+ge/OBJ = $(patsubst $(ge)/src/%.cpp,$(BUILD_DIR)/ge/src/%.o,$(filter $(ge)/src/%.cpp,$(ge/SRC))) \
+         $(patsubst $(ge)/src/%.mm,$(BUILD_DIR)/ge/src/%.o,$(filter $(ge)/src/%.mm,$(ge/SRC))) \
+         $(patsubst $(ge)/tools/%.cpp,$(BUILD_DIR)/ge/tools/%.o,$(filter $(ge)/tools/%.cpp,$(ge/SRC))) \
+         $(patsubst $(ge)/tools/%.mm,$(BUILD_DIR)/ge/tools/%.o,$(filter $(ge)/tools/%.mm,$(ge/SRC)))
 ge/LIB = $(BUILD_DIR)/libge.a
 
 # Desktop player (H.264 receiver). Built on demand via `make player`.
@@ -288,6 +291,13 @@ $(BUILD_DIR)/ge/src/%.o: $(ge)/src/%.cpp
 
 # Engine + render + bridge objects (.mm)
 $(BUILD_DIR)/ge/src/%.o: $(ge)/src/%.mm
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) $(SDL_CFLAGS) -MMD -MP -c $< -o $@
+
+# tools/ objects (currently just player_orientation_stub.cpp — pulled into
+# libge.a so DirectRenderHost::send's playerForceOrientation() call resolves
+# without consuming desktop apps having to add the stub object themselves).
+$(BUILD_DIR)/ge/tools/%.o: $(ge)/tools/%.cpp
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) $(SDL_CFLAGS) -MMD -MP -c $< -o $@
 
