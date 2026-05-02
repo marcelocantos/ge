@@ -60,9 +60,17 @@ target_link_libraries(bgfx PUBLIC bx bimg)
 #     docs/papers/adreno-830-bgfx-vulkan-crash.md).
 #   * Apple-Silicon AVD emulator → Vulkan (the AVD's Apple-Metal-backed EGL
 #     translator exposes only GLES 3.0, so a 3.1 request fails).
+#
+# Single-threaded mode is non-negotiable on Android: bgfx's default
+# multi-thread mode spawns a render thread that keeps hammering the
+# SurfaceView's BufferQueue after the activity backgrounds (the queue
+# is "abandoned" but bgfx's thread doesn't know). Forcing single-thread
+# routes every bgfx call through the main thread, which our SDL3
+# DID_ENTER_BACKGROUND handler can gate cleanly via BgfxContext::paused().
 target_compile_definitions(bgfx PUBLIC
     BGFX_CONFIG_RENDERER_VULKAN=1
     BGFX_CONFIG_RENDERER_OPENGLES=31
+    BGFX_CONFIG_MULTITHREADED=0
 )
 
 # ── Box2D (vendored C code) ─────────────────────────────────────────────

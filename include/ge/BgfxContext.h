@@ -27,6 +27,20 @@ public:
     bool shouldQuit() const;
     SDL_Window* window() const;
 
+    // Android-only lifecycle: when the activity moves to background the
+    // SurfaceView's ANativeWindow becomes invalid; on foreground a NEW
+    // one is allocated. Call onBackground() in response to
+    // SDL_EVENT_DID_ENTER_BACKGROUND to pause rendering, and onForeground()
+    // in response to SDL_EVENT_DID_ENTER_FOREGROUND to re-acquire the new
+    // native window and rebuild the swap chain. No-op on Apple platforms,
+    // where the CAMetalLayer survives backgrounding.
+    void onBackground();
+    void onForeground();
+
+    // True between onBackground() and onForeground(); host should skip
+    // beginFrame/endFrame work while paused.
+    bool paused() const;
+
 private:
     struct M;
     std::unique_ptr<M> m;

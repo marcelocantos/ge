@@ -235,6 +235,7 @@ DirectRenderHost::~DirectRenderHost() {
 int DirectRenderHost::width() const  { return i_->width; }
 int DirectRenderHost::height() const { return i_->height; }
 DeviceClass DirectRenderHost::deviceClass() const { return DeviceClass::Desktop; }
+bool DirectRenderHost::paused() const { return i_->bgfxCtx && i_->bgfxCtx->paused(); }
 
 void DirectRenderHost::send(const wire::SessionConfig& cfg) {
     // iPadOS 26 ignores Info.plist orientation restrictions on iPad — the
@@ -257,6 +258,35 @@ void DirectRenderHost::pumpEvents() {
     while (SDL_PollEvent(&e)) {
         if (e.type == SDL_EVENT_QUIT) {
             i_->quit = true;
+            continue;
+        }
+        // Activity lifecycle on Android. SDL3 doesn't deliver the
+        // higher-level SDL_EVENT_DID_ENTER_BACKGROUND/_FOREGROUND
+        // events to the C side on Android (only iOS); we use the
+        // window-level focus + minimize/restore events instead.
+        // FOCUS_LOST is the earliest signal we get when the activity
+        // starts backgrounding — gate bgfx immediately to avoid the
+        // BLAST BufferQueue-abandoned spam from a dead surface.
+        // RESTORED / FOCUS_GAINED is the resumption signal — re-acquire
+        // the new ANativeWindow and rebuild the swap chain.
+        // Both no-op on Apple (BgfxContext::onForeground is #if Android).
+        if (e.type == SDL_EVENT_WINDOW_FOCUS_LOST ||
+            e.type == SDL_EVENT_WINDOW_HIDDEN     ||
+            e.type == SDL_EVENT_WINDOW_MINIMIZED) {
+            i_->bgfxCtx->onBackground();
+            continue;
+        }
+        if (e.type == SDL_EVENT_WINDOW_RESTORED   ||
+            e.type == SDL_EVENT_WINDOW_FOCUS_GAINED ||
+            e.type == SDL_EVENT_WINDOW_SHOWN) {
+            i_->bgfxCtx->onForeground();
+            // bgfxCtx may have picked up a resized backbuffer; sync our
+            // view of it so the next frame's viewports match.
+            i_->width  = i_->bgfxCtx->width();
+            i_->height = i_->bgfxCtx->height();
+            // Offscreen pipeline references the old swap chain — drop it
+            // so it's recreated on demand against the new backbuffer.
+            i_->destroyOffscreen();
             continue;
         }
         // Any event that could signal a drawable-size change. On iOS the
@@ -293,6 +323,13 @@ void DirectRenderHost::pumpEvents() {
 }
 
 void DirectRenderHost::beginFrame() {
+    // While the activity is backgrounded the swap chain is gone (Android)
+    // and any bgfx::reset / view setup we do here will reference a stale
+    // ANativeWindow and crash on next bgfx::frame(). Skip everything; SDL3
+    // also blocks the main loop on Android during background, so this
+    // path is mostly a no-op until the OS resumes us.
+    if (i_->bgfxCtx->paused()) return;
+
     // Apply any staged resize at the frame boundary so all bgfx state
     // (backbuffer, offscreen RT, view rects) moves together.
     if (i_->pendingResize) {
