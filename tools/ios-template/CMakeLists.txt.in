@@ -71,6 +71,7 @@ set(GE_SOURCES
     ${GE_ROOT}/src/Signal.cpp
     ${GE_ROOT}/src/SessionHost.mm
     ${GE_ROOT}/src/render/DirectRenderHost.mm
+    ${GE_ROOT}/tools/player_orientation_ios.mm
     ${GE_ROOT}/vendor/src/sqlite3.c
     # sqlpipe.cpp embeds the sqlift implementation — do not add sqlift.cpp
     # here or you'll get duplicate-symbol link errors.

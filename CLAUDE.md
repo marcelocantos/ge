@@ -324,6 +324,17 @@ The Vite dev server proxies `/api`, `/ws`, and `/mcp` to ged at `localhost:42069
 
 **iOS and Android player builds are currently broken** — they still reference Dawn/WebGPU and need to be ported to bgfx + H.264 decode. The CMakeLists files and build scripts have been scrubbed of Dawn references and marked TODO.
 
+### iOS orientation lock (iPadOS 26+)
+
+**Do not edit `Info.plist` to lock orientation on iPad. It does not work.** iPadOS 26 ignores `UISupportedInterfaceOrientations`, `UIRequiresFullScreen`, `SDL_HINT_ORIENTATIONS`, and `requestGeometryUpdate` on iPad — every app is treated as resizable for multitasking. This has been tried and failed; see commit `e0da016` ("Revert Info.plist portrait-only experiment").
+
+The **only** working mechanism is the swizzle in [`tools/player_orientation_ios.mm`](tools/player_orientation_ios.mm), which overrides `UIViewController.prefersInterfaceOrientationLocked` (Apple TN3192, the official replacement for `UIRequiresFullScreen`). Commit `5c2f2a5` introduced it; tested working on iPadOS 26.4.
+
+- **Player apps** get this for free — `wire::SessionConfig.orientation` from the server triggers `playerForceOrientation()` automatically.
+- **Direct-render apps** (`DirectRenderHost`-mode, e.g. TiltBuggy) must call `playerForceOrientation(wire::kOrientationLandscape)` themselves at startup, and link `tools/player_orientation_ios.mm` (or its stub on non-iOS) into the app bundle. `DirectRenderHost::applyHints` is the natural call site.
+
+If you find yourself editing `UISupportedInterfaceOrientations` to fix an orientation problem, stop and read this section again.
+
 ## ged Features
 
 ### MCP Server
