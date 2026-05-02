@@ -69,7 +69,11 @@ struct Scene::Impl {
         }
 
         // ------------------------------------------------------------------
-        // Chassis — 1.0 × 0.5 m rectangle, starts at origin
+        // Chassis — 0.5 × 0.25 m rectangle, starts at origin
+        // (Half real-world size + 2× viewport zoom = same on-screen size as
+        // a 1.0 × 0.5 m chassis would have at the original scale, but
+        // physics traverse the smaller arena 2× faster under the same
+        // 9.81 m/s² gravity — see kWorldHalfExtent in main.cpp.)
         // ------------------------------------------------------------------
         {
             b2BodyDef bdef = b2DefaultBodyDef();
@@ -80,7 +84,7 @@ struct Scene::Impl {
             bdef.enableSleep = false;  // gravity changes must always take effect
             chassisId = b2CreateBody(worldId, &bdef);
 
-            b2Polygon box = b2MakeBox(0.5f, 0.25f); // half-extents
+            b2Polygon box = b2MakeBox(0.03125f, 0.015625f); // half-extents (1/16 of original)
             b2ShapeDef sdef = b2DefaultShapeDef();
             sdef.density = 1.0f;
             sdef.material.friction = 0.8f;
@@ -96,8 +100,8 @@ struct Scene::Impl {
         // Surface sensor patches
         // ------------------------------------------------------------------
 
-        // Ice patch: upper-centre, x∈[-3,3], y∈[2,6]
-        iceL = -3.0f; iceB = 2.0f; iceR = 3.0f; iceT = 6.0f;
+        // Ice patch: upper-centre — sized at 1/16 of the original layout.
+        iceL = -0.1875f; iceB = 0.125f; iceR = 0.1875f; iceT = 0.375f;
         {
             float hw = (iceR - iceL) * 0.5f;
             float hh = (iceT - iceB) * 0.5f;

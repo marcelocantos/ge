@@ -160,11 +160,15 @@ void Renderer::drawFrame(const Scene& scene, int width, int height,
         pushRect(verts, surf.l, surf.b, surf.r, surf.t, color);
     }
 
-    // 3. Buggy: 1.0 × 0.5 m, rotated.
+    // 3. Buggy — sized in proportion to the world (kept at 1/20 of the
+    // arena half-extent to match the Box2D shape, so when the world is
+    // shrunk to speed up physics, the rendered chassis tracks it).
     const Pose pose = scene.buggyPose();
+    const float hw = scene.halfExtent() * 0.05f;
+    const float hh = hw * 0.5f;
     pushRotatedRect(verts,
         pose.x, pose.y,
-        /*hw=*/0.5f, /*hh=*/0.25f,
+        hw, hh,
         pose.angle,
         rgb(0xFF, 0xCC, 0x33));
 
