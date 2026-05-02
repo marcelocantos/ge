@@ -783,6 +783,21 @@ ge/android-release: $(ge/APP_SHADERS_SPIRV) $(ge/RENDER_SHADERS_SPIRV) $(ge/APP_
 #
 # Glob syntax: `*` matches any run of characters within a cell name.
 # Multiple patterns: space-separated.
+#
+# Soak timing:
+#   Standard cells run a 10s soak (SOAK_TIMEOUT=10). This keeps `make -j check`
+#   well under 8 minutes on M4 Max with primed caches. To run with the full 60s
+#   soak across all cells: `make check SOAK_TIMEOUT=60`.
+#
+#   For the dedicated long-soak reliability sweep (always 60s, no override
+#   needed): `make cell.long-soak`.
+#
+# Parallelism:
+#   `make -j check` runs all cells concurrently. Cells targeting different
+#   devices run in parallel. Cells racing for the same device serialise via
+#   spyder's reservation queue. Desktop cells are always concurrent.
+#   Same-platform cells (e.g. ios-sim-tablet-dist + ios-sim-tablet-player)
+#   resolve to distinct sims when two are available in the spyder pool.
 
 # Device pin variables — passed to matrix-cell.sh to target a specific inventory
 # alias or UDID for each device class.  When set, the cell skips spyder reserve
@@ -800,6 +815,13 @@ GE_IOS_PHONE_DEVICE   ?=
 GE_IOS_TABLET_DEVICE  ?= Pippa
 GE_ANDROID_PHONE_DEVICE  ?=
 GE_ANDROID_TABLET_DEVICE ?=
+
+# Soak timeout for standard cells (seconds). Default 10s — fast enough for
+# `make -j check` to finish well under 8 min. Override on the command line:
+#   make check SOAK_TIMEOUT=60       # run all cells with the full 60s soak
+# For a single long-soak sweep at 60s against the representative desktop cell,
+# use the dedicated `make cell.long-soak` target.
+SOAK_TIMEOUT ?= 10
 
 # Canonical 24-cell list. Cells are grouped for readability.
 ge/CELLS := \
@@ -833,30 +855,37 @@ ge/CHECK_CELLS := $(filter-out $(ge/CHECK_EXCLUDE_PATTERNS),$(ge/CELLS))
 # Cells targeting different devices run concurrently under parallel make.
 # Cells racing for the same device serialise via spyder's reservation queue.
 .PHONY: $(addprefix cell.,$(ge/CELLS))
-cell.desktop-dist:               ; $(ge)/tools/matrix-cell.sh desktop-dist
-cell.desktop-player:             ; $(ge)/tools/matrix-cell.sh desktop-player
-cell.ios-sim-phone-dist:         ; GE_IOS_SIM_PHONE_DEVICE=$(GE_IOS_SIM_PHONE_DEVICE) $(ge)/tools/matrix-cell.sh ios-sim-phone-dist
-cell.ios-sim-phone-player:       ; GE_IOS_SIM_PHONE_DEVICE=$(GE_IOS_SIM_PHONE_DEVICE) $(ge)/tools/matrix-cell.sh ios-sim-phone-player
-cell.ios-sim-tablet-dist:        ; GE_IOS_SIM_TABLET_DEVICE=$(GE_IOS_SIM_TABLET_DEVICE) $(ge)/tools/matrix-cell.sh ios-sim-tablet-dist
-cell.ios-sim-tablet-player:      ; GE_IOS_SIM_TABLET_DEVICE=$(GE_IOS_SIM_TABLET_DEVICE) $(ge)/tools/matrix-cell.sh ios-sim-tablet-player
-cell.ios-device-phone-dist:      ; GE_IOS_PHONE_DEVICE=$(GE_IOS_PHONE_DEVICE) $(ge)/tools/matrix-cell.sh ios-device-phone-dist
-cell.ios-device-phone-player:    ; GE_IOS_PHONE_DEVICE=$(GE_IOS_PHONE_DEVICE) $(ge)/tools/matrix-cell.sh ios-device-phone-player
-cell.ios-device-tablet-dist:     ; GE_IOS_TABLET_DEVICE=$(GE_IOS_TABLET_DEVICE) $(ge)/tools/matrix-cell.sh ios-device-tablet-dist
-cell.ios-device-tablet-player:   ; GE_IOS_TABLET_DEVICE=$(GE_IOS_TABLET_DEVICE) $(ge)/tools/matrix-cell.sh ios-device-tablet-player
-cell.android-emu-phone-dist:     ; GE_ANDROID_EMU_PHONE_DEVICE=$(GE_ANDROID_EMU_PHONE_DEVICE) $(ge)/tools/matrix-cell.sh android-emu-phone-dist
-cell.android-emu-phone-player:   ; GE_ANDROID_EMU_PHONE_DEVICE=$(GE_ANDROID_EMU_PHONE_DEVICE) $(ge)/tools/matrix-cell.sh android-emu-phone-player
-cell.android-emu-tablet-dist:    ; GE_ANDROID_EMU_TABLET_DEVICE=$(GE_ANDROID_EMU_TABLET_DEVICE) $(ge)/tools/matrix-cell.sh android-emu-tablet-dist
-cell.android-emu-tablet-player:  ; GE_ANDROID_EMU_TABLET_DEVICE=$(GE_ANDROID_EMU_TABLET_DEVICE) $(ge)/tools/matrix-cell.sh android-emu-tablet-player
-cell.android-device-phone-dist:  ; GE_ANDROID_PHONE_DEVICE=$(GE_ANDROID_PHONE_DEVICE) $(ge)/tools/matrix-cell.sh android-device-phone-dist
-cell.android-device-phone-player: ; GE_ANDROID_PHONE_DEVICE=$(GE_ANDROID_PHONE_DEVICE) $(ge)/tools/matrix-cell.sh android-device-phone-player
-cell.android-device-tablet-dist: ; GE_ANDROID_TABLET_DEVICE=$(GE_ANDROID_TABLET_DEVICE) $(ge)/tools/matrix-cell.sh android-device-tablet-dist
-cell.android-device-tablet-player: ; GE_ANDROID_TABLET_DEVICE=$(GE_ANDROID_TABLET_DEVICE) $(ge)/tools/matrix-cell.sh android-device-tablet-player
-cell.desktop-debug-dist:         ; $(ge)/tools/matrix-cell.sh desktop-debug-dist
-cell.desktop-debug-player:       ; $(ge)/tools/matrix-cell.sh desktop-debug-player
-cell.ios-debug-dist:             ; GE_IOS_SIM_PHONE_DEVICE=$(GE_IOS_SIM_PHONE_DEVICE) $(ge)/tools/matrix-cell.sh ios-debug-dist
-cell.ios-debug-player:           ; GE_IOS_SIM_PHONE_DEVICE=$(GE_IOS_SIM_PHONE_DEVICE) $(ge)/tools/matrix-cell.sh ios-debug-player
-cell.android-debug-dist:         ; GE_ANDROID_EMU_TABLET_DEVICE=$(GE_ANDROID_EMU_TABLET_DEVICE) $(ge)/tools/matrix-cell.sh android-debug-dist
-cell.android-debug-player:       ; GE_ANDROID_EMU_TABLET_DEVICE=$(GE_ANDROID_EMU_TABLET_DEVICE) $(ge)/tools/matrix-cell.sh android-debug-player
+cell.desktop-dist:               ; $(ge)/tools/matrix-cell.sh desktop-dist --soak-timeout $(SOAK_TIMEOUT)
+cell.desktop-player:             ; $(ge)/tools/matrix-cell.sh desktop-player --soak-timeout $(SOAK_TIMEOUT)
+cell.ios-sim-phone-dist:         ; GE_IOS_SIM_PHONE_DEVICE=$(GE_IOS_SIM_PHONE_DEVICE) $(ge)/tools/matrix-cell.sh ios-sim-phone-dist --soak-timeout $(SOAK_TIMEOUT)
+cell.ios-sim-phone-player:       ; GE_IOS_SIM_PHONE_DEVICE=$(GE_IOS_SIM_PHONE_DEVICE) $(ge)/tools/matrix-cell.sh ios-sim-phone-player --soak-timeout $(SOAK_TIMEOUT)
+cell.ios-sim-tablet-dist:        ; GE_IOS_SIM_TABLET_DEVICE=$(GE_IOS_SIM_TABLET_DEVICE) $(ge)/tools/matrix-cell.sh ios-sim-tablet-dist --soak-timeout $(SOAK_TIMEOUT)
+cell.ios-sim-tablet-player:      ; GE_IOS_SIM_TABLET_DEVICE=$(GE_IOS_SIM_TABLET_DEVICE) $(ge)/tools/matrix-cell.sh ios-sim-tablet-player --soak-timeout $(SOAK_TIMEOUT)
+cell.ios-device-phone-dist:      ; GE_IOS_PHONE_DEVICE=$(GE_IOS_PHONE_DEVICE) $(ge)/tools/matrix-cell.sh ios-device-phone-dist --soak-timeout $(SOAK_TIMEOUT)
+cell.ios-device-phone-player:    ; GE_IOS_PHONE_DEVICE=$(GE_IOS_PHONE_DEVICE) $(ge)/tools/matrix-cell.sh ios-device-phone-player --soak-timeout $(SOAK_TIMEOUT)
+cell.ios-device-tablet-dist:     ; GE_IOS_TABLET_DEVICE=$(GE_IOS_TABLET_DEVICE) $(ge)/tools/matrix-cell.sh ios-device-tablet-dist --soak-timeout $(SOAK_TIMEOUT)
+cell.ios-device-tablet-player:   ; GE_IOS_TABLET_DEVICE=$(GE_IOS_TABLET_DEVICE) $(ge)/tools/matrix-cell.sh ios-device-tablet-player --soak-timeout $(SOAK_TIMEOUT)
+cell.android-emu-phone-dist:     ; GE_ANDROID_EMU_PHONE_DEVICE=$(GE_ANDROID_EMU_PHONE_DEVICE) $(ge)/tools/matrix-cell.sh android-emu-phone-dist --soak-timeout $(SOAK_TIMEOUT)
+cell.android-emu-phone-player:   ; GE_ANDROID_EMU_PHONE_DEVICE=$(GE_ANDROID_EMU_PHONE_DEVICE) $(ge)/tools/matrix-cell.sh android-emu-phone-player --soak-timeout $(SOAK_TIMEOUT)
+cell.android-emu-tablet-dist:    ; GE_ANDROID_EMU_TABLET_DEVICE=$(GE_ANDROID_EMU_TABLET_DEVICE) $(ge)/tools/matrix-cell.sh android-emu-tablet-dist --soak-timeout $(SOAK_TIMEOUT)
+cell.android-emu-tablet-player:  ; GE_ANDROID_EMU_TABLET_DEVICE=$(GE_ANDROID_EMU_TABLET_DEVICE) $(ge)/tools/matrix-cell.sh android-emu-tablet-player --soak-timeout $(SOAK_TIMEOUT)
+cell.android-device-phone-dist:  ; GE_ANDROID_PHONE_DEVICE=$(GE_ANDROID_PHONE_DEVICE) $(ge)/tools/matrix-cell.sh android-device-phone-dist --soak-timeout $(SOAK_TIMEOUT)
+cell.android-device-phone-player: ; GE_ANDROID_PHONE_DEVICE=$(GE_ANDROID_PHONE_DEVICE) $(ge)/tools/matrix-cell.sh android-device-phone-player --soak-timeout $(SOAK_TIMEOUT)
+cell.android-device-tablet-dist: ; GE_ANDROID_TABLET_DEVICE=$(GE_ANDROID_TABLET_DEVICE) $(ge)/tools/matrix-cell.sh android-device-tablet-dist --soak-timeout $(SOAK_TIMEOUT)
+cell.android-device-tablet-player: ; GE_ANDROID_TABLET_DEVICE=$(GE_ANDROID_TABLET_DEVICE) $(ge)/tools/matrix-cell.sh android-device-tablet-player --soak-timeout $(SOAK_TIMEOUT)
+cell.desktop-debug-dist:         ; $(ge)/tools/matrix-cell.sh desktop-debug-dist --soak-timeout $(SOAK_TIMEOUT)
+cell.desktop-debug-player:       ; $(ge)/tools/matrix-cell.sh desktop-debug-player --soak-timeout $(SOAK_TIMEOUT)
+cell.ios-debug-dist:             ; GE_IOS_SIM_PHONE_DEVICE=$(GE_IOS_SIM_PHONE_DEVICE) $(ge)/tools/matrix-cell.sh ios-debug-dist --soak-timeout $(SOAK_TIMEOUT)
+cell.ios-debug-player:           ; GE_IOS_SIM_PHONE_DEVICE=$(GE_IOS_SIM_PHONE_DEVICE) $(ge)/tools/matrix-cell.sh ios-debug-player --soak-timeout $(SOAK_TIMEOUT)
+cell.android-debug-dist:         ; GE_ANDROID_EMU_TABLET_DEVICE=$(GE_ANDROID_EMU_TABLET_DEVICE) $(ge)/tools/matrix-cell.sh android-debug-dist --soak-timeout $(SOAK_TIMEOUT)
+cell.android-debug-player:       ; GE_ANDROID_EMU_TABLET_DEVICE=$(GE_ANDROID_EMU_TABLET_DEVICE) $(ge)/tools/matrix-cell.sh android-debug-player --soak-timeout $(SOAK_TIMEOUT)
+
+# Long-soak cell: runs the desktop-dist cell with a 60s soak.
+# This is the dedicated reliability sweep preserved so the standard 10s cells
+# don't regress into missing crash-over-time failures. Run independently:
+#   make cell.long-soak
+.PHONY: cell.long-soak
+cell.long-soak: ; $(ge)/tools/matrix-cell.sh desktop-dist --soak-timeout 60
 
 .PHONY: check matrix-test
 check matrix-test: $(addprefix cell.,$(ge/CHECK_CELLS))
@@ -873,6 +902,8 @@ check-list:
 	@printf '  %s\n' $(ge/CHECK_CELLS)
 	@echo "Cells excluded:"
 	@printf '  %s\n' $(filter-out $(ge/CHECK_CELLS),$(ge/CELLS))
+	@echo "Soak timeout: $(SOAK_TIMEOUT)s  (override with SOAK_TIMEOUT=N)"
+	@echo "Long-soak cell: 'make cell.long-soak'  (always 60s, desktop-dist)"
 
 # ────────────────────────────────────────────────
 # Spyder pool management
