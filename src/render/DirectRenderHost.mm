@@ -47,6 +47,47 @@ bgfx::VertexLayout composeLayout() {
     return l;
 }
 
+// Rotate a 3-axis accelerometer sample from the device-hardware frame
+// (SDL3's reported convention: +X = physical right edge up, +Y = physical
+// top edge up, +Z = screen up) into the game's screen frame.
+//
+// The rotation is keyed on the LIVE display orientation reported by SDL
+// (SDL_GetCurrentDisplayOrientation) — not on SessionConfig.orientation,
+// which only records what the app *requested*. The live value reflects
+// what the OS actually rotated to (post-lock-if-honoured, or the live
+// rotation when no lock was requested), so this stays correct in both
+// locked and free-orientation modes and across the brief window between
+// a lock request and the OS settling.
+//
+// Touch and mouse coordinates are NOT rotated — both iOS and Android
+// already deliver those in the rotated UI frame. Accelerometer is the
+// outlier because the sensor chip is fixed to the chassis and has no
+// notion of UI orientation. Z (out of screen) is invariant under any
+// in-plane UI rotation, so it passes through.
+//
+// Each case is a 2D rotation expressed as a swap-and-sign on (x, y):
+//
+//   Portrait        identity            ( x,  y)
+//   Landscape       device rotated CW   (-y,  x)
+//   PortraitFlipped device upside down  (-x, -y)
+//   LandscapeFlip   device rotated CCW  ( y, -x)
+void rotateAccelToScreen(SDL_DisplayOrientation orient, float d[/*≥3*/]) {
+    const float x = d[0];
+    const float y = d[1];
+    switch (orient) {
+    case SDL_ORIENTATION_LANDSCAPE:
+        d[0] = -y; d[1] =  x; break;
+    case SDL_ORIENTATION_LANDSCAPE_FLIPPED:
+        d[0] =  y; d[1] = -x; break;
+    case SDL_ORIENTATION_PORTRAIT_FLIPPED:
+        d[0] = -x; d[1] = -y; break;
+    case SDL_ORIENTATION_PORTRAIT:
+    case SDL_ORIENTATION_UNKNOWN:
+    default:
+        break;  // identity — fall back to device frame on unknown
+    }
+}
+
 bgfx::ShaderHandle loadShader(const char* path) {
     auto stream = ge::openFile(path, /*binary=*/true);
     if (!stream || !*stream) {
@@ -114,8 +155,8 @@ struct DirectRenderHost::Impl {
         bgfx::TextureHandle atts[] = { colorTex, depthTex };
         offFB = bgfx::createFrameBuffer(2, atts, /*destroyTextures=*/false);
 
-        bgfx::ShaderHandle vs = loadShader(ge::resource("build/ge/shaders/ge_compose_vs.bin").c_str());
-        bgfx::ShaderHandle fs = loadShader(ge::resource("build/ge/shaders/ge_compose_fs.bin").c_str());
+        bgfx::ShaderHandle vs = loadShader(ge::resource(ge::renderShaderDir() + "/ge_compose_vs.bin").c_str());
+        bgfx::ShaderHandle fs = loadShader(ge::resource(ge::renderShaderDir() + "/ge_compose_fs.bin").c_str());
         if (!bgfx::isValid(vs) || !bgfx::isValid(fs)) {
             SPDLOG_ERROR("DirectRenderHost: compose shaders missing — viewport tilt disabled");
             return;
@@ -201,6 +242,9 @@ void DirectRenderHost::send(const wire::SessionConfig& cfg) {
     // player_orientation_ios.mm. See ge/CLAUDE.md "iOS orientation lock".
     playerForceOrientation(cfg.orientation);  // 0 = no-op
     // Sensors are opened in the constructor from SessionHostConfig.
+    // Sensor-frame rotation is keyed on the LIVE display orientation in
+    // pumpEvents — cfg.orientation is just the lock request, not ground
+    // truth, and tells us nothing in the no-lock case.
 }
 
 void DirectRenderHost::setEventHandler(std::function<void(const SDL_Event&)> h) {
@@ -233,6 +277,17 @@ void DirectRenderHost::pumpEvents() {
             continue;
         }
         if (i_->synth && i_->synth->handle(e)) continue;
+        // Rotate real-sensor accel into screen frame using the live
+        // display orientation. AccelSynth events bypass — they arrive
+        // via setEmit() callback, already in screen frame
+        // (mouse-displacement physics).
+        if (e.type == SDL_EVENT_SENSOR_UPDATE) {
+            SDL_DisplayOrientation o = SDL_ORIENTATION_UNKNOWN;
+            if (SDL_DisplayID disp = SDL_GetDisplayForWindow(i_->bgfxCtx->window())) {
+                o = SDL_GetCurrentDisplayOrientation(disp);
+            }
+            rotateAccelToScreen(o, e.sensor.data);
+        }
         if (i_->eventHandler) i_->eventHandler(e);
     }
 }

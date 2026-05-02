@@ -55,15 +55,15 @@ target_include_directories(bgfx PRIVATE
     ${BGFX_DIR}/src
 )
 target_link_libraries(bgfx PUBLIC bx bimg)
-# Vulkan-only build: explicitly select Vulkan so bgfx skips the auto-detect
-# block that would otherwise enable both GLES (=30) and Vulkan together.
-# With BGFX_CONFIG_RENDERER_VULKAN=1 defined, the entire auto-detect block
-# (lines 22-120 of config.h) is bypassed; GLES defaults to 0, so no EGL/GLES
-# symbols are compiled in and we don't need to link against EGL or GLESv3.
-# Do NOT add BGFX_CONFIG_RENDERER_OPENGLES — the Android emulator's
-# Apple-Metal-backed EGL translator only exposes GLES 3.0, so any GLES 3.1
-# context request triggers EGL_BAD_CONFIG → bgfx fatal.
-target_compile_definitions(bgfx PUBLIC BGFX_CONFIG_RENDERER_VULKAN=1)
+# Compile in BOTH backends. BgfxContext.mm picks one at runtime per device:
+#   * Real Adreno / Mali devices → OpenGL ES 3.1 (Vulkan path stalls; see
+#     docs/papers/adreno-830-bgfx-vulkan-crash.md).
+#   * Apple-Silicon AVD emulator → Vulkan (the AVD's Apple-Metal-backed EGL
+#     translator exposes only GLES 3.0, so a 3.1 request fails).
+target_compile_definitions(bgfx PUBLIC
+    BGFX_CONFIG_RENDERER_VULKAN=1
+    BGFX_CONFIG_RENDERER_OPENGLES=31
+)
 
 # ── Box2D (vendored C code) ─────────────────────────────────────────────
 set(BOX2D_DIR ${GE_ROOT}/vendor/github.com/erincatto/box2d)
@@ -85,6 +85,7 @@ set(GE_SOURCES
     ${GE_ROOT}/src/Signal.cpp
     ${GE_ROOT}/src/SessionHost.mm
     ${GE_ROOT}/src/render/DirectRenderHost.mm
+    ${GE_ROOT}/tools/player_orientation_stub.cpp
     ${GE_ROOT}/vendor/src/sqlite3.c
     ${GE_ROOT}/vendor/src/sqlpipe.cpp  # embeds sqlift — do NOT add sqlift.cpp
     ${GE_ROOT}/vendor/src/lz4.c
@@ -139,6 +140,7 @@ target_link_libraries(main PRIVATE
     bgfx box2d
     SDL3::SDL3
     # Vulkan is loaded dynamically by bgfx (libvulkan.so); no explicit link.
-    # EGL and GLESv3 are not needed since we use the Vulkan renderer.
+    # EGL + GLESv3 are needed for the GLES backend used on real devices.
+    EGL GLESv3
     android log z
 )

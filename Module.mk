@@ -160,12 +160,17 @@ ge/RENDER_SHADERS = \
 	$(BUILD_DIR)/ge/shaders/ge_compose_vs.bin \
 	$(BUILD_DIR)/ge/shaders/ge_compose_fs.bin
 
-# OpenGL ES 3.1 variants of the app's and ge's shaders, for Android.
-# Consumed by the Android Gradle build's syncAssets task; deposited
-# into the APK under assets/build/shaders/ at the same paths so the
-# runtime lookup via ge::resource("build/shaders/*.bin") works.
-ge/APP_SHADERS_GLES    = $(patsubst $(BUILD_DIR)/$(ge/SHADER_DIR)/%.bin,$(BUILD_DIR)/$(ge/SHADER_DIR)-gles/%.bin,$(APP_SHADERS))
-ge/RENDER_SHADERS_GLES = $(patsubst $(BUILD_DIR)/ge/shaders/%.bin,$(BUILD_DIR)/ge/shaders-gles/%.bin,$(ge/RENDER_SHADERS))
+# Android shader variants. The APK ships BOTH so the runtime can pick
+# based on the bgfx backend BgfxContext.mm chose for this device:
+#   * shaders-spirv/ — for the Vulkan backend (Apple-Silicon emulator).
+#   * shaders-gles/  — for the OpenGL ES backend (real Adreno/Mali devices).
+# Consumed by the Gradle syncAssets task; both deposited into the APK
+# under assets/build/shaders-{spirv,gles}/ and assets/build/ge/shaders-{spirv,gles}/.
+# Engine helper ge::shaderDir() returns the right suffix at runtime.
+ge/APP_SHADERS_SPIRV    = $(patsubst $(BUILD_DIR)/$(ge/SHADER_DIR)/%.bin,$(BUILD_DIR)/$(ge/SHADER_DIR)-spirv/%.bin,$(APP_SHADERS))
+ge/RENDER_SHADERS_SPIRV = $(patsubst $(BUILD_DIR)/ge/shaders/%.bin,$(BUILD_DIR)/ge/shaders-spirv/%.bin,$(ge/RENDER_SHADERS))
+ge/APP_SHADERS_GLES     = $(patsubst $(BUILD_DIR)/$(ge/SHADER_DIR)/%.bin,$(BUILD_DIR)/$(ge/SHADER_DIR)-gles/%.bin,$(APP_SHADERS))
+ge/RENDER_SHADERS_GLES  = $(patsubst $(BUILD_DIR)/ge/shaders/%.bin,$(BUILD_DIR)/ge/shaders-gles/%.bin,$(ge/RENDER_SHADERS))
 
 # Texture encoder (used by precompute tools, NOT part of libge.a)
 ge/TEXTURE_ENCODER_SRC = $(ge)/src/TextureEncoder.cpp
@@ -388,42 +393,66 @@ $(BUILD_DIR)/ge/shaders/%_fs.bin: $(ge/RENDER_SHADER_DIR)/%_fs.sc $(ge/RENDER_SH
 	    --varyingdef $(ge/RENDER_SHADER_DIR)/varying.def.sc \
 	    -i $(ge/SHADERC_BGFX_INCLUDE) -i $(ge/RENDER_SHADER_DIR)
 
-# SPIRV variants — for the Android Vulkan backend. Output lives in
-# $(BUILD_DIR)/shaders-gles/ and $(BUILD_DIR)/ge/shaders-gles/. The
-# Android Gradle syncAssets task flattens these into assets/build/shaders/
-# so runtime lookups continue to work via ge::resource("build/shaders/...").
-#
-# NOTE: Using spirv (not 310_es or 300_es). The Android backend uses
-# bgfx's Vulkan renderer (not GLES). The Android emulator's Apple-Metal-
-# backed EGL translator only exposes GLES 3.0; requesting 3.1 triggers
-# EGL_BAD_CONFIG → bgfx fatal. Vulkan on the emulator works cleanly.
-# SPIRV shaders also bypass the glsl-optimizer, which has a known
-# vec4-constructor bug in 300_es that sets the w component to -Infinity.
-$(BUILD_DIR)/$(ge/SHADER_DIR)-gles/%_vs.bin: $(ge/SHADER_DIR)/%_vs.sc $(ge/SHADERC_VARYINGDEF) $(ge/SHADERC)
+# SPIR-V variants — for the Android Vulkan backend (Apple-Silicon AVD).
+# Output lives in $(BUILD_DIR)/shaders-spirv/ and $(BUILD_DIR)/ge/shaders-spirv/.
+# Bypasses the glsl-optimizer (known vec4-constructor bug in 300_es that
+# sets the w component to -Infinity).
+$(BUILD_DIR)/$(ge/SHADER_DIR)-spirv/%_vs.bin: $(ge/SHADER_DIR)/%_vs.sc $(ge/SHADERC_VARYINGDEF) $(ge/SHADERC)
 	@mkdir -p $(dir $@)
 	$(ge/SHADERC) -f $< -o $@ --type vertex \
 	    --platform android -p spirv \
 	    --varyingdef $(ge/SHADERC_VARYINGDEF) \
 	    -i $(ge/SHADERC_BGFX_INCLUDE) -i $(ge/SHADER_DIR)
 
-$(BUILD_DIR)/$(ge/SHADER_DIR)-gles/%_fs.bin: $(ge/SHADER_DIR)/%_fs.sc $(ge/SHADERC_VARYINGDEF) $(ge/SHADERC)
+$(BUILD_DIR)/$(ge/SHADER_DIR)-spirv/%_fs.bin: $(ge/SHADER_DIR)/%_fs.sc $(ge/SHADERC_VARYINGDEF) $(ge/SHADERC)
 	@mkdir -p $(dir $@)
 	$(ge/SHADERC) -f $< -o $@ --type fragment \
 	    --platform android -p spirv \
 	    --varyingdef $(ge/SHADERC_VARYINGDEF) \
 	    -i $(ge/SHADERC_BGFX_INCLUDE) -i $(ge/SHADER_DIR)
 
-$(BUILD_DIR)/ge/shaders-gles/%_vs.bin: $(ge/RENDER_SHADER_DIR)/%_vs.sc $(ge/RENDER_SHADER_DIR)/varying.def.sc $(ge/SHADERC)
+$(BUILD_DIR)/ge/shaders-spirv/%_vs.bin: $(ge/RENDER_SHADER_DIR)/%_vs.sc $(ge/RENDER_SHADER_DIR)/varying.def.sc $(ge/SHADERC)
 	@mkdir -p $(dir $@)
 	$(ge/SHADERC) -f $< -o $@ --type vertex \
 	    --platform android -p spirv \
 	    --varyingdef $(ge/RENDER_SHADER_DIR)/varying.def.sc \
 	    -i $(ge/SHADERC_BGFX_INCLUDE) -i $(ge/RENDER_SHADER_DIR)
 
-$(BUILD_DIR)/ge/shaders-gles/%_fs.bin: $(ge/RENDER_SHADER_DIR)/%_fs.sc $(ge/RENDER_SHADER_DIR)/varying.def.sc $(ge/SHADERC)
+$(BUILD_DIR)/ge/shaders-spirv/%_fs.bin: $(ge/RENDER_SHADER_DIR)/%_fs.sc $(ge/RENDER_SHADER_DIR)/varying.def.sc $(ge/SHADERC)
 	@mkdir -p $(dir $@)
 	$(ge/SHADERC) -f $< -o $@ --type fragment \
 	    --platform android -p spirv \
+	    --varyingdef $(ge/RENDER_SHADER_DIR)/varying.def.sc \
+	    -i $(ge/SHADERC_BGFX_INCLUDE) -i $(ge/RENDER_SHADER_DIR)
+
+# OpenGL ES 3.1 variants — for the Android GLES backend (real Adreno/Mali).
+# Output lives in $(BUILD_DIR)/shaders-gles/ and $(BUILD_DIR)/ge/shaders-gles/.
+# Profile is 310_es (not 300_es) to dodge the glsl-optimizer vec4 bug.
+$(BUILD_DIR)/$(ge/SHADER_DIR)-gles/%_vs.bin: $(ge/SHADER_DIR)/%_vs.sc $(ge/SHADERC_VARYINGDEF) $(ge/SHADERC)
+	@mkdir -p $(dir $@)
+	$(ge/SHADERC) -f $< -o $@ --type vertex \
+	    --platform android -p 310_es \
+	    --varyingdef $(ge/SHADERC_VARYINGDEF) \
+	    -i $(ge/SHADERC_BGFX_INCLUDE) -i $(ge/SHADER_DIR)
+
+$(BUILD_DIR)/$(ge/SHADER_DIR)-gles/%_fs.bin: $(ge/SHADER_DIR)/%_fs.sc $(ge/SHADERC_VARYINGDEF) $(ge/SHADERC)
+	@mkdir -p $(dir $@)
+	$(ge/SHADERC) -f $< -o $@ --type fragment \
+	    --platform android -p 310_es \
+	    --varyingdef $(ge/SHADERC_VARYINGDEF) \
+	    -i $(ge/SHADERC_BGFX_INCLUDE) -i $(ge/SHADER_DIR)
+
+$(BUILD_DIR)/ge/shaders-gles/%_vs.bin: $(ge/RENDER_SHADER_DIR)/%_vs.sc $(ge/RENDER_SHADER_DIR)/varying.def.sc $(ge/SHADERC)
+	@mkdir -p $(dir $@)
+	$(ge/SHADERC) -f $< -o $@ --type vertex \
+	    --platform android -p 310_es \
+	    --varyingdef $(ge/RENDER_SHADER_DIR)/varying.def.sc \
+	    -i $(ge/SHADERC_BGFX_INCLUDE) -i $(ge/RENDER_SHADER_DIR)
+
+$(BUILD_DIR)/ge/shaders-gles/%_fs.bin: $(ge/RENDER_SHADER_DIR)/%_fs.sc $(ge/RENDER_SHADER_DIR)/varying.def.sc $(ge/SHADERC)
+	@mkdir -p $(dir $@)
+	$(ge/SHADERC) -f $< -o $@ --type fragment \
+	    --platform android -p 310_es \
 	    --varyingdef $(ge/RENDER_SHADER_DIR)/varying.def.sc \
 	    -i $(ge/SHADERC_BGFX_INCLUDE) -i $(ge/RENDER_SHADER_DIR)
 
@@ -486,7 +515,7 @@ ge/ios: $(APP_SHADERS) $(ge/RENDER_SHADERS)
 # ── Consuming app's Android build ──────────────────────────────────
 
 .PHONY: ge/android
-ge/android: $(ge/APP_SHADERS_GLES) $(ge/RENDER_SHADERS_GLES)
+ge/android: $(ge/APP_SHADERS_SPIRV) $(ge/RENDER_SHADERS_SPIRV) $(ge/APP_SHADERS_GLES) $(ge/RENDER_SHADERS_GLES)
 	@if [ ! -d android ]; then \
 	    echo "android/ not found — run 'make ge/android-init APP_ID=... APP_NAME=...' first"; \
 	    exit 1; \
@@ -714,7 +743,7 @@ ge/player-ios-device: ge/player-ios
 # Release cells use ge/android-release; debug cells use ge/android.
 
 .PHONY: ge/android-release
-ge/android-release: $(ge/APP_SHADERS_GLES) $(ge/RENDER_SHADERS_GLES)
+ge/android-release: $(ge/APP_SHADERS_SPIRV) $(ge/RENDER_SHADERS_SPIRV) $(ge/APP_SHADERS_GLES) $(ge/RENDER_SHADERS_GLES)
 	@if [ ! -d android ]; then \
 	    echo "android/ not found — run 'make ge/android-init APP_ID=... APP_NAME=...' first"; \
 	    exit 1; \

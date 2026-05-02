@@ -8,4 +8,17 @@ namespace ge {
 // On desktop, prepends the binary's parent directory (project root).
 std::string resource(const std::string& relativePath);
 
+// Path component identifying the renderer-appropriate shader directory.
+// Games construct shader paths as resource(shaderDir() + "/foo_vs.bin").
+//   * Apple platforms (Metal)             → "build/shaders"
+//   * Android (Vulkan, on emulator)       → "build/shaders-spirv"
+//   * Android (OpenGL ES, real devices)   → "build/shaders-gles"
+// Must be called AFTER bgfx is initialised (BgfxContext constructed).
+std::string shaderDir();
+
+// Same as shaderDir() but for ge's internal compose-pass shaders, which
+// live under "build/ge/shaders" (Apple) or "build/ge/shaders-{spirv,gles}"
+// (Android).
+std::string renderShaderDir();
+
 } // namespace ge

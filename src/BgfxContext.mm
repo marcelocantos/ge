@@ -3,7 +3,8 @@
 //
 // Platform-specific bgfx init:
 //   Apple (macOS, iOS)  → Metal backend via CAMetalLayer
-//   Android             → OpenGL ES 3.1 backend via SDL's ANativeWindow
+//   Android (real)      → OpenGL ES 3.1 backend (Adreno/Mali Vulkan stalls)
+//   Android (emulator)  → Vulkan backend (Apple-Silicon AVD EGL is only 3.0)
 //
 // Kept in a single .mm file with #ifdef branches so the public API
 // (BgfxContext) stays identical across platforms. On Android, the build
@@ -26,6 +27,11 @@
 #if !TARGET_OS_OSX
 #import <UIKit/UIKit.h>
 #endif
+#endif
+
+#if defined(__ANDROID__)
+#include <sys/system_properties.h>
+#include <cstring>
 #endif
 
 namespace ge {
@@ -127,14 +133,29 @@ BgfxContext::BgfxContext(const BgfxConfig& config)
         }
     }
 #elif defined(__ANDROID__)
-    // Vulkan on Android. bgfx loads libvulkan.so dynamically and creates
-    // its own swap-chain from the ANativeWindow*. This avoids the EGL GLES
-    // path entirely, which is necessary because the Android emulator's
-    // Apple-Metal-backed EGL translator only supports GLES 3.0 — requesting
-    // a 3.1 context triggers EGL_BAD_CONFIG → bgfx fatal on all AVDs running
-    // on macOS Apple Silicon. SPIRV shaders (compiled with -p spirv) bypass
-    // the glsl-optimizer and work cleanly with the Vulkan backend.
-    init.type = bgfx::RendererType::Vulkan;
+    // Renderer choice on Android is mutually-exclusive between two
+    // failure modes — pick at runtime:
+    //
+    //   * Real Adreno / Mali devices: bgfx's Vulkan path stalls after
+    //     the first present (Adreno 830 documented in
+    //     docs/papers/adreno-830-bgfx-vulkan-crash.md; Mali shows the
+    //     same symptom). OpenGL ES is the working path.
+    //   * Apple-Silicon AVD emulator: Android's Apple-Metal-backed EGL
+    //     translator only exposes GLES 3.0; requesting GLES 3.1 (which
+    //     bgfx needs to compile its draw-call streams) trips
+    //     EGL_BAD_CONFIG → bgfx fatal. Vulkan is the working path.
+    //
+    // Both bgfx backends are compiled in (see template CMakeLists);
+    // we just steer init.type via Android system properties.
+    char qemu[PROP_VALUE_MAX] = {};
+    char hw[PROP_VALUE_MAX]   = {};
+    __system_property_get("ro.kernel.qemu", qemu);
+    __system_property_get("ro.hardware",    hw);
+    const bool isEmulator = (qemu[0] == '1') ||
+                            (std::strcmp(hw, "ranchu") == 0) ||
+                            (std::strcmp(hw, "goldfish") == 0);
+    init.type = isEmulator ? bgfx::RendererType::Vulkan
+                           : bgfx::RendererType::OpenGLES;
 
     const char* title = (config.title && *config.title) ? config.title : "ge";
     // Android: ask for a fullscreen surface. Passing non-fullscreen
