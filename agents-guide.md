@@ -256,9 +256,22 @@ go there.
   (mobile-crashes guard, drawable-as-truth patch, shaderc CMake build). Don't rebase onto upstream
   without verifying all three patches still apply.
 
-- **Android uses Vulkan, not GLES.** The Apple EGL translator caps at GLES 3.0; requesting 3.1
-  triggers `EGL_BAD_CONFIG` → bgfx fatal on modern Adreno 830 AVDs. bgfx loads `libvulkan.so`
-  dynamically and builds its own swap-chain from the `ANativeWindow*`.
+- **Android dual-renderer: Vulkan on emulator, OpenGL ES 3.1 on real devices.** From v0.2.0,
+  bgfx compiles both backends and `BgfxContext.mm` runtime-selects via `ro.kernel.qemu` /
+  `ro.hardware`. Vulkan on the Apple-Silicon AVD (its EGL translator caps at GLES 3.0; a 3.1
+  request trips `EGL_BAD_CONFIG`); OpenGL ES on real Adreno/Mali devices (the Vulkan path
+  silently stalls after the first present — see `docs/papers/adreno-830-bgfx-vulkan-crash.md`).
+  Single-threaded mode (`BGFX_CONFIG_MULTITHREADED=0`) is non-negotiable on Android so the
+  swap-chain teardown on background can be gated by SDL3's `WINDOW_FOCUS_LOST` handler.
+
+- **iOS / iPad orientation lock needs BOTH `Info.plist` and `SessionHostConfig.orientation`.**
+  iPadOS 26+ ignores plist orientation alone (multitasking treats every iPad app as resizable).
+  Narrow `UISupportedInterfaceOrientations` *and* set `SessionHostConfig.orientation` non-zero
+  so the engine activates the `prefersInterfaceOrientationLocked` swizzle (Apple TN3192). The
+  swizzle's library file is bundled into `libge` from v0.3.0; consumers don't need to add it
+  to their build. The specific `wire::kOrientation*` value is currently a boolean
+  ("lock yes/no") — *which* orientation gets locked is the plist's job. See `CLAUDE.md`'s
+  "iOS orientation lock (iPadOS 26+)" section for the full background.
 
 - **`ged_addr` is consumed-once on Android.** Pass it via `--es ged_addr "host:port"` to
   `am start`. Subsequent launches without the flag fall through to QR scan. The matrix-cell harness
