@@ -13,7 +13,7 @@ SAMPLE ?= sample/tiltbuggy
 
 # Specific targets the delegator should proxy. `check` is the big one:
 # runs the 24-cell e2e matrix via the sample's Module.mk integration.
-.PHONY: all check matrix-test check-list unit-test init clean ged run
+.PHONY: all check matrix-test check-list unit-test init clean ged run bullseye
 
 all check matrix-test check-list unit-test clean run:
 	$(MAKE) -C $(SAMPLE) $@
@@ -32,3 +32,17 @@ ge/%:
 #   make cell.ios-sim-tablet-dist
 cell.%:
 	$(MAKE) -C $(SAMPLE) $@
+
+# Standing invariants for /cv. Exit 0 means all green; non-zero means a
+# violation. Stdout is relayed verbatim to the agent. Ignores untracked
+# files so the user's WIP notes don't trip the check.
+bullseye:
+	@git diff --quiet && git diff --cached --quiet \
+	  && echo "✓ no uncommitted changes to tracked files" \
+	  || { echo "✗ uncommitted changes to tracked files"; \
+	       git status --short --untracked-files=no; exit 1; }
+	@untracked=$$(git ls-files --others --exclude-standard); \
+	  if [ -n "$$untracked" ]; then \
+	    echo "ℹ untracked files (not a violation):"; \
+	    echo "$$untracked" | sed 's/^/    /'; \
+	  fi

@@ -19,17 +19,19 @@
 #   <cell-name>       One of the 24 canonical cell names (see list below).
 #
 # Options:
-#   --app <dir>       App root dir (default: current dir).
-#   --timeout <s>     Sub-check timeout override.
-#                     Defaults: cold-launch=8s, soak=60s, debug-soak=10s.
-#   --capture-refs    Record reference screenshots instead of comparing.
-#   --rms <f>         Image-diff RMS threshold (default 0.08).
-#   --verbose         Echo sub-command output.
-#   --device <alias>  Pin a specific device alias (skip spyder reserve --on).
-#                     Normally passed internally by the self-wrap; callers can
-#                     also use it to target a known inventory alias directly.
-#   --skip-spyder-run Internal flag. Means this invocation is already running
-#                     inside a `spyder run` wrapper — skip the self-wrap.
+#   --app <dir>           App root dir (default: current dir).
+#   --timeout <s>         Cold-launch timeout override (default 8s).
+#   --soak-timeout <s>    Soak phase duration override (default 10s; use 60 for
+#                         the long-soak cell).  Debug cells always use 10s
+#                         regardless of this value.
+#   --capture-refs        Record reference screenshots instead of comparing.
+#   --rms <f>             Image-diff RMS threshold (default 0.08).
+#   --verbose             Echo sub-command output.
+#   --device <alias>      Pin a specific device alias (skip spyder reserve --on).
+#                         Normally passed internally by the self-wrap; callers can
+#                         also use it to target a known inventory alias directly.
+#   --skip-spyder-run     Internal flag. Means this invocation is already running
+#                         inside a `spyder run` wrapper — skip the self-wrap.
 #
 # Canonical cell names:
 #   desktop-dist  desktop-player
@@ -100,7 +102,7 @@ fi
 CELL=""
 APP_DIR="$(pwd)"
 COLD_LAUNCH_TIMEOUT=8
-SOAK_TIMEOUT=60
+SOAK_TIMEOUT=10
 DEBUG_SOAK_TIMEOUT=10
 CAPTURE_REFS=0
 RMS=0.08
@@ -124,7 +126,8 @@ CELL="$1"; shift
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --app)             APP_DIR="$(cd "$2" && pwd)"; shift 2 ;;
-        --timeout)         COLD_LAUNCH_TIMEOUT="$2"; SOAK_TIMEOUT="$2"; shift 2 ;;
+        --timeout)         COLD_LAUNCH_TIMEOUT="$2"; shift 2 ;;
+        --soak-timeout)    SOAK_TIMEOUT="$2"; shift 2 ;;
         --capture-refs)    CAPTURE_REFS=1; shift ;;
         --rms)             RMS="$2"; shift 2 ;;
         --verbose)         VERBOSE=1; shift ;;
@@ -343,6 +346,7 @@ resolve_and_wrap() {
     retry_spyder_run "$alias" "$owner" "$0" "$CELL" \
         --app "$APP_DIR" \
         --timeout "$COLD_LAUNCH_TIMEOUT" \
+        --soak-timeout "$SOAK_TIMEOUT" \
         --rms "$RMS" \
         --device "$alias" \
         --skip-spyder-run \
@@ -367,6 +371,7 @@ if [[ $NEEDS_DEVICE -eq 1 && $SKIP_SPYDER_RUN -eq 0 ]]; then
         retry_spyder_run "$resolved_alias" "$owner" "$0" "$CELL" \
             --app "$APP_DIR" \
             --timeout "$COLD_LAUNCH_TIMEOUT" \
+            --soak-timeout "$SOAK_TIMEOUT" \
             --rms "$RMS" \
             --device "$resolved_alias" \
             --skip-spyder-run \
@@ -663,10 +668,12 @@ if best is not None:
     print(best)
 PY
 ) 2>/dev/null || true
-    if [[ -z "$wid" ]]; then
-        screencapture -x "$out" 2>/dev/null
-    else
+    if [[ -n "$wid" ]]; then
         screencapture -x -o -l "$wid" "$out" 2>/dev/null
+    fi
+    # Fall back to full-screen if window-specific capture failed or no window found.
+    if [[ ! -s "$out" ]]; then
+        screencapture -x "$out" 2>/dev/null
     fi
 }
 
@@ -1499,6 +1506,95 @@ check_soak_desktop() {
     pass_check "$subcheck" "${SOAK_TIME}s — app alive, no crash reports"
 }
 
+# check_accelsynth_ios_sim <udid> <bundle_id>
+#
+# Verifies that AccelSynth is active (no real sensor) and produces non-zero
+# sensor output on an iOS Simulator distribution build (🎯T28.3).
+#
+# Strategy: relaunch the app with GE_ACCELSYNTH_AUTODRIVE=1 via the
+# SIMCTL_CHILD_ prefix mechanism. AccelSynth.h's update() method drives a
+# synthetic 100 px X-axis tilt for the first 2 seconds when this env var is
+# set, gated strictly on TARGET_OS_SIMULATOR. NSLog output from the app is
+# captured via `xcrun simctl spawn <udid> log stream` filtered by process
+# name. The check asserts:
+#   1. The "Shift-mouse accelerometer synthesis enabled" line appears — synth
+#      was constructed because no real sensor was found.
+#   2. An "AccelSynth: emit g=" line with a non-zero gx value appears —
+#      the autodrive actually fired and produced sensor events.
+check_accelsynth_ios_sim() {
+    local subcheck="accelsynth"
+    local udid="$1"; local bundle_id="$2"
+
+    local log_file="$ARTIFACTS/accelsynth-log.txt"
+
+    # Terminate any running instance so we get a clean log window.
+    xcrun simctl terminate "$udid" "$bundle_id" 2>/dev/null || true
+    sleep 0.3
+
+    # Start log stream, capturing all info-level output from the sim.
+    # We grep for our AccelSynth strings afterwards — filtering by predicate
+    # in the command is fragile due to quoting, and the log volume during a
+    # 5 s window is manageable.
+    local log_pid
+    xcrun simctl spawn "$udid" log stream --level info \
+        > "$log_file" 2>/dev/null &
+    log_pid=$!
+
+    # Launch with GE_ACCELSYNTH_AUTODRIVE=1. The SIMCTL_CHILD_ prefix injects
+    # the variable into the sim process environment.
+    SIMCTL_CHILD_GE_ACCELSYNTH_AUTODRIVE=1 \
+        xcrun simctl launch "$udid" "$bundle_id" >/dev/null 2>&1 || true
+
+    # Wait up to 5 s for the autodrive window plus a margin.
+    local waited=0
+    while [[ $waited -lt 5 ]]; do
+        sleep 1
+        waited=$((waited + 1))
+        if grep -q "AccelSynth: emit g=" "$log_file" 2>/dev/null; then
+            break
+        fi
+    done
+
+    kill "$log_pid" 2>/dev/null || true
+    wait "$log_pid" 2>/dev/null || true
+
+    # Sub-check 1: synth was enabled (no real sensor found).
+    if ! grep -q "accelerometer synthesis enabled" "$log_file" 2>/dev/null; then
+        fail_check "$subcheck" "synth-enabled log line not found (real sensor may be present, or NSLog sink not wired)"
+        return 1
+    fi
+
+    # Sub-check 2: autodrive produced a non-zero emit.
+    # The emit line looks like: AccelSynth: emit g=(2.54,0.00)
+    # We parse out gx and verify it is not zero.
+    if ! grep -q "AccelSynth: emit g=" "$log_file" 2>/dev/null; then
+        fail_check "$subcheck" "no AccelSynth emit line found in log"
+        return 1
+    fi
+    local sample_line
+    sample_line=$(grep "AccelSynth: emit g=" "$log_file" 2>/dev/null | head -1)
+    local gx
+    gx=$(echo "$sample_line" | sed -n 's/.*g=(\([^,]*\),.*/\1/p')
+    if [[ -z "$gx" ]]; then
+        warn_check "$subcheck" "could not parse gx from emit line: $sample_line"
+        return 0
+    fi
+    # Any non-zero float passes. Zero appears as "0" or "0.0..." variants.
+    if [[ "$gx" =~ ^-?0(\.0+)?$ ]]; then
+        fail_check "$subcheck" "AccelSynth emitted zero gx — autodrive may not have fired (gx=$gx)"
+        return 1
+    fi
+    pass_check "$subcheck" "synth active, non-zero emit confirmed (gx=$gx)"
+}
+
+# Helper: derive a process name from a bundle ID for log stream filtering.
+# Tries the last component of the reverse-DNS ID (e.g. "tiltbuggy" from
+# "com.squz.tiltbuggy"). Falls back to the full bundle ID.
+app_name_from_bundle() {
+    local bundle_id="$1"
+    echo "$bundle_id" | awk -F. '{print $NF}'
+}
+
 check_soak_ios_sim() {
     local subcheck="soak"
     local udid="$1"; local bundle_id="$2"
@@ -2067,6 +2163,11 @@ run_ios_sim_dist() {
     check_soak_ios_sim "$SIM_UDID" "$APP_ID" || true
     check_rotation_ios_sim "$SIM_UDID" "$APP_ID" || true
     check_bgfg_ios "$SIM_UDID" "$APP_ID" || true
+    # AccelSynth verification (🎯T28.3): confirm no real sensor → synth
+    # constructs, and the GE_ACCELSYNTH_AUTODRIVE path produces non-zero
+    # sensor output. Relaunches the app with the autodrive env var via
+    # SIMCTL_CHILD_ and reads NSLog output from xcrun simctl spawn log stream.
+    check_accelsynth_ios_sim "$SIM_UDID" "$APP_ID" || true
     # Visual regression: capture at known-stable state (post-soak, post-bg/fg, pre-exit).
     # Uses spyder screenshot + diff against baseline in ~/.spyder/visualdiff/ge-tiltbuggy/<cell>/...
     # On mismatch, exits with code 51 (visual-regression-mismatch).

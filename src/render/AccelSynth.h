@@ -20,6 +20,15 @@
 // in the screen plane. One rotation about one axis — no gimballing.
 // No cap on displacement: let the user "flip the device upside down"
 // if they want, with the physics following sin(angle) naturally.
+//
+// GE_ACCELSYNTH_AUTODRIVE (iOS Simulator only):
+// When this environment variable is set to "1", update() drives a
+// synthetic 100-pixel X-axis tilt for the first 2 seconds, then
+// releases into easing. This lets the matrix cell (ios-sim-tablet-dist)
+// assert the AccelSynth path produces non-zero sensor output without
+// requiring any mouse input — simctl cannot inject GCKeyboard Shift events.
+// This path is compiled and active ONLY on TARGET_OS_SIMULATOR; it is
+// unreachable on real devices.
 #pragma once
 
 #include <SDL3/SDL.h>
@@ -30,6 +39,7 @@
 #endif
 
 #include <cmath>
+#include <cstdlib>
 #include <functional>
 
 namespace ge {
@@ -110,7 +120,41 @@ public:
     // Called once per frame by the host. Drives tilt easing back to
     // zero after Shift is released. No-op while Shift is held or after the
     // tilt has fully decayed.
+    //
+    // On TARGET_OS_SIMULATOR with GE_ACCELSYNTH_AUTODRIVE=1: drives a
+    // synthetic 100-pixel X tilt for 2 s then triggers easing. The autodrive
+    // state is initialised on the first update() call (checked once via
+    // autodriveChecked_).
     void update() {
+#if defined(__APPLE__) && TARGET_OS_SIMULATOR
+        if (!autodriveChecked_) {
+            autodriveChecked_ = true;
+            const char* env = std::getenv("GE_ACCELSYNTH_AUTODRIVE");
+            if (env && env[0] == '1') {
+                autodriveActive_ = true;
+                autodriveStartNs_ = SDL_GetPerformanceCounter();
+                SPDLOG_INFO("AccelSynth: GE_ACCELSYNTH_AUTODRIVE active");
+            }
+        }
+        if (autodriveActive_) {
+            const uint64_t freq = SDL_GetPerformanceFrequency();
+            const float elapsed = float(SDL_GetPerformanceCounter() - autodriveStartNs_) / float(freq);
+            if (elapsed < 2.0f) {
+                // Hold a 100 px X-axis tilt while in the drive window.
+                tilt_.x = 100.f;
+                tilt_.y = 0.f;
+                shiftDown_ = true;
+                emitSensorFromTilt();
+                return;
+            }
+            // Drive window expired — release shift and start easing.
+            autodriveActive_ = false;
+            shiftDown_ = false;
+            easing_ = true;
+            lastTickNs_ = 0;
+            SPDLOG_INFO("AccelSynth: GE_ACCELSYNTH_AUTODRIVE drive complete, easing");
+        }
+#endif  // TARGET_OS_SIMULATOR
         if (!easing_) return;
         const uint64_t now = SDL_GetPerformanceCounter();
         if (lastTickNs_ == 0) {
@@ -169,6 +213,11 @@ private:
     uint64_t lastTickNs_ = 0;
     SDL_Window* window_ = nullptr;
     std::function<void(const SDL_Event&)> emit_;
+#if defined(__APPLE__) && TARGET_OS_SIMULATOR
+    bool autodriveChecked_ = false;
+    bool autodriveActive_  = false;
+    uint64_t autodriveStartNs_ = 0;
+#endif
 };
 
 } // namespace ge

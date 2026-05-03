@@ -677,6 +677,69 @@ func TestPreferenceFallback(t *testing.T) {
 	t.Logf("Player with invalid preference fell back to available server, session=%s", sessionID)
 }
 
+// TestOrphanedSessionReattach verifies the reconnect flow: player connects with
+// a server preference, that server registers and then dies, a new server
+// registers (single-server), and the orphaned session re-attaches to it.
+// This is the 🎯T25 reconnect sub-check scenario.
+func TestOrphanedSessionReattach(t *testing.T) {
+	_, ts := startTestDaemon(t)
+
+	// Player connects with a preference for "game-v1"
+	player := connectTestPlayer(t, ts, "game-v1")
+	defer player.CloseNow()
+
+	// game-v1 registers — player gets assigned immediately
+	server1 := connectTestServer(t, ts, "game-v1")
+	readServerAssigned(t, player)
+	session1 := readPlayerAttached(t, server1)
+	wire1 := connectSessionWire(t, ts, session1)
+
+	// Establish bridge
+	sendDeviceInfo(t, player)
+	data := readBinary(t, wire1, 2*time.Second)
+	if readMagic(data) != kDeviceInfoMagic {
+		t.Fatal("Initial bridge not established")
+	}
+
+	// game-v1 crashes — server wire and sideband both close
+	wire1.CloseNow()
+	server1.sideband.CloseNow()
+
+	// Player receives SessionEnd (no target)
+	data = readBinary(t, player, 2*time.Second)
+	if readMagic(data) != kSessionEndMagic {
+		t.Fatalf("Expected SessionEnd after server1 disconnect, got 0x%08X", readMagic(data))
+	}
+
+	// Give daemon time to clean up server1's state
+	time.Sleep(100 * time.Millisecond)
+
+	// game-v2 registers (different name — single server, player session is orphaned)
+	server2 := connectTestServer(t, ts, "game-v2")
+	defer server2.sideband.CloseNow()
+
+	// Orphaned session should re-attach: player receives ServerAssigned for game-v2
+	assigned := readServerAssigned(t, player)
+	if assigned != "game-v2" {
+		t.Fatalf("Expected orphaned session to re-attach to 'game-v2', got %q", assigned)
+	}
+
+	// server2 receives player_attached for the re-attached session
+	session2 := readPlayerAttached(t, server2)
+	t.Logf("Orphaned session %s re-attached as session %s on game-v2", session1, session2)
+
+	// Establish new bridge
+	wire2 := connectSessionWire(t, ts, session2)
+	defer wire2.CloseNow()
+	sendDeviceInfo(t, player)
+	data = readBinary(t, wire2, 2*time.Second)
+	if readMagic(data) != kDeviceInfoMagic {
+		t.Fatal("Re-attached bridge not established")
+	}
+
+	t.Log("Orphaned session successfully re-attached to new server")
+}
+
 func TestSwitchServer(t *testing.T) {
 	_, ts := startTestDaemon(t)
 
