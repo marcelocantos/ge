@@ -118,7 +118,7 @@ int main(int argc, char* argv[]) {
                     state.renderer->init(ge::resource(ge::shaderDir()).c_str());
                     state.rendererInited = true;
                 }
-                state.renderer->drawFrame(*state.scene, w, h);
+                state.renderer->drawFrame(*state.scene, w, h, ctx.safeArea());
             },
             .onEvent = [&](const SDL_Event& e) {
                 SPDLOG_INFO("onEvent type=0x{:x}", e.type);

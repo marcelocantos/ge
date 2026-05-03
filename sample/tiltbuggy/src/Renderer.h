@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
+#include <ge/SessionHost.h>
+
 #include <memory>
 
 namespace tiltbuggy {
@@ -24,7 +26,12 @@ public:
     // renderer uses them to apply a perspective camera tilt so the
     // visible viewport leans with the synthesised tilt input. Pass
     // (0, 0) for a flat top-down view.
+    // `safeArea` shrinks the brown playfield rect on all four edges so
+    // it butts up against the device's safe-area boundary (camera notch,
+    // Dynamic Island, home indicator) without intersecting it. Pass {}
+    // on platforms with no safe-area concept.
     void drawFrame(const Scene& scene, int width, int height,
+                   ge::SafeAreaInsets safeArea = {},
                    float tiltX = 0.f, float tiltY = 0.f);
 
 private:

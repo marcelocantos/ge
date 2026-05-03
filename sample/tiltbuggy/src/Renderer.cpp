@@ -111,14 +111,17 @@ void Renderer::init(const char* shaderDir) {
 }
 
 void Renderer::drawFrame(const Scene& scene, int width, int height,
+                         ge::SafeAreaInsets safeArea,
                          float /*tiltX*/, float /*tiltY*/) {
     // The host's composite pass applies viewport tilt (when synthesised
     // tilt is non-zero). The game just renders a flat top-down view.
     bgfx::setViewRect(0, 0, 0, static_cast<uint16_t>(width),
                                 static_cast<uint16_t>(height));
+    // Black outside the safe area, so the inset shows clearly against
+    // the brown playfield (which is what 🎯T37's showcase demonstrates).
     bgfx::setViewClear(0,
         BGFX_CLEAR_COLOR | BGFX_CLEAR_DEPTH,
-        0x222222ff, 1.0f, 0);
+        0x000000ff, 1.0f, 0);
 
     // Orthographic projection: fit [-he,+he] in the shorter axis.
     const float he    = scene.halfExtent();
@@ -146,7 +149,17 @@ void Renderer::drawFrame(const Scene& scene, int width, int height,
     std::vector<PosColorVertex> verts;
     verts.reserve(6 * (2 + scene.surfaces().size()));
 
-    pushRect(verts, -orthoW, -orthoH, orthoW, orthoH, rgb(0x44, 0x44, 0x44));
+    // Convert pixel insets to world units; world Y +ve is up so top
+    // inset bites off the +Y edge, bottom inset off the -Y edge.
+    const float pxToWorldX = (width  > 0) ? (2.f * orthoW / float(width))  : 0.f;
+    const float pxToWorldY = (height > 0) ? (2.f * orthoH / float(height)) : 0.f;
+    const float bgL = -orthoW + safeArea.left   * pxToWorldX;
+    const float bgR =  orthoW - safeArea.right  * pxToWorldX;
+    const float bgT =  orthoH - safeArea.top    * pxToWorldY;
+    const float bgB = -orthoH + safeArea.bottom * pxToWorldY;
+    // Brown playfield, inset to butt against the safe-area boundary on
+    // every edge (camera notch, Dynamic Island, home indicator).
+    pushRect(verts, bgL, bgB, bgR, bgT, rgb(0xAA, 0x66, 0x44));
 
     // 2. Surface rects.
     for (const auto& surf : scene.surfaces()) {
