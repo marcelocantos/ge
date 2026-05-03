@@ -76,6 +76,13 @@ public:
     // is true — bgfx::frame() against a dead Android swap chain crashes.
     // Default false; only DirectRenderHost on Android ever returns true.
     virtual bool paused() const { return false; }
+
+    // Current safe-area insets in render-surface pixels. Default zeros
+    // for hosts with no safe-area concept (desktop) or where the
+    // upstream pipeline doesn't yet feed insets through (wire mode,
+    // pre-🎯T37-followup). DirectRenderHost on iOS / Android queries
+    // SDL_GetWindowSafeArea and converts to pixels.
+    virtual SafeAreaInsets safeArea() const { return {}; }
 };
 
 } // namespace ge

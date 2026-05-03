@@ -85,6 +85,13 @@ static void runDirect(Factory factory, const SessionHostConfig& config) {
             continue;
         }
 
+        // Refresh the Context's safe-area insets each frame so the
+        // game's onUpdate / onRender see current values across resize
+        // and rotation. The host queries SDL_GetWindowSafeArea on each
+        // call — cheap; SDL caches insets and updates them in
+        // safeAreaInsetsDidChange (UIKit) / WindowInsets (Android).
+        ctx.setSafeArea(host.safeArea());
+
         if (rc.onUpdate) rc.onUpdate(dt);
 
         host.beginFrame();

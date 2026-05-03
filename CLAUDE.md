@@ -367,7 +367,8 @@ ged can run as a launchd agent for auto-start on login and restart-on-crash.
 ### Session Host
 
 - **`ge::run(Factory, SessionHostConfig)`** (`SessionHost.h`) — Blocks until SIGINT or all sessions end. Connects to ged via sideband WebSocket, sets up bgfx rendering (headless H.264 encode by default, or native window when `headless=false`), and calls the factory for each attaching player. The factory receives a `ge::Context` and returns a `RunConfig`. `SessionHostConfig` controls default dimensions, headless mode, and app identity for the persistent database path.
-- **`ge::Context`** — Platform context passed to the factory. Provides `width()`, `height()`, `deviceClass()`, and `db()` (the engine-managed sqlpipe database). Cheaply copyable (shared_ptr internals); safe to capture by value in lambdas.
+- **`ge::Context`** — Platform context passed to the factory. Provides `width()`, `height()`, `deviceClass()`, `safeArea()`, and `db()` (the engine-managed sqlpipe database). Cheaply copyable (shared_ptr internals); safe to capture by value in lambdas. The engine refreshes `safeArea()` each frame; apps read it the same way in direct mode and wire mode (no mode branching).
+- **`ge::SafeAreaInsets`** — Per-edge insets (`top`, `bottom`, `left`, `right`, in render-surface pixels) describing the device chrome (camera notch, Dynamic Island, system gestures, home indicator) that direct-mode apps must avoid when laying out edge-pinned UI. All zero on platforms with no safe-area concept (desktop) and on wire-mode sessions until the player→server safe-area plumbing lands (🎯T37 follow-up). On iOS / Android, populated from `SDL_GetWindowSafeArea` in `DirectRenderHost`.
 - **`ge::RunConfig`** — Render loop callbacks: `onUpdate(dt)`, `onRender(w, h)`, `onEvent(SDL_Event)`, `onShutdown()`.
 - **`ge::Factory`** — `std::function<RunConfig(Context)>`.
 

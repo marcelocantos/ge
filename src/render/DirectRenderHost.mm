@@ -237,6 +237,38 @@ int DirectRenderHost::height() const { return i_->height; }
 DeviceClass DirectRenderHost::deviceClass() const { return DeviceClass::Desktop; }
 bool DirectRenderHost::paused() const { return i_->bgfxCtx && i_->bgfxCtx->paused(); }
 
+SafeAreaInsets DirectRenderHost::safeArea() const {
+    SafeAreaInsets out{};
+    if (!i_->bgfxCtx) return out;
+    SDL_Window* win = i_->bgfxCtx->window();
+    if (!win) return out;
+    SDL_Rect safe{};
+    if (!SDL_GetWindowSafeArea(win, &safe)) return out;
+    // SDL_GetWindowSafeArea returns the safe rect in window (point)
+    // coordinates; SDL_GetWindowSize returns the full window size in the
+    // same units. Insets in points are top=safe.y, left=safe.x,
+    // right=fullW - safe.x - safe.w, bottom=fullH - safe.y - safe.h.
+    int winW = 0, winH = 0;
+    SDL_GetWindowSize(win, &winW, &winH);
+    if (winW <= 0 || winH <= 0) return out;
+    const int leftPt   = safe.x;
+    const int topPt    = safe.y;
+    const int rightPt  = winW - safe.x - safe.w;
+    const int bottomPt = winH - safe.y - safe.h;
+    // Convert points → pixels via the surface's pixel-density ratio so
+    // insets match the (pixel-coord) width()/height() the engine reports.
+    const float xScale = float(i_->width)  / float(winW);
+    const float yScale = float(i_->height) / float(winH);
+    auto scale = [](int v, float s) {
+        return v <= 0 ? 0 : int(std::ceil(float(v) * s));
+    };
+    out.left   = scale(leftPt,   xScale);
+    out.right  = scale(rightPt,  xScale);
+    out.top    = scale(topPt,    yScale);
+    out.bottom = scale(bottomPt, yScale);
+    return out;
+}
+
 void DirectRenderHost::send(const wire::SessionConfig& cfg) {
     // iPadOS 26 ignores Info.plist orientation restrictions on iPad — the
     // only working lock is the prefersInterfaceOrientationLocked swizzle in

@@ -23,6 +23,19 @@ enum class DeviceClass : uint8_t {
     Desktop = 3,
 };
 
+// Per-edge insets (pixels) of the device's safe-area within the render
+// surface. Zero on platforms with no notion of safe-area (desktop).
+//
+// Apps lay out top-edge UI at `safeArea().top`, bottom-edge UI at
+// `height() - safeArea().bottom`, etc., so chrome (camera notch,
+// Dynamic Island, system gestures, home indicator) stays clear.
+struct SafeAreaInsets {
+    int top    = 0;
+    int bottom = 0;
+    int left   = 0;
+    int right  = 0;
+};
+
 // Platform context provided to the game factory by ge::run().
 // Cheaply copyable (shared_ptr internals). Capture by value in lambdas.
 class Context {
@@ -34,6 +47,17 @@ public:
     int width() const;
     int height() const;
     DeviceClass deviceClass() const;
+
+    // Current safe-area insets in the render surface's pixel coordinates.
+    // Updated by the engine each frame from the active RenderHost. All
+    // four insets are 0 on platforms with no safe-area concept (desktop)
+    // and on wire-mode sessions until the player→server safe-area
+    // plumbing lands (🎯T37 follow-up).
+    SafeAreaInsets safeArea() const;
+
+    // Engine-internal: update the cached safe-area. Called by ge::run()
+    // each frame from the active RenderHost. Apps should not call this.
+    void setSafeArea(SafeAreaInsets);
 
     // The engine-provided database.
     std::shared_ptr<sqlpipe::Database> db() const;

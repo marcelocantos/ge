@@ -27,6 +27,7 @@ public:
     int height() const override;
     DeviceClass deviceClass() const override;
     bool paused() const override;
+    SafeAreaInsets safeArea() const override;
 
     void send(const wire::SessionConfig&) override;
     void setEventHandler(std::function<void(const SDL_Event&)>) override;

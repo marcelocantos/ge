@@ -24,6 +24,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <optional>
 #include <string>
 #include <unistd.h>
 #include <unordered_map>
@@ -35,6 +36,7 @@ namespace {
 struct BrokeredSession {
     std::unique_ptr<ServerWireBridge> bridge;
     RunConfig config;  // empty until DeviceInfo arrives + factory called
+    std::optional<Context> ctx;  // populated alongside config; shared_ptr-internal so cheap to keep
 };
 
 // Sideband JSON parsing (minimal, no dependencies)
@@ -180,13 +182,19 @@ void runBrokered(Factory factory, const SessionHostConfig& config) {
                         SPDLOG_INFO("Session '{}': persistent DB at {}", id, dbPath);
                     }
                 }
-                Context ctx{bs.bridge->width(), bs.bridge->height(),
-                            bs.bridge->deviceClass(), dbPath, config.schemaDdl};
-                bs.config = factory(ctx);
+                bs.ctx.emplace(bs.bridge->width(), bs.bridge->height(),
+                               bs.bridge->deviceClass(), dbPath, config.schemaDdl);
+                bs.config = factory(*bs.ctx);
                 bs.bridge->setEventHandler(bs.config.onEvent);
             }
 
             if (!bs.bridge->isReady()) continue;
+
+            // Refresh safe-area before each frame; the bridge currently
+            // returns zeros until the player→server SafeAreaUpdate
+            // plumbing lands (🎯T37 follow-up). Apps still call
+            // ctx.safeArea() the same way in both modalities.
+            if (bs.ctx) bs.ctx->setSafeArea(bs.bridge->safeArea());
 
             uint64_t t0 = SDL_GetPerformanceCounter();
             if (bs.config.onUpdate) bs.config.onUpdate(dt);
