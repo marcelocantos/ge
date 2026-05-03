@@ -145,15 +145,21 @@ public:
 private:
     void emitSensorFromTilt() {
         if (!emit_) return;
-        // Map displacement → gravity-along-screen-plane, i.e. g·sin(angle)
-        // in the direction of the displacement. Bounded naturally by ±g.
+        // Emit in iOS SDL_SENSOR_ACCEL convention: values are the
+        // counter-gravity vector in device frame. When the device is
+        // tilted in some direction, gravity rotates that way in device
+        // frame, and the reported accel rotates the OPPOSITE way.
+        // Hence the sign-flip on tilt_.{x,y} below. tilt_.y is not
+        // further inverted: SDL mouse-y grows downward, matching
+        // iOS's +Y-points-toward-top convention (drag down → virtual
+        // device leans forward → counter-gravity +Y component).
         float mag = std::sqrt(tilt_.x * tilt_.x + tilt_.y * tilt_.y);
         float gx = 0.f, gy = 0.f;
         if (mag > 0.f) {
             float angle = mag * kTiltRadPerPixel;
             float s = std::sin(angle);
-            gx =  kG * s * tilt_.x / mag;
-            gy = -kG * s * tilt_.y / mag;
+            gx = -kG * s * tilt_.x / mag;
+            gy =  kG * s * tilt_.y / mag;
         }
         SPDLOG_INFO("AccelSynth: emit g=({},{})", gx, gy);  // TEMP: T28.3 diagnostic
         SDL_Event se{};
