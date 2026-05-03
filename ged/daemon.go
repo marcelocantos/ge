@@ -144,13 +144,24 @@ func (d *Daemon) AddServer(sc *ServerConn) {
 	slog.Info("Server registered", "id", sc.ID, "name", sc.Name, "pid", sc.PID)
 
 	// Auto-assign unattached sessions to this server if their preference
-	// matches, or if this is the only server (unambiguous).
+	// matches, or if this is the only server (unambiguous), or if their
+	// preference no longer matches any active server (orphaned from a dead
+	// server — they were originally assigned via single-server fallback and
+	// should re-attach when a new server appears).
 	singleServer := len(d.servers) == 1
 	for _, sess := range d.sessions {
 		if sess.ServerID != "" {
 			continue
 		}
-		if sess.Preference == sc.Name || (sess.Preference == "" && singleServer) {
+		prefMatchesActive := false
+		for _, s := range d.servers {
+			if s.Name == sess.Preference {
+				prefMatchesActive = true
+				break
+			}
+		}
+		orphaned := !prefMatchesActive && sess.Preference != ""
+		if sess.Preference == sc.Name || (sess.Preference == "" && singleServer) || (orphaned && singleServer) {
 			sess.ServerID = sc.ID
 			d.sendServerAssignedLocked(sess.Player.Conn, sc.Name)
 			d.sendToServerIDLocked(sc.ID, fmt.Sprintf(`{"type":"player_attached","session_id":"%s"}`, sess.ID))

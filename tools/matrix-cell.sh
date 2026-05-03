@@ -668,10 +668,12 @@ if best is not None:
     print(best)
 PY
 ) 2>/dev/null || true
-    if [[ -z "$wid" ]]; then
-        screencapture -x "$out" 2>/dev/null
-    else
+    if [[ -n "$wid" ]]; then
         screencapture -x -o -l "$wid" "$out" 2>/dev/null
+    fi
+    # Fall back to full-screen if window-specific capture failed or no window found.
+    if [[ ! -s "$out" ]]; then
+        screencapture -x "$out" 2>/dev/null
     fi
 }
 
