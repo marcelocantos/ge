@@ -1043,6 +1043,65 @@ targets:
     - layout
     origin: 'migrated from GitHub issue #57'
     discovered: 2026-05-03
+  T38:
+    name: ge engine has migrated from bgfx to sokol_gfx
+    status: identified
+    value: 13.0
+    cost: 13.0
+    acceptance:
+    - ge's rendering layer compiles and runs against sokol_gfx on iOS, Android (GLES path), and macOS desktop dev
+    - All .sc shaders have been ported to sokol-shdc + GLSL source with generated MSL/GLSL/WGSL outputs
+    - esfera2, multimaze2, yourworld2, and ge-t30.1 all build and run on the sokol-based ge with no visual or behavioural regressions vs. the bgfx baseline
+    - Adreno 830 hardware renders correctly without backend-switch escape hatches
+    - View-state reuse class of bugs is verified gone — same scenes that previously needed one-view-per-concept partitioning work without it
+    - bgfx and .sc shader tooling have been removed from ge's vendor tree and build system
+    context: 'DEFERRED — do not begin until all three gating releases have shipped: esfera2 T1 (App Store v2.1), multimaze2 T1 (desktop polished + feature-complete), and yourworld2''s first store submission. Mid-flight renderer migration would destabilise active release branches. Reverses the 2026-04-20 stay-with-bgfx decision after accumulated bgfx-shaped friction (view-state reuse sensitivity, backend leakage on coordinate flips and view defaults, Adreno Vulkan hazard) crossed a threshold. sokol_gfx was identified as the runner-up at the time of the original evaluation; it remains the target. Full reasoning in docs/rendering-library-choice.md (Reversal 2026-05-04 section). Why sokol_gfx specifically: pass-descriptor-per-frame model eliminates the view-state-reuse bug class structurally; GLES-first on Android sidesteps Adreno Vulkan; ~10K LOC vs ~200K means we can fork and patch if needed; sokol-shdc + SPIRV-Cross gives clean MSL/GLSL/WGSL outputs from GLSL source. Estimated cost: 2-4 focused weeks across ge + consumers, by analogy with T53 (Dawn to bgfx). Needs a real scoping pass before starting. Affected repos: ge, yourworld2, multimaze2, esfera2, ge-t30.1, plus sample/test programs.'
+    tags:
+    - rendering
+    - migration
+    - sokol
+    - bgfx
+    - deferred
+    origin: 2026-05-04 think session — reversal of T53-era bgfx commitment after accumulated friction
+    discovered: 2026-05-04
+  T39:
+    name: Vertex colours render correctly under bgfx Vulkan on the Android emulator
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - Vertex colours rendered through bgfx Color0 (Uint8 normalized 4-component) appear with correct R/G/B order on the Pixel 9 Pro XL Android emulator (and any other Android emulator using a host-side Vulkan swap chain).
+    - Tiltbuggy's brown playfield (0xAA6644) renders brown on the emulator, not blue (0x4466AA). The yellow buggy and light-blue ice patches likewise render in their authored hues.
+    - No regression on real Android devices using GLES (S21 Ultra, Tab A9, ASUS) where colours already render correctly today.
+    - No regression on Apple Metal (iPhone sim, iPad mini) or desktop Metal.
+    context: |-
+      Filed 2026-05-06 from a 🎯T37 showcase pass on the Pixel 9 Pro XL emulator. Tiltbuggy renders with R and B channels swapped on that emulator only:
+      - brown 0xAA6644 -> blue 0x4466AA
+      - light blue 0x88CCFF -> peach 0xFFCC88
+      - yellow 0xFFCC33 -> cyan 0x33CCFF
+      G is invariant. Clean two-channel swap, not an inversion.
+
+      Confirmed via spdlog from BgfxContext.mm:
+      - Pixel 9 Pro XL emulator: BgfxContext: 1344x2992 windowed Vulkan - broken.
+      - Tab A9 device (Android 16): BgfxContext: 800x1340 windowed OpenGL ES 3.1 - correct.
+      - Real devices that pick Vulkan (S21 Ultra, ASUS) also rendered correctly in earlier sessions.
+
+      So the buggy combination is specifically bgfx Vulkan plus Android emulator host-side swap chain. Most plausible cause is a vertex-format / swap-chain-format mismatch: bgfx declares Uint8 normalized Color0 as VK_FORMAT_R8G8B8A8_UNORM but the emulator advertises a VK_FORMAT_B8G8R8A8_UNORM swap chain, and bgfx's adaptation for that case is missing or wrong on this surface.
+
+      Investigation hints when picked up:
+      - Look at bgfx's Vulkan vertex-format mapping in vendor/github.com/bkaradzic/bgfx/src/renderer_vk.cpp (search for Color0 / Uint8 / R8G8B8A8).
+      - Diff what surface formats Pixel 9 Pro XL emulator returns from vkGetPhysicalDeviceSurfaceFormatsKHR vs a real Android device that takes the Vulkan path (S21 Ultra was seen on Vulkan in earlier sessions).
+      - A workaround in tiltbuggy's renderer (swap the bytes in pushRect's rgb() helper conditionally on Vulkan-on-Android-emulator) is NOT the right fix; the engine should hand bgfx correctly-ordered vertex data and bgfx should map correctly to whichever swap chain it gets.
+
+      Priority: low. Real devices fall back to GLES on Android emulator avoidance; this only bites local emu testing. Worth fixing because emu is an important workflow for matrix CI runs and contributors without a physical device, but no production user is affected.
+    tags:
+    - rendering
+    - bgfx
+    - vulkan
+    - android-emulator
+    - low-priority
+    origin: forked-from 🎯T37 showcase pass on Pixel 9 Pro XL emulator
+    discovered: 2026-05-06
   T4:
     name: playerLoop takes a config struct with named fields
     status: achieved
