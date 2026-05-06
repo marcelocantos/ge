@@ -13,6 +13,7 @@
 #include <ge/Signal.h>
 #include <ge/Protocol.h>
 
+#include "Immersive.h"
 #include "render/DirectRenderHost.h"
 
 #include <bgfx/bgfx.h>
@@ -38,23 +39,12 @@ void runBrokered(Factory factory, const SessionHostConfig& config);
 // ── runDirect: standalone / distribution modality ─────────────────
 //
 // Render + engine in one process, no ged, no wire. Uses DirectRenderHost
-// for window + bgfx + input.
+// for window + bgfx + input. The host owns the session Context (db
+// setup, dimensions, safe-area); the run loop just relays it.
 static void runDirect(Factory factory, const SessionHostConfig& config) {
     DirectRenderHost host(config);
-
-    std::string dbPath = ":memory:";
-    if (config.orgName && config.appName) {
-        char* pref = SDL_GetPrefPath(config.orgName, config.appName);
-        if (pref) {
-            dbPath = std::string(pref) + "game.db";
-            SDL_free(pref);
-            SPDLOG_INFO("Direct mode: persistent DB at {}", dbPath);
-        }
-    }
-
-    Context ctx{host.width(), host.height(), host.deviceClass(),
-                dbPath, config.schemaDdl};
-    RunConfig rc = factory(ctx);
+    applyImmersive(config.immersive);
+    RunConfig rc = factory(host.context());
     host.setEventHandler(rc.onEvent);
 
     wire::SessionConfig sc{};
@@ -85,17 +75,10 @@ static void runDirect(Factory factory, const SessionHostConfig& config) {
             continue;
         }
 
-        // Refresh the Context's safe-area insets each frame so the
-        // game's onUpdate / onRender see current values across resize
-        // and rotation. The host queries SDL_GetWindowSafeArea on each
-        // call — cheap; SDL caches insets and updates them in
-        // safeAreaInsetsDidChange (UIKit) / WindowInsets (Android).
-        ctx.setSafeArea(host.safeArea());
-
         if (rc.onUpdate) rc.onUpdate(dt);
 
         host.beginFrame();
-        if (rc.onRender) rc.onRender(host.width(), host.height());
+        if (rc.onRender) rc.onRender(host.context());
         uint32_t frameNum = bgfx::frame();
         host.endFrame(frameNum);
     }

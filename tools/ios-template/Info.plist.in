@@ -40,13 +40,9 @@
     </array>
     <key>UIApplicationSupportsIndirectInputEvents</key>
     <true/>
-    <!-- Full-screen on iPad (no Split View / Slide Over). Safe-area
-         insets (camera notch, Dynamic Island, home indicator) only
-         exist when the app owns the full window — in a multitasking
-         pane SDL_GetWindowSafeArea reports zeros and any inset-based
-         layout collapses. ge defaults samples to full-screen so
-         ge::Context::safeArea() (🎯T37) is always meaningful. -->
-    <key>UIRequiresFullScreen</key>
-    <true/>
+    <!-- Apps that pass `SessionHostConfig.immersive = true` and want
+         it to take effect on iPad (no Split View / Slide Over) must
+         also add `UIRequiresFullScreen` to their own Info.plist —
+         iOS reads it at launch and there is no runtime override. -->
 </dict>
 </plist>

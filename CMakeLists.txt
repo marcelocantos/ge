@@ -158,11 +158,19 @@ set(GE_CORE_SOURCES
 if(APPLE)
     list(APPEND GE_CORE_SOURCES
         ${CMAKE_CURRENT_SOURCE_DIR}/src/FontLoader_apple.mm
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/SdlContext.cpp)
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/SdlContext.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/Immersive_stub.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/CutoutInsets_stub.cpp)
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Android")
     list(APPEND GE_CORE_SOURCES
         ${CMAKE_CURRENT_SOURCE_DIR}/src/FontLoader_android.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/SdlContext_android.cpp)
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/SdlContext_android.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/Immersive_android.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/CutoutInsets_android.cpp)
+else()
+    list(APPEND GE_CORE_SOURCES
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/Immersive_stub.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/CutoutInsets_stub.cpp)
 endif()
 
 # Sources that live in both direct and wire modes — bgfx init + session

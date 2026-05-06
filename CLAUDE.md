@@ -28,7 +28,7 @@ int main() {
 
         return {
             .onUpdate   = [&, app](float dt) { app->update(dt, state); },
-            .onRender   = [&, app](int w, int h) { app->render(state, w, h); },
+            .onRender   = [&, app](const ge::Context& c) { app->render(state, c); },
             .onEvent    = [&, app](const SDL_Event& e) { app->event(e, state); },
             .onShutdown = [&, app]() { app->shutdown(); },
         };
@@ -40,9 +40,9 @@ Key points:
 - **`ge::run(Factory)`** connects to the ged daemon broker and spawns sessions for attaching players
 - **State lives outside the factory** so it persists across player reconnects
 - **App resources are created per session** (each reconnect gets a fresh `Context`)
-- The factory callback receives a `ge::Context` (dimensions, device class, DB) and returns a `RunConfig`
+- The factory callback receives a `ge::Context` (rects, device class, DB) and returns a `RunConfig`
 - `RunConfig` uses designated initializers: `onUpdate`, `onRender`, `onEvent`, `onShutdown`
-- `onRender(w, h)` is called each frame; bgfx frame submission happens inside
+- `onRender(const Context&)` is called each frame. The Context exposes three rects (`drawSafeRect`, `uiSafeRect`, `fullRect`) — the game must consciously pick the right one for each piece of work; there is no shortcut `width/height` to dodge the question. The engine refreshes them all before each call. Future per-frame state (parallax delta, tilt, …) joins `Context`, not the signature. bgfx frame submission happens inside `onRender`.
 - `ge::run` blocks until SIGINT or all sessions end
 - Ctrl+C terminates the process gracefully
 
@@ -96,7 +96,7 @@ The ged daemon manages player connections, QR codes, and session routing. Game s
 | Rendering backend | bgfx Metal (macOS) / Vulkan (Android) | bgfx draw calls in `onRender` |
 | H.264 encoding | `VideoEncoder_apple.mm` (VideoToolbox) | Nothing |
 | H.264 decoding | `VideoDecoder_apple.mm` (VideoToolbox) | Nothing |
-| Frame loop | `ge::run` with delta timing + signal handling | `onUpdate(dt)` + `onRender(w, h)` callbacks |
+| Frame loop | `ge::run` with delta timing + signal handling | `onUpdate(dt)` + `onRender(const Context&)` callbacks |
 | Input | Player captures SDL events, sends over WebSocket | `onEvent(e)` callback |
 | Reconnection | `ge::run` spawns new session per player | Separate State from App |
 | Session routing | ged daemon manages connections + QR codes | Nothing |
@@ -367,9 +367,10 @@ ged can run as a launchd agent for auto-start on login and restart-on-crash.
 ### Session Host
 
 - **`ge::run(Factory, SessionHostConfig)`** (`SessionHost.h`) — Blocks until SIGINT or all sessions end. Connects to ged via sideband WebSocket, sets up bgfx rendering (headless H.264 encode by default, or native window when `headless=false`), and calls the factory for each attaching player. The factory receives a `ge::Context` and returns a `RunConfig`. `SessionHostConfig` controls default dimensions, headless mode, and app identity for the persistent database path.
-- **`ge::Context`** — Platform context passed to the factory. Provides `width()`, `height()`, `deviceClass()`, `safeArea()`, and `db()` (the engine-managed sqlpipe database). Cheaply copyable (shared_ptr internals); safe to capture by value in lambdas. The engine refreshes `safeArea()` each frame; apps read it the same way in direct mode and wire mode (no mode branching).
-- **`ge::SafeAreaInsets`** — Per-edge insets (`top`, `bottom`, `left`, `right`, in render-surface pixels) describing the device chrome (camera notch, Dynamic Island, system gestures, home indicator) that direct-mode apps must avoid when laying out edge-pinned UI. All zero on platforms with no safe-area concept (desktop) and on wire-mode sessions until the player→server safe-area plumbing lands (🎯T37 follow-up). On iOS / Android, populated from `SDL_GetWindowSafeArea` in `DirectRenderHost`.
-- **`ge::RunConfig`** — Render loop callbacks: `onUpdate(dt)`, `onRender(w, h)`, `onEvent(SDL_Event)`, `onShutdown()`.
+- **`ge::Context`** — Platform context passed to the factory once at session start and to `onRender` each frame. Provides `rect()` (the safe-area layout hint — where to *place* gameplay), `width()` / `height()` (= `rect().w` / `rect().h`), `surfaceRect()` / `surfaceWidth()` / `surfaceHeight()` (the full render surface, always available for drawing), `safeArea()` (per-edge insets), `deviceClass()`, and `db()` (the engine-managed sqlpipe database). The safe rect is *advisory*, not a clip region — games are free to draw anywhere on the surface (e.g. a marble glow that bleeds into the camera region) but should keep the gameplay grid inside `rect()` so chrome doesn't intrude on it. Cheaply copyable (shared_ptr internals); accessors return live values that the engine updates before each callback, so all copies of a Context observe the same per-frame state. New per-frame fields (parallax delta, tilt, frame index, …) live here, not on callback signatures.
+- **`ge::Rect`** — `{ x, y, w, h }` pixel rectangle on the render surface. Used by `Context::rect()` (safe-area layout hint) and `Context::surfaceRect()` (full surface).
+- **`ge::SafeAreaInsets`** — Per-edge insets (`top`, `bottom`, `left`, `right`, in render-surface pixels) describing the device chrome (camera notch, Dynamic Island, system gestures, home indicator). Most games consume `Context::rect()` instead, but the per-edge insets are available for code that wants to align with a specific chrome edge. All zero on platforms with no safe-area concept (desktop) and on wire-mode sessions until the player→server safe-area plumbing lands (🎯T37 follow-up). On iOS / Android, populated from `SDL_GetWindowSafeArea` in `DirectRenderHost`.
+- **`ge::RunConfig`** — Render loop callbacks: `onUpdate(dt)`, `onRender(const Context&)`, `onEvent(SDL_Event)`, `onShutdown()`.
 - **`ge::Factory`** — `std::function<RunConfig(Context)>`.
 
 ### Rendering

@@ -6,9 +6,12 @@
 #include <ge/Protocol.h>
 #include <ge/Signal.h>
 
+#include <SDL3/SDL.h>
 #include <spdlog/spdlog.h>
 
 #include <cstring>
+#include <optional>
+#include <string>
 #include <vector>
 
 namespace ge {
@@ -40,6 +43,13 @@ struct ServerWireBridge::Impl {
     int height = 0;
     bool dimensionsKnown = false;
     bool ready = false;
+
+    // Session Context: built once dimensions arrive (in initialise),
+    // refreshed each beginFrame. Brokered db is in-memory — persistence
+    // is owned by the player and synced via sqlpipe.
+    std::optional<Context> ctx;
+    std::string schemaDdl;
+    DeviceClass deviceClass = DeviceClass::Desktop;
 
     // Capture framebuffer + double-buffered readback.
     bgfx::FrameBufferHandle fb = BGFX_INVALID_HANDLE;
@@ -84,10 +94,12 @@ struct ServerWireBridge::Impl {
 };
 
 ServerWireBridge::ServerWireBridge(std::string sessionId,
-                                   std::shared_ptr<WsConnection> wire)
+                                   std::shared_ptr<WsConnection> wire,
+                                   const SessionHostConfig& config)
     : i_(std::make_unique<Impl>()) {
     i_->id = std::move(sessionId);
     i_->wire = std::move(wire);
+    i_->schemaDdl = config.schemaDdl;
 }
 
 ServerWireBridge::~ServerWireBridge() {
@@ -99,7 +111,8 @@ bgfx::FrameBufferHandle ServerWireBridge::framebuffer() const { return i_->fb; }
 
 int ServerWireBridge::width() const  { return i_->width; }
 int ServerWireBridge::height() const { return i_->height; }
-DeviceClass ServerWireBridge::deviceClass() const { return DeviceClass::Desktop; }
+DeviceClass ServerWireBridge::deviceClass() const { return i_->deviceClass; }
+const Context& ServerWireBridge::context() const { return *i_->ctx; }
 
 bool ServerWireBridge::hasDimensions() const { return i_->dimensionsKnown; }
 bool ServerWireBridge::isReady() const { return i_->ready; }
@@ -201,6 +214,12 @@ void ServerWireBridge::initialise() {
             wire->sendBinary(w.data(), w.size());
         });
 
+    // Build the session Context now that dimensions are known.
+    // Brokered mode uses :memory: — persistence belongs to the player
+    // and is synced via sqlpipe.
+    i_->ctx.emplace(i_->width, i_->height, i_->deviceClass,
+                    ":memory:", i_->schemaDdl);
+
     i_->ready = true;
     SPDLOG_INFO("Session '{}': ready ({}x{})", i_->id, i_->width, i_->height);
 }
@@ -210,6 +229,15 @@ void ServerWireBridge::beginFrame() {
     // All bgfx views render into this session's framebuffer.
     for (bgfx::ViewId v = 0; v < 16; ++v) {
         bgfx::setViewFrameBuffer(v, i_->fb);
+    }
+    // Refresh per-frame Context state. Insets are zero in wire mode
+    // until the player→server SafeAreaUpdate plumbing lands (🎯T37
+    // follow-up); apps still consume the rect accessors identically
+    // in both modalities.
+    if (i_->ctx) {
+        i_->ctx->setDimensions(i_->width, i_->height);
+        i_->ctx->setDrawSafeInsets(drawSafeInsets());
+        i_->ctx->setUiSafeInsets(uiSafeInsets());
     }
 }
 

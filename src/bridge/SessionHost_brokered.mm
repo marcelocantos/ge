@@ -24,7 +24,6 @@
 
 #include <algorithm>
 #include <cstring>
-#include <optional>
 #include <string>
 #include <unistd.h>
 #include <unordered_map>
@@ -36,7 +35,6 @@ namespace {
 struct BrokeredSession {
     std::unique_ptr<ServerWireBridge> bridge;
     RunConfig config;  // empty until DeviceInfo arrives + factory called
-    std::optional<Context> ctx;  // populated alongside config; shared_ptr-internal so cheap to keep
 };
 
 // Sideband JSON parsing (minimal, no dependencies)
@@ -110,7 +108,7 @@ void runBrokered(Factory factory, const SessionHostConfig& config) {
                 }
 
                 BrokeredSession bs;
-                bs.bridge = std::make_unique<ServerWireBridge>(sessionId, std::move(wire));
+                bs.bridge = std::make_unique<ServerWireBridge>(sessionId, std::move(wire), config);
 
                 // Tell the player about session requirements (sensors,
                 // orientation) before it creates its window.
@@ -172,36 +170,17 @@ void runBrokered(Factory factory, const SessionHostConfig& config) {
                                 bs.bridge->width(), bs.bridge->height());
                 }
                 bs.bridge->initialise();
-
-                std::string dbPath = ":memory:";
-                if (config.orgName && config.appName) {
-                    char* pref = SDL_GetPrefPath(config.orgName, config.appName);
-                    if (pref) {
-                        dbPath = std::string(pref) + "game.db";
-                        SDL_free(pref);
-                        SPDLOG_INFO("Session '{}': persistent DB at {}", id, dbPath);
-                    }
-                }
-                bs.ctx.emplace(bs.bridge->width(), bs.bridge->height(),
-                               bs.bridge->deviceClass(), dbPath, config.schemaDdl);
-                bs.config = factory(*bs.ctx);
+                bs.config = factory(bs.bridge->context());
                 bs.bridge->setEventHandler(bs.config.onEvent);
             }
 
             if (!bs.bridge->isReady()) continue;
 
-            // Refresh safe-area before each frame; the bridge currently
-            // returns zeros until the player→server SafeAreaUpdate
-            // plumbing lands (🎯T37 follow-up). Apps still call
-            // ctx.safeArea() the same way in both modalities.
-            if (bs.ctx) bs.ctx->setSafeArea(bs.bridge->safeArea());
-
             uint64_t t0 = SDL_GetPerformanceCounter();
             if (bs.config.onUpdate) bs.config.onUpdate(dt);
             uint64_t t1 = SDL_GetPerformanceCounter();
             bs.bridge->beginFrame();
-            if (bs.config.onRender)
-                bs.config.onRender(bs.bridge->width(), bs.bridge->height());
+            if (bs.config.onRender) bs.config.onRender(bs.bridge->context());
             uint64_t t2 = SDL_GetPerformanceCounter();
             uint32_t frameNum = bgfx::frame();
             uint64_t t3 = SDL_GetPerformanceCounter();

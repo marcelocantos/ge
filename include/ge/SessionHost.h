@@ -23,12 +23,17 @@ enum class DeviceClass : uint8_t {
     Desktop = 3,
 };
 
-// Per-edge insets (pixels) of the device's safe-area within the render
-// surface. Zero on platforms with no notion of safe-area (desktop).
-//
-// Apps lay out top-edge UI at `safeArea().top`, bottom-edge UI at
-// `height() - safeArea().bottom`, etc., so chrome (camera notch,
-// Dynamic Island, system gestures, home indicator) stays clear.
+// Pixel rectangle on the render surface ({x, y} = top-left, {w, h} = size).
+struct Rect {
+    int x = 0;
+    int y = 0;
+    int w = 0;
+    int h = 0;
+};
+
+// Per-edge insets (pixels) of a safe-area-style boundary within the
+// render surface. Engine-internal struct — used to populate the rect
+// accessors below; apps consume the rects directly.
 struct SafeAreaInsets {
     int top    = 0;
     int bottom = 0;
@@ -36,31 +41,53 @@ struct SafeAreaInsets {
     int right  = 0;
 };
 
-// Platform context provided to the game factory by ge::run().
-// Cheaply copyable (shared_ptr internals). Capture by value in lambdas.
+// Platform context provided to the game by ge::run() — once at session
+// start (passed to the factory) and once per frame (passed to onRender).
+// Cheaply copyable (shared_ptr internals); accessors below return live
+// values that the engine updates each frame, so apps that capture a
+// Context by value still see current state through the same shared M.
+//
+// Three rect accessors: each game must consciously choose which one
+// suits the work it's about to draw or place. There is no `rect()`
+// shortcut — the API forces the question rather than picking a default
+// that's wrong half the time.
 class Context {
 public:
-    Context(int width, int height, DeviceClass deviceClass,
+    Context(int surfaceWidth, int surfaceHeight, DeviceClass deviceClass,
             const std::string& dbPath,
             const std::string& schemaDdl = {});
 
-    int width() const;
-    int height() const;
+    // The largest rectangle on the surface that no device chrome will
+    // physically obscure — excludes only display cutouts (camera
+    // notch, Dynamic Island, status bar when visible). Use for
+    // **visuals**: the maze, the playfield, art that should be
+    // entirely seen by the user. Visuals here can extend into gesture
+    // zones — a glow that paints under a swipe-up area is fine, since
+    // glows don't take input.
+    Rect drawSafeRect() const;
+    // The largest rectangle in which interactive UI is safe — excludes
+    // display cutouts AND OS-reserved gesture / tappable zones (back-
+    // swipe, recent-apps, status pull, etc). Use for **buttons,
+    // sliders, drag handles**: anything that takes input. Smaller
+    // than drawSafeRect on devices with system gestures.
+    Rect uiSafeRect() const;
+    // The full bgfx backbuffer rectangle — origin (0,0), full surface
+    // size. Use when you genuinely want to bleed past every safe area
+    // (full-surface backgrounds, decorative imagery that surrounds
+    // chrome). On desktop this is identical to the other two rects.
+    Rect fullRect() const;
+
     DeviceClass deviceClass() const;
-
-    // Current safe-area insets in the render surface's pixel coordinates.
-    // Updated by the engine each frame from the active RenderHost. All
-    // four insets are 0 on platforms with no safe-area concept (desktop)
-    // and on wire-mode sessions until the player→server safe-area
-    // plumbing lands (🎯T37 follow-up).
-    SafeAreaInsets safeArea() const;
-
-    // Engine-internal: update the cached safe-area. Called by ge::run()
-    // each frame from the active RenderHost. Apps should not call this.
-    void setSafeArea(SafeAreaInsets);
 
     // The engine-provided database.
     std::shared_ptr<sqlpipe::Database> db() const;
+
+    // Engine-internal: refresh per-frame state. Apps should not call
+    // these — the run loop wires them up before each onUpdate /
+    // onRender pair so accessors above always read live values.
+    void setDimensions(int surfaceWidth, int surfaceHeight);
+    void setDrawSafeInsets(SafeAreaInsets);
+    void setUiSafeInsets(SafeAreaInsets);
 
 private:
     struct M;
@@ -68,9 +95,15 @@ private:
 };
 
 // Render loop callbacks — the game's only interface with the engine.
+//
+// onRender receives the same Context the factory was given; the engine
+// has refreshed its width / height / safeArea before each call so apps
+// can pull whatever per-frame state they need without capturing extra
+// values themselves. Future per-frame fields (parallax delta, tilt,
+// frame index, …) join Context here, not the signature.
 struct RunConfig {
     std::function<void(float dt)> onUpdate;
-    std::function<void(int w, int h)> onRender;
+    std::function<void(const Context&)> onRender;
     std::function<void(const SDL_Event&)> onEvent;
     std::function<void()> onShutdown;
 };
@@ -109,6 +142,22 @@ struct SessionHostConfig {
     // play) should leave this false and call SDL_DisableScreenSaver /
     // SDL_EnableScreenSaver at the appropriate moments.
     bool disableScreenSaver = false;
+
+    // Take the entire screen — hide system chrome (status bar, gesture
+    // / navigation bar) so the game owns the full surface. Reduces
+    // safe-area insets to display cutouts only (camera notch, Dynamic
+    // Island), exposing the largest meaningful Context::rect() the
+    // device can offer.
+    //
+    // Platform support:
+    //   * Android — applied at runtime via WindowInsetsController
+    //     (immersive sticky). Brief flicker on launch as bars hide.
+    //   * iOS — partial; iPhone landscape already auto-hides the
+    //     status bar. iPad Split View / Slide Over additionally
+    //     requires `UIRequiresFullScreen` in the app's Info.plist
+    //     (read by iOS at launch; cannot be toggled at runtime).
+    //   * Desktop — no-op.
+    bool immersive = false;
 };
 
 // Factory receives platform context and returns render loop callbacks.
