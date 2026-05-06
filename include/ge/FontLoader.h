@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
+#include <ge/Linalg.h>
+
 #include <string>
 
 namespace ge {

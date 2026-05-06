@@ -1,5 +1,7 @@
 #pragma once
 
+#include <ge/Linalg.h>
+
 #include <linalg.h>
 #include <sqlite3.h>
 #include <nlohmann/json.hpp>

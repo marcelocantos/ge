@@ -13,6 +13,8 @@
 // subsystem (PlayerRender) owns all SDL state.
 #pragma once
 
+#include <ge/Linalg.h>
+
 #include <ge/Protocol.h>
 #include <ge/VideoDecoder.h>
 

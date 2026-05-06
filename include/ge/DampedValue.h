@@ -1,5 +1,7 @@
 #pragma once
 
+#include <ge/Linalg.h>
+
 #include <cmath>
 
 // A value with velocity that decays exponentially over time.

@@ -4,6 +4,8 @@
 // Owns bgfx init/shutdown and the underlying native surface.
 #pragma once
 
+#include <ge/Linalg.h>
+
 #include <memory>
 
 struct SDL_Window;

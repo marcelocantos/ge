@@ -1,6 +1,8 @@
 // WebSocket client: connection interface and connectWebSocket() helper.
 #pragma once
 
+#include <ge/Linalg.h>
+
 #include <cstdint>
 #include <memory>
 #include <string>

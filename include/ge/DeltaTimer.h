@@ -1,4 +1,6 @@
 #pragma once
+
+#include <ge/Linalg.h>
 #include <SDL3/SDL.h>
 
 // Measures elapsed time between successive tick() calls.

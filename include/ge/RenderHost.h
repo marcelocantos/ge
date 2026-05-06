@@ -25,6 +25,8 @@
 // for transmission, and feeds decoded frames back as textures to display.
 #pragma once
 
+#include <ge/Linalg.h>
+
 #include <ge/Protocol.h>
 #include <ge/SessionHost.h>
 

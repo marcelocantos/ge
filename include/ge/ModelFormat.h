@@ -1,5 +1,7 @@
 #pragma once
 
+#include <ge/Linalg.h>
+
 // ge model binary format — vertex layout.
 
 namespace ge {

@@ -5,6 +5,8 @@
 // No-op on iOS/Android where the OS manages app lifecycle.
 #pragma once
 
+#include <ge/Linalg.h>
+
 namespace ge {
 
 // Install SIGINT/SIGTERM handlers. Call once at startup.

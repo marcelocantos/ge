@@ -8,6 +8,7 @@
 
 #include <sqlpipe.h>
 
+#include <ge/Linalg.h>
 #include <SDL3/SDL_events.h>
 #include <cstdint>
 #include <functional>
@@ -24,11 +25,29 @@ enum class DeviceClass : uint8_t {
 };
 
 // Pixel rectangle on the render surface ({x, y} = top-left, {w, h} = size).
+//
+// Float fields, even though the surface is integer-sized at the
+// framebuffer boundary. Game logic — layout math, animation,
+// transforms, physics — is float-native, and forcing apps to cast
+// every read/write back to their float pipeline costs more than the
+// engine pays to convert once at the SDL/bgfx boundary. The integer
+// values are preserved exactly (a 1080-pixel surface stores 1080.0f).
+//
+// Corner accessors return la::float2 (linalg's vec<float,2>,
+// re-exported in ge::la — see ge/Linalg.h) so they compose with the
+// rest of the engine's vector math without an intermediate copy.
 struct Rect {
-    int x = 0;
-    int y = 0;
-    int w = 0;
-    int h = 0;
+    float x = 0;
+    float y = 0;
+    float w = 0;
+    float h = 0;
+
+    // Corner accessors. Surface coords: x grows right, y grows down,
+    // so tl is the inclusive origin and br is the exclusive far corner.
+    la::float2 tl() const { return {x,     y    }; }
+    la::float2 tr() const { return {x + w, y    }; }
+    la::float2 bl() const { return {x,     y + h}; }
+    la::float2 br() const { return {x + w, y + h}; }
 };
 
 // Per-edge insets (pixels) of a safe-area-style boundary within the
