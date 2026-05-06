@@ -11,6 +11,8 @@ struct Context::M {
     DeviceClass deviceClass;
     SafeAreaInsets drawInsets;  // display cutouts only
     SafeAreaInsets uiInsets;    // cutouts + gesture / tappable zones
+    float pixelsPerPt = 1.0f;
+    float deviceUiScale = 1.0f;
     std::shared_ptr<sqlpipe::Database> db;
 };
 
@@ -24,8 +26,12 @@ Rect rectFromInsets(int sw, int sh, const SafeAreaInsets& sa) {
 Context::Context(int surfaceWidth, int surfaceHeight, DeviceClass deviceClass,
                  const std::string& dbPath,
                  const std::string& schemaDdl)
-    : m(std::make_shared<M>(M{surfaceWidth, surfaceHeight, deviceClass, {}, {},
-        std::make_shared<sqlpipe::Database>(dbPath, schemaDdl)})) {}
+    : m(std::make_shared<M>(M{
+        .surfaceWidth = surfaceWidth,
+        .surfaceHeight = surfaceHeight,
+        .deviceClass = deviceClass,
+        .db = std::make_shared<sqlpipe::Database>(dbPath, schemaDdl),
+    })) {}
 
 Rect Context::drawSafeRect() const {
     return rectFromInsets(m->surfaceWidth, m->surfaceHeight, m->drawInsets);
@@ -38,6 +44,9 @@ Rect Context::fullRect() const {
 }
 
 DeviceClass Context::deviceClass() const { return m->deviceClass; }
+float Context::pixelsPerPt() const  { return m->pixelsPerPt; }
+float Context::ptsPerPixel() const  { return 1.0f / m->pixelsPerPt; }
+float Context::deviceUiScale() const { return m->deviceUiScale; }
 std::shared_ptr<sqlpipe::Database> Context::db() const { return m->db; }
 
 void Context::setDimensions(int surfaceWidth, int surfaceHeight) {
@@ -46,5 +55,7 @@ void Context::setDimensions(int surfaceWidth, int surfaceHeight) {
 }
 void Context::setDrawSafeInsets(SafeAreaInsets sa) { m->drawInsets = sa; }
 void Context::setUiSafeInsets(SafeAreaInsets sa)   { m->uiInsets   = sa; }
+void Context::setPixelsPerPt(float v)              { m->pixelsPerPt = v; }
+void Context::setDeviceUiScale(float v)            { m->deviceUiScale = v; }
 
 } // namespace ge

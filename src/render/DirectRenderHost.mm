@@ -19,7 +19,12 @@
 #include <bgfx/bgfx.h>
 #include <bx/math.h>
 #include <SDL3/SDL.h>
+#include <SDL3/SDL_system.h>
 #include <spdlog/spdlog.h>
+
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
 
 #include <cstdio>
 #include <cstring>
@@ -33,6 +38,30 @@ namespace {
 // View 1: composite pass (textured quad with tilt, targets the swap chain).
 constexpr bgfx::ViewId kGameView     = 0;
 constexpr bgfx::ViewId kComposeView  = 1;
+
+// Reference short-side mm for deviceUiScale: iPhone Pro Max class.
+// sqrt(thisDevice / reference) is the form-factor multiplier.
+constexpr float kReferenceShortSideMm = 65.0f;
+
+// Apple's pt is calibrated to viewing distance, not to a fixed
+// physical mm: 1pt ≈ 1/163" on iPhone, ≈ 1/132" on iPad. Same
+// convention is used here for Android phone vs tablet — close enough
+// in the absence of an OS-provided physical mm query.
+float ptToMm(DeviceClass dc) {
+    constexpr float inchToMm = 25.4f;
+    if (dc == DeviceClass::Tablet)  return inchToMm / 132.0f;  // ≈ 0.192
+    return                                 inchToMm / 163.0f;  // ≈ 0.156 (Phone, default)
+}
+
+// Form-factor multiplier: sqrt of short-side mm / reference. Returns
+// 1.0 on desktop (no phone/tablet form-factor distinction; the user
+// controls window size).
+float computeDeviceUiScale(DeviceClass dc, int surfaceW, int surfaceH, float pixelsPerPt) {
+    if (dc == DeviceClass::Desktop || pixelsPerPt <= 0.0f) return 1.0f;
+    const float shortSidePt = float(std::min(surfaceW, surfaceH)) / pixelsPerPt;
+    const float shortSideMm = shortSidePt * ptToMm(dc);
+    return std::sqrt(shortSideMm / kReferenceShortSideMm);
+}
 
 // Vertex layout for the composite quad.
 struct ComposeVertex {
@@ -242,10 +271,16 @@ DirectRenderHost::DirectRenderHost(const SessionHostConfig& config)
             SPDLOG_INFO("DirectRenderHost: persistent DB at {}", dbPath);
         }
     }
-    i_->ctx.emplace(i_->width, i_->height, DeviceClass::Desktop,
+    i_->ctx.emplace(i_->width, i_->height, deviceClass(),
                     dbPath, config.schemaDdl);
     i_->ctx->setDrawSafeInsets(drawSafeInsets());
     i_->ctx->setUiSafeInsets(uiSafeInsets());
+    {
+        SDL_Window* win = i_->bgfxCtx->window();
+        const float ppt = win ? SDL_GetWindowPixelDensity(win) : 1.0f;
+        i_->ctx->setPixelsPerPt(ppt > 0.0f ? ppt : 1.0f);
+        i_->ctx->setDeviceUiScale(computeDeviceUiScale(deviceClass(), i_->width, i_->height, ppt));
+    }
 }
 
 DirectRenderHost::~DirectRenderHost() {
@@ -258,7 +293,15 @@ DirectRenderHost::~DirectRenderHost() {
 
 int DirectRenderHost::width() const  { return i_->width; }
 int DirectRenderHost::height() const { return i_->height; }
-DeviceClass DirectRenderHost::deviceClass() const { return DeviceClass::Desktop; }
+DeviceClass DirectRenderHost::deviceClass() const {
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+    return SDL_IsTablet() ? DeviceClass::Tablet : DeviceClass::Phone;
+#elif defined(__ANDROID__)
+    return SDL_IsTablet() ? DeviceClass::Tablet : DeviceClass::Phone;
+#else
+    return DeviceClass::Desktop;
+#endif
+}
 bool DirectRenderHost::paused() const { return i_->bgfxCtx && i_->bgfxCtx->paused(); }
 const Context& DirectRenderHost::context() const { return *i_->ctx; }
 
@@ -447,6 +490,10 @@ void DirectRenderHost::beginFrame() {
         i_->ctx->setDimensions(i_->width, i_->height);
         i_->ctx->setDrawSafeInsets(drawSafeInsets());
         i_->ctx->setUiSafeInsets(uiSafeInsets());
+        SDL_Window* win = i_->bgfxCtx->window();
+        const float ppt = win ? SDL_GetWindowPixelDensity(win) : 1.0f;
+        i_->ctx->setPixelsPerPt(ppt > 0.0f ? ppt : 1.0f);
+        i_->ctx->setDeviceUiScale(computeDeviceUiScale(deviceClass(), i_->width, i_->height, ppt));
     }
 }
 

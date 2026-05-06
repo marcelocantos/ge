@@ -9,6 +9,8 @@
 #include <SDL3/SDL.h>
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <optional>
 #include <string>
@@ -50,6 +52,7 @@ struct ServerWireBridge::Impl {
     std::optional<Context> ctx;
     std::string schemaDdl;
     DeviceClass deviceClass = DeviceClass::Desktop;
+    float pixelsPerPt = 1.0f;
 
     // Capture framebuffer + double-buffered readback.
     bgfx::FrameBufferHandle fb = BGFX_INVALID_HANDLE;
@@ -160,6 +163,18 @@ bool ServerWireBridge::pumpWire() {
                             i_->id, info.width, info.height);
                 continue;
             }
+            // Server renders at info.width/2; pixelsPerPt is in the
+            // server's render coords, so device-pt → server-px is
+            // pixelRatio / 2 (i.e. pixelRatio for full-res, halved
+            // because we halve the surface).
+            i_->pixelsPerPt = info.pixelRatio > 0
+                ? float(info.pixelRatio) * 0.5f : 1.0f;
+            switch (info.deviceClass) {
+                case 1: i_->deviceClass = DeviceClass::Phone; break;
+                case 2: i_->deviceClass = DeviceClass::Tablet; break;
+                case 3: i_->deviceClass = DeviceClass::Desktop; break;
+                default: i_->deviceClass = DeviceClass::Unknown; break;
+            }
             i_->dimensionsKnown = true;
             SPDLOG_INFO("Session '{}': DeviceInfo {}x{} @{}x → render at {}x{}",
                         i_->id, info.width, info.height, info.pixelRatio,
@@ -219,6 +234,21 @@ void ServerWireBridge::initialise() {
     // and is synced via sqlpipe.
     i_->ctx.emplace(i_->width, i_->height, i_->deviceClass,
                     ":memory:", i_->schemaDdl);
+    i_->ctx->setPixelsPerPt(i_->pixelsPerPt);
+    {
+        // Same form-factor formula as DirectRenderHost: sqrt of the
+        // device's short-side mm relative to the iPhone-PM reference.
+        constexpr float kReferenceShortSideMm = 65.0f;
+        constexpr float inchToMm = 25.4f;
+        const float ptToMm = (i_->deviceClass == DeviceClass::Tablet)
+            ? inchToMm / 132.0f : inchToMm / 163.0f;
+        const float shortSidePt =
+            float(std::min(i_->width, i_->height)) / i_->pixelsPerPt;
+        const float scale = (i_->deviceClass == DeviceClass::Desktop)
+            ? 1.0f
+            : std::sqrt(shortSidePt * ptToMm / kReferenceShortSideMm);
+        i_->ctx->setDeviceUiScale(scale);
+    }
 
     i_->ready = true;
     SPDLOG_INFO("Session '{}': ready ({}x{})", i_->id, i_->width, i_->height);

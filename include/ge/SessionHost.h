@@ -98,6 +98,27 @@ public:
 
     DeviceClass deviceClass() const;
 
+    // Pixels per OS-style point. iPhone @3x ≈ 3.0, iPad @2x ≈ 2.0,
+    // desktop @1x = 1.0. Use for fixed-physical sizing — touch
+    // targets, body text, anything where the constraint is "must be
+    // at least N physical mm". A 44pt button is `44 * pixelsPerPt()`
+    // pixels wide.
+    float pixelsPerPt() const;
+    // Reciprocal of pixelsPerPt — for translating raw pixel coords
+    // (touch events, bgfx viewport) back into pt for layout math.
+    float ptsPerPixel() const;
+    // Form-factor multiplier, sublinear in screen size: sqrt of the
+    // device's short-side mm relative to a reference phone (65mm,
+    // iPhone Pro Max class). 1.0 on the reference phone, ~1.55 on
+    // an 11" iPad. Use for chrome icons, headlines, presentation art
+    // that should grow on tablets without blowing up linearly.
+    //
+    // Typical use: `gear_px = 28 * pixelsPerPt() * deviceUiScale()`.
+    // Returns 1.0 on desktop (form-factor scaling doesn't apply when
+    // the user controls the window size), and 1.0 in wire mode until
+    // the player→server pixelRatio plumbing populates it.
+    float deviceUiScale() const;
+
     // The engine-provided database.
     std::shared_ptr<sqlpipe::Database> db() const;
 
@@ -107,6 +128,8 @@ public:
     void setDimensions(int surfaceWidth, int surfaceHeight);
     void setDrawSafeInsets(SafeAreaInsets);
     void setUiSafeInsets(SafeAreaInsets);
+    void setPixelsPerPt(float);
+    void setDeviceUiScale(float);
 
 private:
     struct M;
