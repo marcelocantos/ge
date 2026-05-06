@@ -6,6 +6,8 @@
 // analyses the read buffer, and logs a summary.
 #pragma once
 
+#include <ge/Linalg.h>
+
 #include <SDL3/SDL.h>
 #include <spdlog/spdlog.h>
 

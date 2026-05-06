@@ -1,5 +1,7 @@
 #pragma once
 
+#include <ge/Linalg.h>
+
 #include <ge/Mesh.h>
 #include <ge/Texture.h>
 #include <string>

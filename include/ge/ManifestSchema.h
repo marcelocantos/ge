@@ -1,5 +1,7 @@
 #pragma once
 
+#include <ge/Linalg.h>
+
 // Typed C++ schema for manifest.json serialization/deserialization.
 // These are pure data types with no GPU dependencies — usable by both
 // the engine loader (ManifestLoader) and offline tools (precompute).

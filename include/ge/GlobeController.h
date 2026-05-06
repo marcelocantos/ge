@@ -1,5 +1,7 @@
 #pragma once
 
+#include <ge/Linalg.h>
+
 #include <ge/DampedRotation.h>
 #include <SDL3/SDL_events.h>
 #include <cmath>

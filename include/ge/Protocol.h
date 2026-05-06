@@ -1,5 +1,7 @@
 #pragma once
 
+#include <ge/Linalg.h>
+
 #include <SDL3/SDL_video.h>
 
 #include <bit>

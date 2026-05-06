@@ -16,7 +16,8 @@ struct Context::M {
 
 namespace {
 Rect rectFromInsets(int sw, int sh, const SafeAreaInsets& sa) {
-    return Rect{sa.left, sa.top, sw - sa.left - sa.right, sh - sa.top - sa.bottom};
+    return Rect{float(sa.left), float(sa.top),
+                float(sw - sa.left - sa.right), float(sh - sa.top - sa.bottom)};
 }
 }
 
@@ -33,7 +34,7 @@ Rect Context::uiSafeRect() const {
     return rectFromInsets(m->surfaceWidth, m->surfaceHeight, m->uiInsets);
 }
 Rect Context::fullRect() const {
-    return Rect{0, 0, m->surfaceWidth, m->surfaceHeight};
+    return Rect{0, 0, float(m->surfaceWidth), float(m->surfaceHeight)};
 }
 
 DeviceClass Context::deviceClass() const { return m->deviceClass; }

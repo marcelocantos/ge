@@ -14,6 +14,8 @@
 // This keeps mobile player builds small and avoids a bgfx port there.
 #pragma once
 
+#include <ge/Linalg.h>
+
 #include <ge/VideoDecoder.h>
 
 #include <SDL3/SDL.h>

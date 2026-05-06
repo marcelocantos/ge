@@ -1,4 +1,6 @@
 #pragma once
+
+#include <ge/Linalg.h>
 // Image difference computation utilities
 
 #include <algorithm>

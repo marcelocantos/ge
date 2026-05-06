@@ -1,4 +1,6 @@
 #pragma once
+
+#include <ge/Linalg.h>
 #include <functional>
 #include <memory>
 

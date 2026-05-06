@@ -1,5 +1,7 @@
 #pragma once
 
+#include <ge/Linalg.h>
+
 #include <istream>
 #include <memory>
 #include <string>
