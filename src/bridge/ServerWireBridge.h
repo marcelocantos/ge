@@ -27,7 +27,13 @@ namespace ge {
 
 class ServerWireBridge : public RenderHost {
 public:
-    ServerWireBridge(std::string sessionId, std::shared_ptr<WsConnection> wire);
+    // Constructor takes the bits needed to build a session Context once
+    // dimensions arrive: app identity for the persistent DB path and
+    // optional schema DDL. The bridge owns Context construction so the
+    // run loop stays out of host-specific db setup.
+    ServerWireBridge(std::string sessionId,
+                     std::shared_ptr<WsConnection> wire,
+                     const SessionHostConfig& config);
     ~ServerWireBridge() override;
 
     ServerWireBridge(const ServerWireBridge&) = delete;
@@ -63,6 +69,7 @@ public:
     void beginFrame() override;
     void endFrame(uint32_t bgfxFrameNumber) override;
     bool shouldQuit() const override;
+    const Context& context() const override;
 
     // Final cleanup: destroy bgfx resources, flush encoder.
     void shutdown();

@@ -6,21 +6,44 @@
 namespace ge {
 
 struct Context::M {
-    int width;
-    int height;
+    int surfaceWidth;
+    int surfaceHeight;
     DeviceClass deviceClass;
+    SafeAreaInsets drawInsets;  // display cutouts only
+    SafeAreaInsets uiInsets;    // cutouts + gesture / tappable zones
     std::shared_ptr<sqlpipe::Database> db;
 };
 
-Context::Context(int width, int height, DeviceClass deviceClass,
+namespace {
+Rect rectFromInsets(int sw, int sh, const SafeAreaInsets& sa) {
+    return Rect{sa.left, sa.top, sw - sa.left - sa.right, sh - sa.top - sa.bottom};
+}
+}
+
+Context::Context(int surfaceWidth, int surfaceHeight, DeviceClass deviceClass,
                  const std::string& dbPath,
                  const std::string& schemaDdl)
-    : m(std::make_shared<M>(M{width, height, deviceClass,
+    : m(std::make_shared<M>(M{surfaceWidth, surfaceHeight, deviceClass, {}, {},
         std::make_shared<sqlpipe::Database>(dbPath, schemaDdl)})) {}
 
-int Context::width() const { return m->width; }
-int Context::height() const { return m->height; }
+Rect Context::drawSafeRect() const {
+    return rectFromInsets(m->surfaceWidth, m->surfaceHeight, m->drawInsets);
+}
+Rect Context::uiSafeRect() const {
+    return rectFromInsets(m->surfaceWidth, m->surfaceHeight, m->uiInsets);
+}
+Rect Context::fullRect() const {
+    return Rect{0, 0, m->surfaceWidth, m->surfaceHeight};
+}
+
 DeviceClass Context::deviceClass() const { return m->deviceClass; }
 std::shared_ptr<sqlpipe::Database> Context::db() const { return m->db; }
+
+void Context::setDimensions(int surfaceWidth, int surfaceHeight) {
+    m->surfaceWidth  = surfaceWidth;
+    m->surfaceHeight = surfaceHeight;
+}
+void Context::setDrawSafeInsets(SafeAreaInsets sa) { m->drawInsets = sa; }
+void Context::setUiSafeInsets(SafeAreaInsets sa)   { m->uiInsets   = sa; }
 
 } // namespace ge

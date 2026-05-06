@@ -40,5 +40,9 @@
     </array>
     <key>UIApplicationSupportsIndirectInputEvents</key>
     <true/>
+    <!-- Apps that pass `SessionHostConfig.immersive = true` and want
+         it to take effect on iPad (no Split View / Slide Over) must
+         also add `UIRequiresFullScreen` to their own Info.plist —
+         iOS reads it at launch and there is no runtime override. -->
 </dict>
 </plist>

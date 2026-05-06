@@ -76,6 +76,25 @@ public:
     // is true — bgfx::frame() against a dead Android swap chain crashes.
     // Default false; only DirectRenderHost on Android ever returns true.
     virtual bool paused() const { return false; }
+
+    // Display-cutout-only insets — drives Context::drawSafeRect.
+    // Default zeros for hosts with no chrome concept (desktop) or
+    // pre-🎯T37-followup wire mode.
+    virtual SafeAreaInsets drawSafeInsets() const { return {}; }
+    // Full input-safe insets (cutouts + gesture / tappable zones) —
+    // drives Context::uiSafeRect.
+    virtual SafeAreaInsets uiSafeInsets() const { return {}; }
+
+    // The session's live Context. Each host owns its Context — db
+    // setup, device-class and dimensions are all host-specific — and
+    // refreshes its per-frame fields inside beginFrame() so callbacks
+    // observe current state through the same shared object. Run loops
+    // stay out of Context construction.
+    //
+    // Valid once the host is ready — DirectRenderHost from
+    // construction; ServerWireBridge after initialise() (which the
+    // run loop calls when DeviceInfo arrives).
+    virtual const Context& context() const = 0;
 };
 
 } // namespace ge

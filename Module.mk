@@ -111,6 +111,8 @@ ge/SRC_DIRECT = \
 	$(ge)/src/BgfxContext.mm \
 	$(ge)/src/Signal.cpp \
 	$(ge)/src/SessionHost.mm \
+	$(ge)/src/Immersive_stub.cpp \
+	$(ge)/src/CutoutInsets_stub.cpp \
 	$(ge)/src/render/DirectRenderHost.mm \
 	$(ge)/tools/player_orientation_stub.cpp
 

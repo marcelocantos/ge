@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
+#include <ge/SessionHost.h>
+
 #include <memory>
 
 namespace tiltbuggy {
@@ -19,12 +21,15 @@ public:
     // containing compiled `.bin` files (e.g. "build/shaders").
     void init(const char* shaderDir);
 
-    // Clear + draw the scene. Call per frame under bgfx view 0.
+    // Clear + draw the scene. Call per frame under bgfx view 0
+    // covering the full surface. The playfield is placed at
+    // `c.drawSafeRect()` (display-cutout-safe — visuals here aren't
+    // physically obscured) and the renderer is free to draw anywhere
+    // on `c.fullRect()` for effects that bleed past it.
     // `tiltX` / `tiltY` are normalised (~[-1, +1]) device tilt; the
-    // renderer uses them to apply a perspective camera tilt so the
-    // visible viewport leans with the synthesised tilt input. Pass
-    // (0, 0) for a flat top-down view.
-    void drawFrame(const Scene& scene, int width, int height,
+    // host's composite pass applies viewport tilt when synthesised
+    // tilt is non-zero. Pass (0, 0) for a flat top-down view.
+    void drawFrame(const Scene& scene, const ge::Context& c,
                    float tiltX = 0.f, float tiltY = 0.f);
 
 private:

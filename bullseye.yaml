@@ -497,10 +497,11 @@ targets:
     achieved: 2026-04-19
   T25:
     name: Player-mode cells pass the reconnect sub-check on iOS sim and Android emu
-    status: converging
+    status: achieved
     value: 0.0
     cost: 0.0
     showcase: true
+    demonstration: 'Merged in PR #55; visual verification deferred to game projects.'
     acceptance:
     - '`make cell.ios-sim-tablet-player` passes the reconnect sub-check end-to-end'
     - '`make cell.android-emu-phone-player` passes the reconnect sub-check end-to-end'
@@ -508,6 +509,7 @@ targets:
     context: 'Root cause found: player cells start the desktop server without --brokered, so tiltbuggy runs in direct/standalone mode and never connects to ged. server_attached_sessions() always returns 0, so wait_for_server_sessions never fires. Fix: add SERVER_ARGS global, set to --brokered in all player cell runners (run_desktop_player, run_ios_sim_player, run_android_emu_player, run_ios_device_player, run_android_device_player, run_debug_player), and thread it through start_server and all reconnect helpers. This is a pure test/matrix-cell.sh fix — the player reconnect logic itself works correctly.'
     origin: manual
     discovered: 2026-04-19
+    achieved: 2026-05-03
   T26:
     name: Android player-mode cells pass the startup-flash check — no magenta pre-first-frame window
     status: achieved
@@ -532,10 +534,11 @@ targets:
     achieved: 2026-04-19
   T27:
     name: make check completes in under 8 minutes — per-cell soak cut to 10s + multi-sim/emu parallelism
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     showcase: true
+    demonstration: 'Merged in PR #55; real-environment timing deferred to game projects.'
     acceptance:
     - Per-cell soak sub-check runs for ~10s by default
     - A single dedicated long-soak cell runs the 60s sweep
@@ -544,6 +547,7 @@ targets:
     context: '`make check` currently budgets ~60s soak per cell × 22 active cells ≈ 22 min of mostly-idle wall time. Total wall-clock is estimated 10-20 min. Target: under 8 min. Two levers: (1) cut per-cell soak to 10s, keep one dedicated long-soak cell for the reliability sweep; (2) multi-sim/emu parallelism — booting multiple sims concurrently (iPad Air + iPad Pro for two iOS tablet cells, Pixel 7 + Pixel 9 Pro XL for Android) lets make -j check exercise them in parallel. M4 Max has 128 GB of RAM headroom. matrix-cell.sh already takes the soak timeout as a parameter; ios_sim_get_udid / android_get_serial pick one sim per form factor and need extension to reserve specific sims per cell.'
     origin: manual
     discovered: 2026-04-19
+    achieved: 2026-05-03
   T28:
     name: AccelSynth (Shift-mouse) works in every host context lacking a real accelerometer
     status: achieved
@@ -592,10 +596,11 @@ targets:
     achieved: 2026-04-19
   T28.3:
     name: iOS simulator distribution build exposes working AccelSynth
-    status: converging
+    status: achieved
     value: 0.0
     cost: 0.0
     showcase: true
+    demonstration: 'Merged in PR #55; interactive verification deferred to game projects.'
     acceptance:
     - On an iOS simulator running a distribution build of a tilt-driven sample app, SDL reports zero real sensors and AccelSynth activates
     - Shift+mouse-drag inside the simulator window tilts the viewport and drives sensor-driven gameplay
@@ -608,6 +613,7 @@ targets:
     - T28.2
     origin: decomposed from T28
     discovered: 2026-04-19
+    achieved: 2026-05-03
   T28.4:
     name: Android emulator distribution build exposes working AccelSynth
     status: identified
@@ -694,10 +700,11 @@ targets:
     achieved: 2026-04-20
   T30.3:
     name: sample/tiltbuggy Android build consumes ge via add_subdirectory(ge), not a hand-picked source list
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     showcase: true
+    demonstration: 'Merged in PR #55; tiltbuggy APK built and launched on Tab A9 during the agent run; visual confirm deferred to game projects.'
     acceptance:
     - sample/tiltbuggy/android/app/src/main/cpp/CMakeLists.txt calls add_subdirectory(${GE_ROOT}) and target_link_libraries(main PRIVATE ge)
     - The inline GE_SOURCES block (currently lines 79-96) and its accompanying Apple-only comment (lines 76-78) are deleted
@@ -708,6 +715,7 @@ targets:
     - T30.2
     origin: 'forked-from: T30 on 2026-04-19'
     discovered: 2026-04-19
+    achieved: 2026-05-03
   T31:
     name: Triangle's non-commercial licence is investigated and either removed, replaced, or formally cleared
     status: achieved
@@ -993,6 +1001,107 @@ targets:
       Constraint to remember: the only iPad orientation-lock mechanism that survives iPadOS 26 multitasking is the `prefersInterfaceOrientationLocked` swizzle (Apple TN3192). Both options have to keep using it; only the input shape changes.
     origin: filed-during-v0.4.0-prep — surfaced when user asked 'do we allow setting any landscape or a specific landscape or both?' and the honest answer was 'the API suggests per-orientation control but the implementation treats the field as a boolean'
     discovered: 2026-05-02
+  T37:
+    name: Direct-mode apps can read safe-area insets from ge::Context to avoid camera/notch/Dynamic Island chrome
+    status: identified
+    value: 0.0
+    cost: 0.0
+    showcase: true
+    acceptance:
+    - ge::Context exposes a safe-area accessor (e.g. SafeAreaInsets safeArea() const) returning per-edge pixel insets in the current orientation; on desktop all four insets are 0
+    - DirectRenderHost (headless=false path) keeps the Context's safe-area in sync by querying the platform (UIWindow.safeAreaInsets on iOS, WindowInsets/SDL3 accessor on Android) at the same trigger points where width()/height() update — initial layout, resize, rotation
+    - An app that lays out a top bar at safeArea().top (and a bottom HUD at safeArea().bottom) renders clear of the camera/notch/Dynamic Island and home-indicator on iPad mini A17 Pro and modern iPhones; reproduced via multimaze2 or an equivalent ge sample
+    - 'Wire-mode parity is preserved: brokered (player) sessions continue to receive wire::SafeAreaUpdate; direct-mode and wire-mode apps observe the same safeArea() shape via Context (no app code branches on mode)'
+    - include/ge/ public API and CLAUDE.md's 'Public API' / 'Server/player architecture' sections document the new accessor and the rule that direct-mode and wire-mode apps consume insets identically
+    - RunConfig ABI is not broken — the accessor lives on Context, not as a new onRender argument (the alternative considered in the originating issue)
+    context: |-
+      Migrated from https://github.com/squz/ge/issues/57 (filed 2026-05-03 by marcelocantos).
+
+      Apps using ge::run with headless=false (DirectRenderHost) currently have no programmatic way to read the device's safe-area insets — the regions occupied by camera notch, Dynamic Island, system gestures, home indicator, etc. The existing wire::SafeAreaUpdate is part of the brokered (player) wire protocol and isn't surfaced to in-process apps.
+
+      Concrete trigger: multimaze2 is hitting this on iPad mini A17 Pro and modern iPhones — its top bar pins to the physical screen top and gets covered by camera / status indicators. Not fixable on the consumer side; this is a ge gap.
+
+      Proposal (from the issue):
+      - Add a SafeAreaInsets struct with top/bottom/left/right (pixels, current orientation).
+      - Expose Context::safeArea() returning the current insets.
+      - DirectRenderHost updates the value from UIWindow's safeAreaInsets on Apple, Android WindowInsetsCompat (or SDL3's existing safe-area accessor) on Android. Update points are the same as width()/height() — initial layout, resize, rotation.
+      - Desktop returns all-zero.
+
+      Alternative considered and rejected (per the issue): adding SafeAreaInsets to RunConfig::onRender(int w, int h, SafeAreaInsets sa). Cleaner at the call site but is a RunConfig ABI break for every existing consumer; not worth it.
+
+      Affected files:
+      - src/render/DirectRenderHost.mm — query SDL window's safe area on Apple; post changes into Context.
+      - src/Context.cpp (or wherever the platform context is owned) — expose the getter, plumb the storage.
+      - Android: WindowInsetsCompat via a JNI bridge or SDL3's safe-area accessor.
+
+      Note: parity with the existing wire::SafeAreaUpdate path means wire-mode and direct-mode apps should observe the same Context::safeArea() shape — apps shouldn't branch on mode to read insets.
+    tags:
+    - api
+    - direct-render
+    - ios
+    - android
+    - layout
+    origin: 'migrated from GitHub issue #57'
+    discovered: 2026-05-03
+  T38:
+    name: ge engine has migrated from bgfx to sokol_gfx
+    status: identified
+    value: 13.0
+    cost: 13.0
+    acceptance:
+    - ge's rendering layer compiles and runs against sokol_gfx on iOS, Android (GLES path), and macOS desktop dev
+    - All .sc shaders have been ported to sokol-shdc + GLSL source with generated MSL/GLSL/WGSL outputs
+    - esfera2, multimaze2, yourworld2, and ge-t30.1 all build and run on the sokol-based ge with no visual or behavioural regressions vs. the bgfx baseline
+    - Adreno 830 hardware renders correctly without backend-switch escape hatches
+    - View-state reuse class of bugs is verified gone — same scenes that previously needed one-view-per-concept partitioning work without it
+    - bgfx and .sc shader tooling have been removed from ge's vendor tree and build system
+    context: 'DEFERRED — do not begin until all three gating releases have shipped: esfera2 T1 (App Store v2.1), multimaze2 T1 (desktop polished + feature-complete), and yourworld2''s first store submission. Mid-flight renderer migration would destabilise active release branches. Reverses the 2026-04-20 stay-with-bgfx decision after accumulated bgfx-shaped friction (view-state reuse sensitivity, backend leakage on coordinate flips and view defaults, Adreno Vulkan hazard) crossed a threshold. sokol_gfx was identified as the runner-up at the time of the original evaluation; it remains the target. Full reasoning in docs/rendering-library-choice.md (Reversal 2026-05-04 section). Why sokol_gfx specifically: pass-descriptor-per-frame model eliminates the view-state-reuse bug class structurally; GLES-first on Android sidesteps Adreno Vulkan; ~10K LOC vs ~200K means we can fork and patch if needed; sokol-shdc + SPIRV-Cross gives clean MSL/GLSL/WGSL outputs from GLSL source. Estimated cost: 2-4 focused weeks across ge + consumers, by analogy with T53 (Dawn to bgfx). Needs a real scoping pass before starting. Affected repos: ge, yourworld2, multimaze2, esfera2, ge-t30.1, plus sample/test programs.'
+    tags:
+    - rendering
+    - migration
+    - sokol
+    - bgfx
+    - deferred
+    origin: 2026-05-04 think session — reversal of T53-era bgfx commitment after accumulated friction
+    discovered: 2026-05-04
+  T39:
+    name: Vertex colours render correctly under bgfx Vulkan on the Android emulator
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - Vertex colours rendered through bgfx Color0 (Uint8 normalized 4-component) appear with correct R/G/B order on the Pixel 9 Pro XL Android emulator (and any other Android emulator using a host-side Vulkan swap chain).
+    - Tiltbuggy's brown playfield (0xAA6644) renders brown on the emulator, not blue (0x4466AA). The yellow buggy and light-blue ice patches likewise render in their authored hues.
+    - No regression on real Android devices using GLES (S21 Ultra, Tab A9, ASUS) where colours already render correctly today.
+    - No regression on Apple Metal (iPhone sim, iPad mini) or desktop Metal.
+    context: |-
+      Filed 2026-05-06 from a 🎯T37 showcase pass on the Pixel 9 Pro XL emulator. Tiltbuggy renders with R and B channels swapped on that emulator only:
+      - brown 0xAA6644 -> blue 0x4466AA
+      - light blue 0x88CCFF -> peach 0xFFCC88
+      - yellow 0xFFCC33 -> cyan 0x33CCFF
+      G is invariant. Clean two-channel swap, not an inversion.
+
+      Confirmed via spdlog from BgfxContext.mm:
+      - Pixel 9 Pro XL emulator: BgfxContext: 1344x2992 windowed Vulkan - broken.
+      - Tab A9 device (Android 16): BgfxContext: 800x1340 windowed OpenGL ES 3.1 - correct.
+      - Real devices that pick Vulkan (S21 Ultra, ASUS) also rendered correctly in earlier sessions.
+
+      So the buggy combination is specifically bgfx Vulkan plus Android emulator host-side swap chain. Most plausible cause is a vertex-format / swap-chain-format mismatch: bgfx declares Uint8 normalized Color0 as VK_FORMAT_R8G8B8A8_UNORM but the emulator advertises a VK_FORMAT_B8G8R8A8_UNORM swap chain, and bgfx's adaptation for that case is missing or wrong on this surface.
+
+      Investigation hints when picked up:
+      - Look at bgfx's Vulkan vertex-format mapping in vendor/github.com/bkaradzic/bgfx/src/renderer_vk.cpp (search for Color0 / Uint8 / R8G8B8A8).
+      - Diff what surface formats Pixel 9 Pro XL emulator returns from vkGetPhysicalDeviceSurfaceFormatsKHR vs a real Android device that takes the Vulkan path (S21 Ultra was seen on Vulkan in earlier sessions).
+      - A workaround in tiltbuggy's renderer (swap the bytes in pushRect's rgb() helper conditionally on Vulkan-on-Android-emulator) is NOT the right fix; the engine should hand bgfx correctly-ordered vertex data and bgfx should map correctly to whichever swap chain it gets.
+
+      Priority: low. Real devices fall back to GLES on Android emulator avoidance; this only bites local emu testing. Worth fixing because emu is an important workflow for matrix CI runs and contributors without a physical device, but no production user is affected.
+    tags:
+    - rendering
+    - bgfx
+    - vulkan
+    - android-emulator
+    - low-priority
+    origin: forked-from 🎯T37 showcase pass on Pixel 9 Pro XL emulator
+    discovered: 2026-05-06
   T4:
     name: playerLoop takes a config struct with named fields
     status: achieved

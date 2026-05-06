@@ -4,6 +4,8 @@
 #include "DirectRenderHost.h"
 #include "AccelSynth.h"
 
+#include "../CutoutInsets.h"
+
 #include <ge/FileIO.h>
 #include <ge/Protocol.h>
 #include <ge/Resource.h>
@@ -114,6 +116,12 @@ struct DirectRenderHost::Impl {
     std::function<void(const SDL_Event&)> eventHandler;
     bool quit = false;
 
+    // Host-owned session Context. Built in DirectRenderHost's ctor
+    // (db setup is host-specific — desktop persistent file via
+    // SDL_GetPrefPath) and refreshed each beginFrame so callback
+    // accessors are always live.
+    std::optional<Context> ctx;
+
     std::optional<AccelSynth> synth;
     SDL_Sensor* accelSensor = nullptr;
 
@@ -222,6 +230,22 @@ DirectRenderHost::DirectRenderHost(const SessionHostConfig& config)
     }
 
     SPDLOG_INFO("DirectRenderHost: {}x{}", i_->width, i_->height);
+
+    // Build the session Context. Direct mode uses a persistent on-disk
+    // db rooted at SDL_GetPrefPath(orgName, appName); fall back to an
+    // in-memory db if either is missing.
+    std::string dbPath = ":memory:";
+    if (config.orgName && config.appName) {
+        if (char* pref = SDL_GetPrefPath(config.orgName, config.appName)) {
+            dbPath = std::string(pref) + "game.db";
+            SDL_free(pref);
+            SPDLOG_INFO("DirectRenderHost: persistent DB at {}", dbPath);
+        }
+    }
+    i_->ctx.emplace(i_->width, i_->height, DeviceClass::Desktop,
+                    dbPath, config.schemaDdl);
+    i_->ctx->setDrawSafeInsets(drawSafeInsets());
+    i_->ctx->setUiSafeInsets(uiSafeInsets());
 }
 
 DirectRenderHost::~DirectRenderHost() {
@@ -236,6 +260,50 @@ int DirectRenderHost::width() const  { return i_->width; }
 int DirectRenderHost::height() const { return i_->height; }
 DeviceClass DirectRenderHost::deviceClass() const { return DeviceClass::Desktop; }
 bool DirectRenderHost::paused() const { return i_->bgfxCtx && i_->bgfxCtx->paused(); }
+const Context& DirectRenderHost::context() const { return *i_->ctx; }
+
+SafeAreaInsets DirectRenderHost::uiSafeInsets() const {
+    // SDL3's safe area on Android unions systemBars + systemGestures
+    // + mandatorySystemGestures + tappableElement + displayCutout —
+    // the full input-safe rectangle. iOS reports its own safeAreaInsets
+    // (cutouts + home indicator). Either way, this is what we want
+    // for uiSafeRect: the strictest "place interactive UI here" zone.
+    SafeAreaInsets out{};
+    if (!i_->bgfxCtx) return out;
+    SDL_Window* win = i_->bgfxCtx->window();
+    if (!win) return out;
+    SDL_Rect safe{};
+    if (!SDL_GetWindowSafeArea(win, &safe)) return out;
+    int winW = 0, winH = 0;
+    SDL_GetWindowSize(win, &winW, &winH);
+    if (winW <= 0 || winH <= 0) return out;
+    // Convert window-coord (point) insets → pixel insets via the
+    // surface's pixel-density ratio so they match the pixel-coord
+    // surface dims the engine reports.
+    const float xScale = float(i_->width)  / float(winW);
+    const float yScale = float(i_->height) / float(winH);
+    auto scale = [](int v, float s) {
+        return v <= 0 ? 0 : int(std::ceil(float(v) * s));
+    };
+    out.left   = scale(safe.x,                   xScale);
+    out.right  = scale(winW - safe.x - safe.w,   xScale);
+    out.top    = scale(safe.y,                   yScale);
+    out.bottom = scale(winH - safe.y - safe.h,   yScale);
+    return out;
+}
+
+SafeAreaInsets DirectRenderHost::drawSafeInsets() const {
+    // Display-cutout-only insets — what physically obscures pixels.
+    // On Android we query WindowInsets.Type.displayCutout() via JNI
+    // (gesture / tappable zones excluded). On iOS / desktop we fall
+    // back to the full SDL safe area — iOS doesn't decompose its
+    // safeAreaInsets cleanly so drawSafeRect == uiSafeRect there.
+#if defined(__ANDROID__)
+    return queryDisplayCutoutInsets();
+#else
+    return uiSafeInsets();
+#endif
+}
 
 void DirectRenderHost::send(const wire::SessionConfig& cfg) {
     // iPadOS 26 ignores Info.plist orientation restrictions on iPad — the
@@ -371,6 +439,14 @@ void DirectRenderHost::beginFrame() {
     // resize-triggered destroyOffscreen, flashing magenta.
     if (i_->tiltActiveThisFrame && i_->offscreenReady) {
         submitCompose(t.x, t.y);
+    }
+
+    // Refresh per-frame Context state (post-resize + current insets)
+    // so onUpdate / onRender accessors observe live values.
+    if (i_->ctx) {
+        i_->ctx->setDimensions(i_->width, i_->height);
+        i_->ctx->setDrawSafeInsets(drawSafeInsets());
+        i_->ctx->setUiSafeInsets(uiSafeInsets());
     }
 }
 

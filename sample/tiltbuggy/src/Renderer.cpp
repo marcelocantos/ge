@@ -110,19 +110,26 @@ void Renderer::init(const char* shaderDir) {
     i_->program = bgfx::createProgram(vs, fs, /*destroyShaders=*/true);
 }
 
-void Renderer::drawFrame(const Scene& scene, int width, int height,
+void Renderer::drawFrame(const Scene& scene, const ge::Context& c,
                          float /*tiltX*/, float /*tiltY*/) {
     // The host's composite pass applies viewport tilt (when synthesised
     // tilt is non-zero). The game just renders a flat top-down view.
-    bgfx::setViewRect(0, 0, 0, static_cast<uint16_t>(width),
-                                static_cast<uint16_t>(height));
+    auto surf = c.fullRect();
+    bgfx::setViewRect(0, 0, 0, static_cast<uint16_t>(surf.w),
+                                static_cast<uint16_t>(surf.h));
+    // Black outside the playfield so device chrome bleeds onto a clean
+    // background rather than stale bgfx backbuffer. The safe rect just
+    // tells us where to put the brown maze; effects that want to reach
+    // into chrome (glows, particles) are still free to draw there.
     bgfx::setViewClear(0,
         BGFX_CLEAR_COLOR | BGFX_CLEAR_DEPTH,
-        0x222222ff, 1.0f, 0);
+        0x000000ff, 1.0f, 0);
 
-    // Orthographic projection: fit [-he,+he] in the shorter axis.
-    const float he    = scene.halfExtent();
-    const float aspect = static_cast<float>(width) / static_cast<float>(height);
+    // Orthographic projection: fit [-he,+he] in the shorter axis of
+    // the FULL surface, so world-space coords map uniformly across the
+    // whole bgfx backbuffer (including chrome).
+    const float he     = scene.halfExtent();
+    const float aspect = static_cast<float>(surf.w) / static_cast<float>(surf.h);
     float orthoW, orthoH;
     if (aspect >= 1.0f) {
         orthoH = he;
@@ -146,7 +153,17 @@ void Renderer::drawFrame(const Scene& scene, int width, int height,
     std::vector<PosColorVertex> verts;
     verts.reserve(6 * (2 + scene.surfaces().size()));
 
-    pushRect(verts, -orthoW, -orthoH, orthoW, orthoH, rgb(0x44, 0x44, 0x44));
+    // Brown playfield placed at c.drawSafeRect() — tiltbuggy is touch-
+    // free, so the maze can extend into gesture zones (the wider rect).
+    // World maps [-orthoW, +orthoW] to [0, surf.w] in pixels.
+    auto rect = c.drawSafeRect();
+    const float pxToWorldX = (surf.w > 0) ? (2.f * orthoW / float(surf.w)) : 0.f;
+    const float pxToWorldY = (surf.h > 0) ? (2.f * orthoH / float(surf.h)) : 0.f;
+    const float bgL = -orthoW + rect.x            * pxToWorldX;
+    const float bgR = -orthoW + (rect.x + rect.w) * pxToWorldX;
+    const float bgT =  orthoH - rect.y            * pxToWorldY;
+    const float bgB =  orthoH - (rect.y + rect.h) * pxToWorldY;
+    pushRect(verts, bgL, bgB, bgR, bgT, rgb(0xAA, 0x66, 0x44));
 
     // 2. Surface rects.
     for (const auto& surf : scene.surfaces()) {

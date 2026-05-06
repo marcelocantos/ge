@@ -113,12 +113,12 @@ int main(int argc, char* argv[]) {
                                 dt, state.gravity.x, state.gravity.y, p.x, p.y, p.angle);
                 }
             },
-            .onRender = [&](int w, int h) {
+            .onRender = [&](const ge::Context& c) {
                 if (!state.rendererInited) {
                     state.renderer->init(ge::resource(ge::shaderDir()).c_str());
                     state.rendererInited = true;
                 }
-                state.renderer->drawFrame(*state.scene, w, h);
+                state.renderer->drawFrame(*state.scene, c);
             },
             .onEvent = [&](const SDL_Event& e) {
                 SPDLOG_INFO("onEvent type=0x{:x}", e.type);
@@ -148,5 +148,6 @@ int main(int argc, char* argv[]) {
         .sensors = wire::kSensorAccelerometer,
         .orientation = wire::kOrientationLandscape,
         .disableScreenSaver = true,
+        .immersive = true,
     });
 }
