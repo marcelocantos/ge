@@ -13,7 +13,7 @@
         android:hardwareAccelerated="true">
 
         <activity
-            android:name="__PACKAGE__.__ACTIVITY__"
+            android:name="ge.GeActivity"
             android:label="@string/app_name"
             android:theme="@android:style/Theme.Material.NoActionBar.Fullscreen"
             android:alwaysRetainTaskState="true"

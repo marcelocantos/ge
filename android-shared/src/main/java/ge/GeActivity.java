@@ -1,4 +1,30 @@
-package __PACKAGE__;
+// Copyright 2026 Marcelo Cantos
+// SPDX-License-Identifier: Apache-2.0
+//
+// Canonical Android Activity for ge consumers.
+//
+// Apps reference ge.GeActivity directly from their AndroidManifest.xml
+// (android:name="ge.GeActivity"); no per-app subclass is required.
+// Gradle source-includes this file from the engine submodule via
+// sourceSets.main.java.srcDirs, so the Activity bumps in lockstep with
+// the engine and consumer apps inherit new engine-side hooks (sensor
+// listeners, lifecycle callbacks, future plumbing) just by updating
+// the ge submodule pointer — no Java drift.
+//
+// Contains:
+//   * getLibraries() — returns {"SDL3", "main"}; ge always builds the
+//     consumer app's native code as libmain.so.
+//   * Display-cutout insets — drives Context::drawSafeRect via JNI to
+//     getDisplayCutoutInsets().
+//   * Immersive mode — applyImmersive() called from native when
+//     SessionHostConfig.immersive is set.
+//   * Sensor-fused attitude — registers TYPE_GAME_ROTATION_VECTOR
+//     while resumed, exposes the latest quaternion via getAttitude()
+//     for the parallax pipeline.
+//
+// Apps that genuinely need to customise Activity behaviour subclass
+// GeActivity; the supported default is zero-customisation.
+package ge;
 
 import android.content.Context;
 import android.graphics.Insets;
@@ -12,7 +38,7 @@ import android.view.WindowInsetsController;
 
 import org.libsdl.app.SDLActivity;
 
-public class __ACTIVITY__ extends SDLActivity implements SensorEventListener {
+public class GeActivity extends SDLActivity implements SensorEventListener {
     @Override
     protected String[] getLibraries() {
         return new String[]{"SDL3", "main"};
@@ -66,8 +92,6 @@ public class __ACTIVITY__ extends SDLActivity implements SensorEventListener {
     public void onSensorChanged(SensorEvent ev) {
         if (ev.sensor.getType() != Sensor.TYPE_GAME_ROTATION_VECTOR) return;
         float qx = ev.values[0], qy = ev.values[1], qz = ev.values[2];
-        // values[3] (w) is provided since API 18 — defensively recover
-        // it from the vector part if absent.
         float qw;
         if (ev.values.length > 3) {
             qw = ev.values[3];
@@ -81,14 +105,14 @@ public class __ACTIVITY__ extends SDLActivity implements SensorEventListener {
     @Override
     public void onAccuracyChanged(Sensor sensor, int accuracy) { }
 
+    // Called from native (CutoutInsets_android.cpp) each frame to
+    // populate Context::drawSafeRect on Android.
+    public int[] getDisplayCutoutInsets() { return cutoutInsets; }
+
     // Called from native (Attitude_android.cpp) each frame to populate
     // Context::parallax(). Returns the current quaternion as a four-
     // element float array (x, y, z, w).
     public float[] getAttitude() { return attitude; }
-
-    // Called from native (CutoutInsets_android.cpp) each frame to
-    // populate Context::drawSafeRect on Android.
-    public int[] getDisplayCutoutInsets() { return cutoutInsets; }
 
     // Called from native (Immersive_android.cpp) when the app's
     // SessionHostConfig.immersive flag changes. Hides or restores

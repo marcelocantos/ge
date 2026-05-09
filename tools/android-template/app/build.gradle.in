@@ -41,11 +41,16 @@ android {
         }
     }
 
-    // Include SDL3 Java sources from the ge engine's vendored SDL.
+    // Include Java sources from ge: the canonical GeActivity (so apps
+    // never copy the SDLActivity boilerplate) and the vendored SDL3
+    // android-project. Drop 'src/main/java' from the list — the
+    // template no longer scaffolds a per-app Activity.java; apps that
+    // genuinely need to customise behaviour subclass ge.GeActivity in
+    // their own java tree and add it back here.
     sourceSets {
         main {
             java.srcDirs = [
-                'src/main/java',
+                "${rootDir}/__GE_REL__/android-shared/src/main/java",
                 "${rootDir}/__GE_REL__/vendor/github.com/libsdl-org/SDL/android-project/app/src/main/java"
             ]
         }
