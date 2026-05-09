@@ -1435,6 +1435,24 @@ targets:
     context: The persistence mechanism works (player remembers server address), but there's no UI for the user to manage saved connections.
     origin: migrated from docs/targets.md
     discovered: 2026-04-12
+  T50:
+    name: 'ge ships a build-time app-icon expander: one SVG source, both platforms'' icon resource layouts'
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - A `ge/icon-gen` CLI tool (built alongside `ge/imgdiff`, similar size and pattern) takes a source `icon.svg`, the consumer's `ios/` and `android/` directories, and the app's display name, then writes the platform-required icon resources directly
+    - 'iOS output: `ios/<App>/Assets.xcassets/AppIcon.appiconset/` populated with PNGs at every required size (20pt, 29pt, 40pt, 60pt, 76pt, 83.5pt, 1024pt at 1x/2x/3x as applicable) plus a valid `Contents.json` referencing them. `Info.plist` `CFBundleIconName` already correct in the iOS template'
+    - 'Android output: `android/app/src/main/res/mipmap-{mdpi,hdpi,xhdpi,xxhdpi,xxxhdpi}/ic_launcher.png` for legacy launcher icons (48dp at each density) plus `mipmap-anydpi-v26/ic_launcher.xml` adaptive manifest pointing at `drawable/ic_launcher_foreground.png` and `drawable/ic_launcher_background.png` (108dp canvas, 432px@4x). `AndroidManifest.xml` `android:icon` references already correct in the android template'
+    - Optional `icons/icon-foreground.svg` + `icons/icon-background.svg` for explicit adaptive-icon control on Android. When absent, foreground = the master `icon.svg` rendered into the 72dp safe zone, background = transparent (or a solid colour from a config knob)
+    - Implementation rasterizes the SVG at each target pixel size using ge::rasterizeSvgToPixels (T42's CPU path) and writes PNGs with stb_image_write (already vendored under plutovg). No new third-party dependencies — entirely on top of T42's foundation
+    - '`make ge/app-icons` runs the expander against `icons/icon.svg` in the consumer''s project root and writes into the consumer''s existing `ios/` and `android/` directories (assumes ge/ios-init / ge/android-init have already run)'
+    - Documentation in ge/CLAUDE.md describes the expander, the supported source layout, the platform output paths, and the limitations (PNG output rather than VectorDrawable / PDF — chosen for fidelity and simplicity over binary size)
+    - Reject PNG / JPEG source with a clear error message pointing at SVG. Force the right tool from day one — no multi-size resampling of raster sources
+    context: 'Discussed 2026-05-10 after T47/T48/T49 landed. iOS supports vector source as a single 1024×1024 PDF (since iOS 13); Android supports vector adaptive icons as VectorDrawable XML (since API 26, 2017). Neither accepts plain SVG. VectorDrawable is a strict subset of SVG and conversion is lossy for gradients/masks/filters/text. Lunasvg cannot emit PDF. So the pragmatic path is to rasterize SVG → PNGs at the platforms'' required sizes and ignore the native-vector codepaths entirely. Cost: ~10–50 KB per app of binary size on Android vs. VectorDrawable; trivial for a game binary in the tens of MB. Builds directly on T42 (lunasvg + plutovg) and the existing `ge/imgdiff` build-time-tool pattern. ~200 lines for the CLI + ~30 lines of Module.mk wiring + a CLAUDE.md section.'
+    origin: discussed during T47-T49 wrap-up; "where did we get to with app icons?" - 2026-05-10
+    discovered: 2026-05-10
+    achieved: 2026-05-10
   T6:
     name: Player can switch between active servers without QR
     status: identified
