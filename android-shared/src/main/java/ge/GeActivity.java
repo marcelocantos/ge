@@ -26,15 +26,18 @@
 // GeActivity; the supported default is zero-customisation.
 package ge;
 
+import android.content.ComponentCallbacks2;
 import android.content.Context;
 import android.graphics.Insets;
 import android.hardware.Sensor;
 import android.hardware.SensorEvent;
 import android.hardware.SensorEventListener;
 import android.hardware.SensorManager;
+import android.os.Build;
 import android.os.Bundle;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
+import android.window.OnBackInvokedDispatcher;
 
 import org.libsdl.app.SDLActivity;
 
@@ -71,6 +74,16 @@ public class GeActivity extends SDLActivity implements SensorEventListener {
         sensorManager = (SensorManager) getSystemService(Context.SENSOR_SERVICE);
         gameRotationVector = sensorManager == null ? null
             : sensorManager.getDefaultSensor(Sensor.TYPE_GAME_ROTATION_VECTOR);
+
+        // 🎯T44: predictive-back gesture (API 33+). The callback only
+        // fires when nativeOnBackPressed returns true — i.e. when the
+        // game has registered RunConfig.onBackPressed. Otherwise we
+        // don't register and the OS default (Activity.finish) fires.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
+                OnBackInvokedDispatcher.PRIORITY_DEFAULT,
+                () -> nativeOnBackPressed());
+        }
     }
 
     @Override
@@ -113,6 +126,32 @@ public class GeActivity extends SDLActivity implements SensorEventListener {
     // Context::parallax(). Returns the current quaternion as a four-
     // element float array (x, y, z, w).
     public float[] getAttitude() { return attitude; }
+
+    // 🎯T44: legacy back-press handler (pre-API 33). On API 33+ the
+    // OnBackInvokedDispatcher path takes precedence and this is not
+    // called. nativeOnBackPressed returns true if the engine consumed
+    // the event; otherwise we fall through to super for the OS default.
+    @Override
+    public void onBackPressed() {
+        if (nativeOnBackPressed()) return;
+        super.onBackPressed();
+    }
+
+    // 🎯T45: OS memory-pressure warning. The native side maps the
+    // graded TRIM_MEMORY_* constant onto MemoryPressureLevel and
+    // forwards on the next pumpEvents on the game thread.
+    @Override
+    public void onTrimMemory(int level) {
+        super.onTrimMemory(level);
+        nativeOnTrimMemory(level);
+    }
+
+    // JNI exports live in src/render/DirectRenderHost.mm.
+    // Both are async-safe — they only touch atomics; the engine
+    // dispatches the actual game callback on the game thread next
+    // pump.
+    private static native boolean nativeOnBackPressed();
+    private static native void nativeOnTrimMemory(int level);
 
     // Called from native (Immersive_android.cpp) when the app's
     // SessionHostConfig.immersive flag changes. Hides or restores

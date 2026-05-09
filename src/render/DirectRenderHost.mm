@@ -23,8 +23,17 @@
 #include <SDL3/SDL_system.h>
 #include <spdlog/spdlog.h>
 
+#include <atomic>
+
 #if defined(__APPLE__)
 #include <TargetConditionals.h>
+#if TARGET_OS_IOS
+#import <UIKit/UIKit.h>
+#endif
+#endif
+
+#if defined(__ANDROID__)
+#include <jni.h>
 #endif
 
 #include <cstdio>
@@ -63,6 +72,51 @@ float computeDeviceUiScale(DeviceClass dc, int surfaceW, int surfaceH, float pix
     const float shortSideMm = shortSidePt * ptToMm(dc);
     return std::sqrt(shortSideMm / kReferenceShortSideMm);
 }
+
+// 🎯T44 / 🎯T45 OS-event plumbing.
+// The platform fires these on the wrong thread (Android UI thread for
+// JNI; iOS notification queue for memory warnings). We can't safely
+// touch the game's state from there, so each event sets an atomic
+// flag that pumpEvents drains on the game thread before the next
+// onUpdate / onRender pair.
+//
+// kBackHandlerActive answers Java's predictive-back "consumed?"
+// query synchronously: if a handler is registered, we own the
+// gesture; if not, the OS default (Activity.finish) fires.
+std::atomic<bool> g_backHandlerActive{false};
+std::atomic<bool> g_pendingBackPressed{false};
+// -1 = no event; 0/1/2 = MemoryPressureLevel::{Low, Moderate, Critical}.
+std::atomic<int>  g_pendingMemoryWarning{-1};
+
+#if defined(__ANDROID__)
+// Android's TRIM_MEMORY_* constants. Mirror SDK values rather than
+// pulling in JNI just to read the public enum — these are part of
+// android.content.ComponentCallbacks2's stable API.
+constexpr int kTrimMemoryRunningModerate = 5;
+constexpr int kTrimMemoryRunningLow      = 10;
+constexpr int kTrimMemoryRunningCritical = 15;
+constexpr int kTrimMemoryUiHidden        = 20;
+constexpr int kTrimMemoryBackground      = 40;
+constexpr int kTrimMemoryModerate        = 60;
+constexpr int kTrimMemoryComplete        = 80;
+
+int mapAndroidTrimLevel(int level) {
+    switch (level) {
+    case kTrimMemoryRunningModerate:
+        return int(MemoryPressureLevel::Low);
+    case kTrimMemoryRunningLow:
+    case kTrimMemoryUiHidden:
+    case kTrimMemoryBackground:
+    case kTrimMemoryModerate:
+        return int(MemoryPressureLevel::Moderate);
+    case kTrimMemoryRunningCritical:
+    case kTrimMemoryComplete:
+        return int(MemoryPressureLevel::Critical);
+    default:
+        return -1;  // unknown level — drop on the floor
+    }
+}
+#endif
 
 // Vertex layout for the composite quad.
 struct ComposeVertex {
@@ -140,6 +194,30 @@ bgfx::ShaderHandle loadShader(const char* path) {
 
 } // namespace
 
+#if defined(__ANDROID__)
+// Native methods called from ge.GeActivity — see android-shared/.../GeActivity.java.
+//
+// Both are designed to be cheap and main-thread-safe: they only touch
+// atomics, never the game's RunConfig callbacks directly. The game-
+// side dispatch happens on the next pumpEvents on the game thread.
+extern "C" {
+
+JNIEXPORT jboolean JNICALL
+Java_ge_GeActivity_nativeOnBackPressed(JNIEnv*, jclass) {
+    if (!g_backHandlerActive.load()) return JNI_FALSE;
+    g_pendingBackPressed.store(true);
+    return JNI_TRUE;
+}
+
+JNIEXPORT void JNICALL
+Java_ge_GeActivity_nativeOnTrimMemory(JNIEnv*, jclass, jint level) {
+    int mapped = mapAndroidTrimLevel(level);
+    if (mapped >= 0) g_pendingMemoryWarning.store(mapped);
+}
+
+} // extern "C"
+#endif
+
 struct DirectRenderHost::Impl {
     int width = 0, height = 0;
     std::unique_ptr<BgfxContext> bgfxCtx;
@@ -163,6 +241,13 @@ struct DirectRenderHost::Impl {
     std::unique_ptr<AttitudeProvider> attitude;
     bool   baselineSet = false;
     la::float4 baseline{0, 0, 0, 1};
+
+    // 🎯T44 / 🎯T45 callbacks — set by runDirect after factory.
+    std::function<void()> onBackPressed;
+    std::function<void(MemoryPressureLevel)> onMemoryWarning;
+#if defined(__APPLE__) && TARGET_OS_IOS
+    id memoryWarningObserver = nil;
+#endif
 
     // Offscreen pipeline — lazily created on first non-zero tilt.
     bool offscreenReady = false;
@@ -317,6 +402,13 @@ DirectRenderHost::~DirectRenderHost() {
         SDL_CloseSensor(i_->accelSensor);
         i_->accelSensor = nullptr;
     }
+    g_backHandlerActive.store(false);
+#if defined(__APPLE__) && TARGET_OS_IOS
+    if (i_->memoryWarningObserver) {
+        [[NSNotificationCenter defaultCenter] removeObserver:i_->memoryWarningObserver];
+        i_->memoryWarningObserver = nil;
+    }
+#endif
     i_->destroyOffscreen();
 }
 
@@ -393,7 +485,43 @@ void DirectRenderHost::setEventHandler(std::function<void(const SDL_Event&)> h) 
     if (i_->synth) i_->synth->setEmit(h);
 }
 
+void DirectRenderHost::setBackPressedHandler(std::function<void()> h) {
+    i_->onBackPressed = std::move(h);
+    g_backHandlerActive.store(static_cast<bool>(i_->onBackPressed));
+}
+
+void DirectRenderHost::setMemoryWarningHandler(
+        std::function<void(MemoryPressureLevel)> h) {
+    i_->onMemoryWarning = std::move(h);
+#if defined(__APPLE__) && TARGET_OS_IOS
+    if (i_->onMemoryWarning && !i_->memoryWarningObserver) {
+        i_->memoryWarningObserver =
+            [[NSNotificationCenter defaultCenter]
+                addObserverForName:UIApplicationDidReceiveMemoryWarningNotification
+                            object:nil
+                             queue:nil
+                        usingBlock:^(NSNotification*) {
+                            // iOS reports a single ungraded warning;
+                            // bubble as Critical.
+                            g_pendingMemoryWarning.store(
+                                int(MemoryPressureLevel::Critical));
+                        }];
+    }
+#endif
+}
+
 void DirectRenderHost::pumpEvents() {
+    // Drain off-thread OS events first so back / memory-warning
+    // callbacks see a coherent game state without racing the SDL
+    // event drain below.
+    if (g_pendingBackPressed.exchange(false)) {
+        if (i_->onBackPressed) i_->onBackPressed();
+    }
+    int mem = g_pendingMemoryWarning.exchange(-1);
+    if (mem >= 0 && i_->onMemoryWarning) {
+        i_->onMemoryWarning(static_cast<MemoryPressureLevel>(mem));
+    }
+
     SDL_Event e;
     while (SDL_PollEvent(&e)) {
         if (e.type == SDL_EVENT_QUIT) {
