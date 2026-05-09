@@ -51,6 +51,7 @@ ge/INCLUDES = \
 	-I$(ge)/vendor/github.com/chriskohlhoff/asio/include \
 	-I$(ge)/vendor/github.com/sqliteai/liteparser/src \
 	-I$(ge)/vendor/github.com/sammycage/lunasvg/include \
+	-I/opt/homebrew/opt/freetype/include/freetype2 \
 	-DSQLITE_ENABLE_SESSION -DSQLITE_ENABLE_PREUPDATE_HOOK -DSQLITE_ENABLE_DESERIALIZE \
 	-DLUNASVG_BUILD_STATIC
 
@@ -118,6 +119,9 @@ ge/SRC_DIRECT = \
 	$(ge)/src/Attitude_apple.mm \
 	$(ge)/src/SvgRasterizer.cpp \
 	$(ge)/src/SvgSprite.cpp \
+	$(ge)/src/LoadTexture.cpp \
+	$(ge)/src/RasterizeText.cpp \
+	$(ge)/src/SpriteBatch.cpp \
 	$(ge)/src/render/DirectRenderHost.mm \
 	$(ge)/tools/player_orientation_stub.cpp
 
@@ -168,7 +172,9 @@ ge/SHADERC_VARYINGDEF ?= $(ge/SHADER_DIR)/varying.def.sc
 ge/RENDER_SHADER_DIR = $(ge)/src/render/shaders
 ge/RENDER_SHADERS = \
 	$(BUILD_DIR)/ge/shaders/ge_compose_vs.bin \
-	$(BUILD_DIR)/ge/shaders/ge_compose_fs.bin
+	$(BUILD_DIR)/ge/shaders/ge_compose_fs.bin \
+	$(BUILD_DIR)/ge/shaders/ge_sprite_vs.bin \
+	$(BUILD_DIR)/ge/shaders/ge_sprite_fs.bin
 
 # Android shader variants. The APK ships BOTH so the runtime can pick
 # based on the bgfx backend BgfxContext.mm chose for this device:
@@ -254,7 +260,10 @@ ge/TEST_SRC = \
 	$(ge)/src/main_test.cpp \
 	$(ge)/src/DampedRotation_test.cpp \
 	$(ge)/src/Rect_test.cpp \
-	$(ge)/src/SvgRasterizer_test.cpp
+	$(ge)/src/SvgRasterizer_test.cpp \
+	$(ge)/src/LoadTexture_test.cpp \
+	$(ge)/src/RasterizeText_test.cpp \
+	$(ge)/src/SpriteBatch_test.cpp
 ge/TEST_OBJ = $(patsubst $(ge)/src/%.cpp,$(BUILD_DIR)/ge/src/%.o,$(ge/TEST_SRC))
 
 # Shared variables (parent can += to extend)
