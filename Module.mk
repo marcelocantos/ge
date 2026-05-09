@@ -210,6 +210,32 @@ ge/TRIANGLE_CFLAGS = -O2 -I$(ge)/vendor/include -DTRILIBRARY -DREAL=double -DANS
 ge/LZ4_SRC = $(ge)/vendor/src/lz4.c
 ge/LZ4_OBJ = $(BUILD_DIR)/ge/vendor/lz4.o
 
+# lunasvg + bundled plutovg (vendored from sammycage/lunasvg).
+#
+# lunasvg is the canonical SVG rasterizer used by `ge::rasterizeSvg`. It depends
+# on plutovg for 2D rendering; lunasvg ships its own pinned plutovg as a nested
+# subdirectory and we compile that copy rather than the SDL3-prebuilt
+# libplutovg.a (which is a much older 0.0.x release used by SDL_ttf for color
+# emoji glyphs, see vendor/sdl3/lib/macos-arm64/libplutosvg.a). The two are not
+# symbol-compatible; to avoid clashes at app link time, lunasvg's plutovg is
+# kept namespace-isolated — see the rename header / `-include` flag below
+# (added in T42.2 when the public API ships).
+ge/LUNASVG_DIR = $(ge)/vendor/github.com/sammycage/lunasvg
+ge/PLUTOVG_DIR = $(ge/LUNASVG_DIR)/plutovg
+
+ge/LUNASVG_SRC = $(wildcard $(ge/LUNASVG_DIR)/source/*.cpp)
+ge/LUNASVG_OBJ = $(patsubst $(ge/LUNASVG_DIR)/source/%.cpp,$(BUILD_DIR)/ge/vendor/lunasvg/%.o,$(ge/LUNASVG_SRC))
+
+ge/PLUTOVG_SRC = $(wildcard $(ge/PLUTOVG_DIR)/source/*.c)
+ge/PLUTOVG_OBJ = $(patsubst $(ge/PLUTOVG_DIR)/source/%.c,$(BUILD_DIR)/ge/vendor/plutovg/%.o,$(ge/PLUTOVG_SRC))
+
+ge/LUNASVG_CXXFLAGS = -O2 -std=c++17 -fvisibility=hidden \
+    -DLUNASVG_BUILD -DLUNASVG_BUILD_STATIC -DPLUTOVG_BUILD_STATIC \
+    -I$(ge/LUNASVG_DIR)/include -I$(ge/LUNASVG_DIR)/source -I$(ge/PLUTOVG_DIR)/include
+ge/PLUTOVG_CFLAGS = -O2 -std=c11 -fvisibility=hidden \
+    -DPLUTOVG_BUILD -DPLUTOVG_BUILD_STATIC \
+    -I$(ge/PLUTOVG_DIR)/include -I$(ge/PLUTOVG_DIR)/source
+
 # liteparser (C code, used by sqlpipe for query analysis)
 ge/LITEPARSER_DIR = $(ge)/vendor/github.com/sqliteai/liteparser/src
 ge/LITEPARSER_SRC = $(addprefix $(ge/LITEPARSER_DIR)/,arena.c liteparser.c lp_tokenize.c lp_unparse.c parse.c)
@@ -311,7 +337,7 @@ $(BUILD_DIR)/ge/tools/%.o: $(ge)/tools/%.mm
 	$(CXX) $(CXXFLAGS) $(SDL_CFLAGS) -MMD -MP -c $< -o $@
 
 # Static library
-$(ge/LIB): $(ge/OBJ) $(ge/SQLITE_OBJ) $(ge/LZ4_OBJ) $(ge/LITEPARSER_OBJ) $(ge/VENDOR_CPP_OBJ)
+$(ge/LIB): $(ge/OBJ) $(ge/SQLITE_OBJ) $(ge/LZ4_OBJ) $(ge/LITEPARSER_OBJ) $(ge/VENDOR_CPP_OBJ) $(ge/LUNASVG_OBJ) $(ge/PLUTOVG_OBJ)
 	@mkdir -p $(dir $@)
 	libtool -static -o $@ $^
 
@@ -344,6 +370,16 @@ $(BUILD_DIR)/ge/vendor/liteparser/%.o: $(ge/LITEPARSER_DIR)/%.c
 $(ge/TRIANGLE_OBJ): $(ge/TRIANGLE_SRC)
 	@mkdir -p $(dir $@)
 	$(CC) $(ge/TRIANGLE_CFLAGS) -c $< -o $@
+
+# lunasvg (C++17) — SVG rasterizer used by ge::rasterizeSvg.
+$(BUILD_DIR)/ge/vendor/lunasvg/%.o: $(ge/LUNASVG_DIR)/source/%.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(ge/LUNASVG_CXXFLAGS) -MMD -MP -c $< -o $@
+
+# plutovg (C11) — 2D vector backend bundled by lunasvg.
+$(BUILD_DIR)/ge/vendor/plutovg/%.o: $(ge/PLUTOVG_DIR)/source/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(ge/PLUTOVG_CFLAGS) -MMD -MP -c $< -o $@
 
 # bx (amalgamated build)
 $(ge/BX_OBJ): $(ge/BX_DIR)/src/amalgamated.cpp

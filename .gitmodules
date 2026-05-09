@@ -31,3 +31,6 @@
 [submodule "vendor/github.com/libsdl-org/SDL_ttf"]
 	path = vendor/github.com/libsdl-org/SDL_ttf
 	url = https://github.com/libsdl-org/SDL_ttf.git
+[submodule "vendor/github.com/sammycage/lunasvg"]
+	path = vendor/github.com/sammycage/lunasvg
+	url = https://github.com/sammycage/lunasvg.git
