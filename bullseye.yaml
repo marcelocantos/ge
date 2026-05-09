@@ -1382,7 +1382,7 @@ targets:
     discovered: 2026-05-09
   T47:
     name: ge ships a canonical PNG/IMG to bgfx texture loader
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -1393,9 +1393,10 @@ targets:
     - Multimaze2 (and other consumers as they're touched) drops its local loadTexture2D copy and uses ge::loadTexture2D instead. Same for the SDL_Surface to bgfx upload helper if it ends up factored out as a sub-utility (ge::surfaceToTexture)
     origin: multimaze2 5/2026 - every ge consumer reimplements this; obvious candidate for promotion
     discovered: 2026-05-09
+    achieved: 2026-05-09
   T48:
     name: ge ships a canonical text-to-texture rasterizer
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -1407,9 +1408,10 @@ targets:
     - Sibling of ge::SvgRasterizer (T42) and ge::loadTexture2D (T47); together they form the 'name plus optional sizing -> bgfx::TextureHandle' family
     origin: multimaze2 5/2026 - the Text class wraps freetype + ge::resolveFont and is general-purpose; promote so every consumer stops reimplementing text rasterization
     discovered: 2026-05-09
+    achieved: 2026-05-09
   T49:
     name: ge ships a canonical sprite/quad rendering pipeline
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -1422,6 +1424,7 @@ targets:
     - Documentation in ge/CLAUDE.md covers the sprite layer alongside the existing rendering surface description
     origin: multimaze2 5/2026 - every ge consumer reimplements a sprite renderer (vertex format, mesh builder, blend state, sprite shader). Promote so they all share one
     discovered: 2026-05-09
+    achieved: 2026-05-09
   T5:
     name: Player has a connection management screen
     status: identified
