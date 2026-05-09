@@ -21,6 +21,8 @@ set(BIMG_DIR      ${GE_VENDOR}/github.com/bkaradzic/bimg)
 set(BGFX_DIR      ${GE_VENDOR}/github.com/bkaradzic/bgfx)
 set(BOX2D_DIR     ${GE_VENDOR}/github.com/erincatto/box2d)
 set(LITEPARSER_DIR ${GE_VENDOR}/github.com/sqliteai/liteparser/src)
+set(LUNASVG_DIR   ${GE_VENDOR}/github.com/sammycage/lunasvg)
+set(PLUTOVG_DIR   ${LUNASVG_DIR}/plutovg)
 
 # ── bgfx/bx/bimg static libraries ────────────────────
 
@@ -144,6 +146,29 @@ add_library(lz4_ge STATIC ${GE_VENDOR}/src/lz4.c)
 target_include_directories(lz4_ge PUBLIC ${GE_VENDOR}/include)
 set_target_properties(lz4_ge PROPERTIES C_STANDARD 11)
 
+# ── lunasvg + bundled plutovg ─────────────────────────
+# lunasvg is the canonical SVG rasterizer used by ge::rasterizeSvg.
+# It bundles its own pinned plutovg (distinct from the SDL_ttf one).
+# Both are compiled with hidden visibility and static-build macros to
+# avoid symbol clashes with the prebuilt libplutovg.a in SDL3_ttf.
+
+file(GLOB LUNASVG_SRC ${LUNASVG_DIR}/source/*.cpp)
+file(GLOB PLUTOVG_SRC ${PLUTOVG_DIR}/source/*.c)
+
+add_library(lunasvg_ge STATIC ${LUNASVG_SRC})
+target_include_directories(lunasvg_ge PUBLIC  ${LUNASVG_DIR}/include)
+target_include_directories(lunasvg_ge PRIVATE ${LUNASVG_DIR}/source ${PLUTOVG_DIR}/include)
+target_compile_definitions(lunasvg_ge PRIVATE LUNASVG_BUILD LUNASVG_BUILD_STATIC PLUTOVG_BUILD_STATIC)
+target_compile_options(lunasvg_ge PRIVATE -fvisibility=hidden)
+set_target_properties(lunasvg_ge PROPERTIES CXX_STANDARD 17)
+
+add_library(plutovg_ge STATIC ${PLUTOVG_SRC})
+target_include_directories(plutovg_ge PUBLIC  ${PLUTOVG_DIR}/include)
+target_include_directories(plutovg_ge PRIVATE ${PLUTOVG_DIR}/source)
+target_compile_definitions(plutovg_ge PRIVATE PLUTOVG_BUILD PLUTOVG_BUILD_STATIC)
+target_compile_options(plutovg_ge PRIVATE -fvisibility=hidden)
+set_target_properties(plutovg_ge PROPERTIES C_STANDARD 11)
+
 # ── ge core sources ───────────────────────────────────
 
 set(GE_CORE_SOURCES
@@ -151,6 +176,8 @@ set(GE_CORE_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/Resource.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/FileIO.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/Signal.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/SvgRasterizer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/SvgSprite.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/vendor/src/sqlift.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/vendor/src/sqlpipe.cpp
 )
@@ -244,6 +271,7 @@ target_include_directories(ge PUBLIC
     ${BGFX_DIR}/include
     ${BX_DIR}/include
     ${BIMG_DIR}/include
+    ${LUNASVG_DIR}/include
 )
 if(APPLE)
     target_include_directories(ge PUBLIC ${BX_DIR}/include/compat/osx)
@@ -275,6 +303,7 @@ target_link_libraries(ge PRIVATE
     bgfx bimg bx
     sqlite3_ge liteparser lz4_ge
     box2d
+    lunasvg_ge plutovg_ge
 )
 
 # ── Platform-specific dependencies ────────────────────
