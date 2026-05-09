@@ -117,6 +117,7 @@ ge/SRC_DIRECT = \
 	$(ge)/src/CutoutInsets_stub.cpp \
 	$(ge)/src/Attitude_apple.mm \
 	$(ge)/src/SvgRasterizer.cpp \
+	$(ge)/src/SvgSprite.cpp \
 	$(ge)/src/render/DirectRenderHost.mm \
 	$(ge)/tools/player_orientation_stub.cpp
 
