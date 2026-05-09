@@ -1380,6 +1380,48 @@ targets:
     - build-system
     origin: manual
     discovered: 2026-05-09
+  T47:
+    name: ge ships a canonical PNG/IMG to bgfx texture loader
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - ge exposes ge::loadTexture2D(path, *outW, *outH) returning bgfx::TextureHandle. Path is resolved via ge::resource so iOS bundle and Android APK assets work uniformly
+    - 'Behind the scenes: SDL3_image IMG_Load, conversion to RGBA32, premultiplied alpha (matching ge''s existing premultiplied-alpha render pipeline), upload as bgfx RGBA8 texture'
+    - Returns BGFX_INVALID_HANDLE on failure with a logged error
+    - Sibling of the in-flight ge::SvgRasterizer; both are 'name plus optional sizing -> bgfx::TextureHandle' helpers, and live next to each other in ge's public API
+    - Multimaze2 (and other consumers as they're touched) drops its local loadTexture2D copy and uses ge::loadTexture2D instead. Same for the SDL_Surface to bgfx upload helper if it ends up factored out as a sub-utility (ge::surfaceToTexture)
+    origin: multimaze2 5/2026 - every ge consumer reimplements this; obvious candidate for promotion
+    discovered: 2026-05-09
+  T48:
+    name: ge ships a canonical text-to-texture rasterizer
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - ge exposes ge::rasterizeText(string, FontRef, size_pt, color) returning bgfx::TextureHandle plus the rendered width and height in pixels (struct with handle plus dims, or out-params)
+    - Backed by freetype, using ge::resolveFont's existing FontRef abstraction so apps refer to fonts as 'system:sans-serif-bold' / 'file:/path/to/Roboto-Bold.ttf' / etc. and ge handles the platform lookup
+    - Output is RGBA8 with premultiplied alpha so it drops into the same blend state as ge::loadTexture2D and ge::SvgRasterizer outputs
+    - If a Text class shape is preferred, ge::Text caches recent (string, font, size, color) -> texture so repeated render calls of the same label do not re-rasterize. Cache size is bounded; old entries get destroyed
+    - Multimaze2's src/Text.h+cpp is replaced by the ge equivalent; no consumer needs its own freetype wiring
+    - Sibling of ge::SvgRasterizer (T42) and ge::loadTexture2D (T47); together they form the 'name plus optional sizing -> bgfx::TextureHandle' family
+    origin: multimaze2 5/2026 - the Text class wraps freetype + ge::resolveFont and is general-purpose; promote so every consumer stops reimplementing text rasterization
+    discovered: 2026-05-09
+  T49:
+    name: ge ships a canonical sprite/quad rendering pipeline
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - ge exposes a public sprite vertex layout (position float2, texcoord float2, color float4 or similar) so consumers can build their own batches against a known format if they want
+    - ge bundles a default textured-quad shader pair (sprite_vs.bin / sprite_fs.bin) compiled for every supported bgfx backend (Metal, Vulkan, GLES, GL). Consumers can use it directly or substitute their own that conforms to the same vertex layout
+    - ge::SpriteBatch (or similar) accumulates textured quads and submits them to bgfx in one transient-buffer draw call per (texture, view) pair. Premultiplied-alpha blend state by default; configurable for special cases
+    - 'Convenience: SpriteBatch::addSprite(centre, size, texture, uv, color), addQuad(rect, texture, uv, color), and similar helpers cover 95% of 2D drawing'
+    - ge::Rect (the existing pixel rectangle type) is reused for UV rectangles too. The standalone UVRect type in multimaze2 collapses into ge::Rect; semantics by context. Documented at the API where it matters (the sprite/quad helpers say which rect arg is in pixels and which is normalized UV)
+    - Multimaze2's MeshBuilder/SpriteVertex in Application.cpp and the near-duplicate in TopBar.cpp both go away in favour of ge's pipeline. Same for any equivalents in esfera2 / yourworld2 / tiltbuggy as those are touched
+    - Documentation in ge/CLAUDE.md covers the sprite layer alongside the existing rendering surface description
+    origin: multimaze2 5/2026 - every ge consumer reimplements a sprite renderer (vertex format, mesh builder, blend state, sprite shader). Promote so they all share one
+    discovered: 2026-05-09
   T5:
     name: Player has a connection management screen
     status: identified
