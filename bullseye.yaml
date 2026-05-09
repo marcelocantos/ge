@@ -1188,7 +1188,7 @@ targets:
     achieved: 2026-05-09
   T42.2:
     name: ge::rasterizeSvg public API exists and renders correctly on macOS
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -1201,6 +1201,7 @@ targets:
     - T42.1
     origin: decomposed from T42 on 2026-05-09
     discovered: 2026-05-09
+    achieved: 2026-05-09
   T42.3:
     name: lunasvg builds into libge across all supported ge platforms
     status: identified
