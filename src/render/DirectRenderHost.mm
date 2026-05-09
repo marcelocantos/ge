@@ -4,6 +4,7 @@
 #include "DirectRenderHost.h"
 #include "AccelSynth.h"
 
+#include "../Attitude.h"
 #include "../CutoutInsets.h"
 
 #include <ge/FileIO.h>
@@ -154,6 +155,15 @@ struct DirectRenderHost::Impl {
     std::optional<AccelSynth> synth;
     SDL_Sensor* accelSensor = nullptr;
 
+    // Parallax pipeline (SessionHostConfig.parallaxFactor > 0).
+    // attitude provider polled per frame; baseline is the EMA-tracked
+    // neutral, delta is computed inverse(baseline) * current and
+    // projected to screen-XY radians, scaled by parallaxFactor.
+    float parallaxFactor = 0.0f;
+    std::unique_ptr<AttitudeProvider> attitude;
+    bool   baselineSet = false;
+    la::float4 baseline{0, 0, 0, 1};
+
     // Offscreen pipeline — lazily created on first non-zero tilt.
     bool offscreenReady = false;
     int  offscreenW = 0, offscreenH = 0;
@@ -259,6 +269,19 @@ DirectRenderHost::DirectRenderHost(const SessionHostConfig& config)
     }
 
     SPDLOG_INFO("DirectRenderHost: {}x{}", i_->width, i_->height);
+
+    // Parallax pipeline — opt-in via SessionHostConfig.parallaxFactor.
+    // The same float controls opt-in and sensitivity (decided 2026-04-13):
+    // > 0 starts the platform sensor, scales the screen-XY delta the
+    // engine exposes via Context::parallax().
+    i_->parallaxFactor = config.parallaxFactor;
+    if (i_->parallaxFactor > 0.0f) {
+        i_->attitude = makeAttitudeProvider();
+        if (!i_->attitude) {
+            SPDLOG_INFO("DirectRenderHost: parallax requested but no platform "
+                        "attitude provider — Context::parallax() stays {0,0}");
+        }
+    }
 
     // Build the session Context. Direct mode uses a persistent on-disk
     // db rooted at SDL_GetPrefPath(orgName, appName); fall back to an
@@ -506,7 +529,46 @@ void DirectRenderHost::beginFrame() {
         const float ppt = win ? SDL_GetWindowDisplayScale(win) : 1.0f;
         i_->ctx->setPixelsPerPt(ppt > 0.0f ? ppt : 1.0f);
         i_->ctx->setDeviceUiScale(computeDeviceUiScale(deviceClass(), i_->width, i_->height, ppt));
+        i_->ctx->setParallax(updateParallax());
     }
+}
+
+la::float2 DirectRenderHost::updateParallax() {
+    using la::float4;
+    if (i_->parallaxFactor <= 0.0f || !i_->attitude || !i_->attitude->valid()) {
+        return {0, 0};
+    }
+    // Quaternion EMA: with α small the result stays close to a unit
+    // quaternion, so plain componentwise lerp is fine — no slerp, no
+    // renormalisation needed (drift is self-correcting under
+    // repeated blends toward unit-length samples).
+    constexpr float kBaselineTau = 1.0f;  // seconds
+    constexpr float kAssumedDt   = 1.0f / 60.0f;
+    const float a = 1.0f - std::exp(-kAssumedDt / kBaselineTau);
+
+    const float4 cur = i_->attitude->quaternion();
+    if (!i_->baselineSet) {
+        i_->baseline = cur;
+        i_->baselineSet = true;
+        return {0, 0};
+    }
+    i_->baseline = linalg::lerp(i_->baseline, cur, a);
+
+    // delta = inverse(baseline) * current. Quaternion inverse for a
+    // unit quaternion is the conjugate.
+    const float4 b = i_->baseline;
+    const float4 binv{-b.x, -b.y, -b.z, b.w};
+    // Hamilton product binv * cur.
+    const float4 d{
+        binv.w * cur.x + binv.x * cur.w + binv.y * cur.z - binv.z * cur.y,
+        binv.w * cur.y - binv.x * cur.z + binv.y * cur.w + binv.z * cur.x,
+        binv.w * cur.z + binv.x * cur.y - binv.y * cur.x + binv.z * cur.w,
+        binv.w * cur.w - binv.x * cur.x - binv.y * cur.y - binv.z * cur.z,
+    };
+    // Small-angle approximation: rotation around the screen-X axis is
+    // 2 * d.x radians, around screen-Y is 2 * d.y. Sign matches "tilt
+    // toward +axis = positive value".
+    return la::float2{2.0f * d.x, 2.0f * d.y} * i_->parallaxFactor;
 }
 
 void DirectRenderHost::endFrame(uint32_t /*bgfxFrameNumber*/) {

@@ -40,6 +40,7 @@ public:
 
 private:
     void submitCompose(float tx, float ty);
+    la::float2 updateParallax();
 
     struct Impl;
     std::unique_ptr<Impl> i_;
