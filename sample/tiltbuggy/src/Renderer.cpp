@@ -79,6 +79,26 @@ constexpr std::string_view kIcyPondSvg = R"SVG(<svg xmlns="http://www.w3.org/200
         fill="none" stroke="#4A7A9C" stroke-width="2.5" stroke-opacity="0.65"/>
 </svg>)SVG";
 
+// Game title rendered as SVG <text>. Exercises the lazy default-font path
+// added in T42.4 — no app-side font setup, sans-serif comes from
+// ge::resolveFont("system:sans-serif") on first rasterize. Bold on macOS
+// is faux-bold (Apple ships Helvetica as a TTC; lunasvg's wrapper drops
+// the face index — see ge/CLAUDE.md "Apple TTC limitation").
+constexpr std::string_view kTitleSvg = R"SVG(<svg xmlns="http://www.w3.org/2000/svg" width="768" height="128" viewBox="0 0 768 128">
+  <defs>
+    <linearGradient id="titleFill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%"   stop-color="#FFFFFF"/>
+      <stop offset="55%"  stop-color="#D8EEFF"/>
+      <stop offset="100%" stop-color="#A5C8E5"/>
+    </linearGradient>
+  </defs>
+  <text x="384" y="92"
+        font-family="sans-serif" font-weight="bold" font-size="86"
+        text-anchor="middle"
+        fill="url(#titleFill)" stroke="#1B3A5A" stroke-width="3"
+        paint-order="stroke">TILT BUGGY</text>
+</svg>)SVG";
+
 } // namespace
 
 namespace tiltbuggy {
@@ -161,12 +181,14 @@ struct Renderer::Impl {
     bgfx::VertexLayout  layout;
     bgfx::ProgramHandle program = BGFX_INVALID_HANDLE;
     ge::SvgSprite       pond;
+    ge::SvgSprite       title;
 };
 
 Renderer::Renderer() : i_(std::make_unique<Impl>()) {}
 Renderer::~Renderer() {
-    if (bgfx::isValid(i_->program)) bgfx::destroy(i_->program);
+    if (bgfx::isValid(i_->program))  bgfx::destroy(i_->program);
     if (bgfx::isValid(i_->pond.tex)) bgfx::destroy(i_->pond.tex);
+    if (bgfx::isValid(i_->title.tex)) bgfx::destroy(i_->title.tex);
 }
 
 void Renderer::init(const char* shaderDir) {
@@ -179,6 +201,10 @@ void Renderer::init(const char* shaderDir) {
     // Rasterize the icy-pond SVG to a bgfx texture sized at 384×256 pixels
     // (matching the SVG viewBox and the ice patch's 1.5:1 world aspect).
     i_->pond = ge::rasterizeSvgSprite(kIcyPondSvg, 384, 256);
+
+    // Rasterize the "TILT BUGGY" title SVG. 768x128 = 6:1 aspect; we'll
+    // place it in a similarly proportioned world rect above the pond.
+    i_->title = ge::rasterizeSvgSprite(kTitleSvg, 768, 128);
 }
 
 void Renderer::drawFrame(const Scene& scene, const ge::Context& c,
@@ -288,6 +314,18 @@ void Renderer::drawFrame(const Scene& scene, const ge::Context& c,
                            surf.l - pw, surf.t + ph,
                            surf.r + pw, surf.b - ph);
         }
+    }
+
+    // Title — sits above the pond, between iceT (0.375) and the top of the
+    // playfield (halfExtent ~ 0.625). 6:1 aspect to match the SVG viewBox.
+    if (!i_->title.isNull()) {
+        const float he = scene.halfExtent();
+        const float titleTop    = he - 0.04f * he;     // small margin from the top wall
+        const float titleHeight = 0.18f * he;
+        const float titleWidth  = titleHeight * 6.0f;  // 6:1 aspect
+        ge::drawSprite(0, i_->title,
+                       -titleWidth * 0.5f, titleTop,
+                       +titleWidth * 0.5f, titleTop - titleHeight);
     }
 }
 
