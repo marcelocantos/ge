@@ -545,6 +545,41 @@ $(ge/IMGDIFF): $(ge)/tools/imgdiff.cpp
 	@mkdir -p $(@D)
 	$(CXX) -std=c++20 -O2 -I$(ge)/include -I$(ge)/vendor/include $< -o $@
 
+# icon-gen — build-time app-icon expander (🎯T50). Takes a single source SVG
+# and writes both platforms' icon resource layouts via ge::rasterizeSvgToPixels.
+# Same link line as the player ($(ge/PLAYER) above) since SvgRasterizer.cpp
+# pulls in bgfx symbols even when only the CPU path is called.
+ge/ICON_GEN = bin/ge-icon-gen
+
+.PHONY: ge/icon-gen
+ge/icon-gen: $(ge/ICON_GEN)
+
+$(ge/ICON_GEN): $(ge)/tools/icon-gen.cpp $(ge/LIB) $(ge/BGFX_LIBS)
+	@mkdir -p $(@D)
+	$(CXX) -std=c++20 -O2 $(ge/INCLUDES) $(ge/BGFX_ALL_INCLUDES) $< $(ge/LIB) $(ge/BGFX_LIBS) $(ge/SDL_LIBS) $(FRAMEWORKS) -o $@
+
+# app-icons — convention-driven invocation of icon-gen. Reads icons/icon.svg
+# from the consuming project's root and writes into the existing ios/ and
+# android/ directories (assumes ge/ios-init / ge/android-init have run).
+#
+# Override knobs: ge/APP_ICON_SVG, ge/APP_ICON_BG_COLOR, ge/APP_ICON_IOS_OUT,
+# ge/APP_ICON_ANDROID_RES_OUT.
+ge/APP_ICON_SVG            ?= icons/icon.svg
+# Hex fill colour for the Android adaptive-icon background. NO '#' here —
+# Make treats '#' as the start of a comment and would set this to empty.
+# icon-gen prepends '#' itself.
+ge/APP_ICON_BG_COLOR       ?= FFFFFF
+ge/APP_ICON_IOS_OUT        ?= ios/Assets.xcassets/AppIcon.appiconset
+ge/APP_ICON_ANDROID_RES_OUT?= android/app/src/main/res
+
+.PHONY: ge/app-icons
+ge/app-icons: $(ge/ICON_GEN) $(ge/APP_ICON_SVG)
+	$(ge/ICON_GEN) \
+	    --svg "$(ge/APP_ICON_SVG)" \
+	    --ios-out "$(ge/APP_ICON_IOS_OUT)" \
+	    --android-res-out "$(ge/APP_ICON_ANDROID_RES_OUT)" \
+	    --bg-color "$(ge/APP_ICON_BG_COLOR)"
+
 # ────────────────────────────────────────────────
 # Unit tests (doctest)
 #

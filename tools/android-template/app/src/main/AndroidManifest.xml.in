@@ -7,6 +7,13 @@
         android:name="android.hardware.touchscreen"
         android:required="false" />
 
+    <!-- After running `make ge/app-icons` (🎯T50), add launcher-icon
+         references here:
+             android:icon="@mipmap/ic_launcher"
+             android:roundIcon="@mipmap/ic_launcher_round"
+         The template doesn't reference them by default — Android requires
+         the resources to exist before the build, and ge/app-icons is the
+         step that creates them. -->
     <application
         android:label="@string/app_name"
         android:allowBackup="true"
