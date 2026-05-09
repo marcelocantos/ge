@@ -1115,7 +1115,7 @@ targets:
     achieved: 2026-04-26
   T40:
     name: ge::Rect provides standard math operations for layout, hit-testing, and culling
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -1139,6 +1139,7 @@ targets:
     - ergonomics
     origin: manual
     discovered: 2026-05-09
+    achieved: 2026-05-09
   T5:
     name: Player has a connection management screen
     status: identified
@@ -1194,6 +1195,10 @@ targets:
     context: |-
       Reproduce the Apple Spatial Scenes effect: games can tilt their scene in response to device tilt. The player reads Core Motion attitude (quaternion), maintains a baseline via exponential moving average (lerp with α = 1 - exp(-dt/τ), no normalisation needed — tiny steps keep magnitude near unit), and sends the delta between current and baseline to the server.
 
-      Games opt in via RunConfig.parallaxFactor (float, 0 = off, >0 scales the effect). Context exposes the current parallax via ctx.parallax(). The game decides which parts of the scene to adjust — typically camera or world layers, not UI. Gyroscope-derived attitude is used (not gravity alone) so twisting around the vertical axis also works.
+      Games opt in via RunConfig.parallaxFactor (float, 0 = off, >0 scales the effect). Context exposes the current parallax via ctx.parallax(). The game decides which parts of the scene to adjust — typically camera or world layers, not UI.
+
+      **Why parallaxFactor is a float (decided 2026-04-13)**: one number controls both opt-in and sensitivity. The player sees `parallaxFactor > 0` and starts the Core Motion pipeline; the engine scales the delta by that factor before Context::parallax() returns it. Collapses what would otherwise be three things (bool to enable + float for sensitivity + opt-in signal to the player) into one. A bool would force games to multiply themselves and force a separate enable flag; an enum would be too coarse for art-direction tuning.
+
+      **Why CMDeviceMotion.attitude, not raw accelerometer or raw gyroscope (decided 2026-04-13)**: gravity alone misses rotation around the vertical axis (twisting an upright phone left/right barely changes the gravity vector but is a real orientation change a game might want to surface). Raw gyroscope rotation rate would require manual integration and accumulates drift. Core Motion sensor-fuses gyro + accel and exposes absolute orientation as a quaternion — drift-free, captures vertical-axis twist correctly, no integration to hand-roll. The baseline is then an EMA of that attitude quaternion; delta = inverse(baseline) * current.
     origin: user request
     discovered: 2026-04-15
