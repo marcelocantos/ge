@@ -26,10 +26,12 @@ APP_NAME="$2"
 
 # Derive names from app name (strip spaces for class/project names).
 STRIPPED="$(echo "$APP_NAME" | tr -d ' ')"
-ACTIVITY="${STRIPPED}Activity"
 CMAKE_PROJECT="$STRIPPED"
-# Java source directory: package dots → slashes.
-JAVA_DIR="$(echo "$PACKAGE" | tr '.' '/')"
+# As of 🎯T41 (v0.10.0+), the Activity is canonical-engine-owned —
+# AndroidManifest.xml hardcodes android:name="ge.GeActivity" and
+# Gradle source-includes it from $GE_ROOT/android-shared. Apps no
+# longer scaffold a per-app Activity.java. Apps that need custom
+# behaviour subclass ge.GeActivity in their own java tree.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TEMPLATE_DIR="$SCRIPT_DIR/android-template"
@@ -49,7 +51,7 @@ fi
 echo "Generating Android project:"
 echo "  Package:  $PACKAGE"
 echo "  App name: $APP_NAME"
-echo "  Activity: $PACKAGE.$ACTIVITY"
+echo "  Activity: ge.GeActivity (canonical, source-included from \$GE/android-shared)"
 echo "  Output:   $OUT_DIR"
 echo "  ge:       $GE_REL (from android/)"
 echo
@@ -69,7 +71,6 @@ cp "$TEMPLATE_DIR/.gitignore"         "$OUT_DIR/" 2>/dev/null || true
 subst() {
     sed -e "s|__PACKAGE__|$PACKAGE|g" \
         -e "s|__APP_NAME__|$APP_NAME|g" \
-        -e "s|__ACTIVITY__|$ACTIVITY|g" \
         -e "s|__CMAKE_PROJECT__|$CMAKE_PROJECT|g" \
         -e "s|__GE_REL__|$GE_REL|g" \
         "$1"
@@ -87,8 +88,9 @@ subst "$TEMPLATE_DIR/app/src/main/AndroidManifest.xml.in" > "$OUT_DIR/app/src/ma
 mkdir -p "$OUT_DIR/app/src/main/res/values"
 subst "$TEMPLATE_DIR/app/src/main/res/values/strings.xml.in" > "$OUT_DIR/app/src/main/res/values/strings.xml"
 
-mkdir -p "$OUT_DIR/app/src/main/java/$JAVA_DIR"
-subst "$TEMPLATE_DIR/app/src/main/java/Activity.java.in" > "$OUT_DIR/app/src/main/java/$JAVA_DIR/$ACTIVITY.java"
+# No per-app Activity.java is scaffolded — AndroidManifest.xml binds
+# directly to ge.GeActivity, which Gradle source-includes from
+# $GE_ROOT/android-shared/src/main/java (see app/build.gradle).
 
 # Auto-detect Android SDK.
 if [ -d "$HOME/Library/Android/sdk" ]; then

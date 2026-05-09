@@ -164,14 +164,33 @@ Once all three have shipped, the bullseye target tracking the migration moves fr
 
 ### Migration plan (sketch, not committed)
 
-To be elaborated when the migration target unblocks. The 🎯T53 (Dawn → bgfx) migration cost ~2–4 focused weeks across ge + consumers; sokol's smaller surface and closer architectural fit suggest a similar or slightly lower estimate, but this needs a real scoping pass before starting.
+To be elaborated when the migration target unblocks. The 🎯T53 (Dawn → bgfx) migration cost ~2–4 focused weeks across ge + consumers; sokol's smaller surface and closer architectural fit suggest a similar estimate, with the caveats below pushing the upper bound.
 
 Affected repos: `ge`, `yourworld2`, `multimaze2`, `esfera2`, `ge-t30.1`, plus any sample/test programs.
+
+#### Known scope items (cost going in, not discovered later)
+
+1. **Wrap sokol's streaming primitives in a transient-buffer-shaped helper at ge's abstraction layer.**
+   bgfx's `allocTransientVertexBuffer` / `allocTransientIndexBuffer` is the per-frame dynamic-geometry pattern ge uses extensively. sokol's equivalent is `SG_USAGE_STREAM` buffers updated via `sg_update_buffer` / `sg_append_buffer`, with restrictions (one `sg_update_buffer` per frame; fixed staging-buffer size, default ~16 MB, configurable at init). The mapping is close but not identical. Audit every transient-buffer call site in ge and consumers, design a thin wrapper at ge's abstraction layer that preserves the transient-buffer mental model, and tune the staging buffer size for the heaviest frame (likely yourworld2's atlas region streaming or any level-transition particle bursts).
+2. **Multi-threading regression risk.**
+   bgfx has a deferred command-recording model with a separate render thread. sokol is essentially single-threaded — rendering happens on whichever thread the caller is on. Current ge workloads do not appear CPU-submission-bound, but this is a one-way door: if a future title hits CPU-submission limits on sokol, the answer is "rewrite around it" not "flip a flag." **Mitigation:** profile the heaviest scenes (yourworld2 globe + carousel; multimaze2 win-animation; any other scene with high draw-call counts) under sokol on a low-end Android device *early* in the migration, not at the end. Bail out / re-evaluate if submission cost dominates a frame.
+3. **Compute is on the table now.**
+   sokol's compute support has matured (dispatch, storage buffers, storage images, available across all shipping backends). Earlier framing of "compute is bgfx-only" no longer holds. ge doesn't lean on compute today, so this isn't a migration cost — but it's worth recording that the option exists post-migration for things like GPU-driven particles or culling.
+4. **Debugging tooling parity.**
+   bgfx ships RenderDoc-aware annotations (named views, stat counters). sokol has a basic validation layer and resource labels, no first-class RenderDoc integration. RenderDoc captures Metal/Vulkan/D3D directly regardless of which library sits on top, so this is mostly a loss of named-view annotations in capture views — a minor inconvenience, not a blocker. Add string labels to sokol resources (`sg_*_desc.label`) liberally during the migration to compensate.
+
+#### Open questions to resolve during scoping
+
+- Does ge currently rely on bgfx's multithreaded renderer, or is it effectively single-threaded already? (If the latter, the multi-threading concern above is theoretical.)
+- What is the peak transient-buffer footprint in a single frame across all titles? (Drives the staging buffer sizing.)
+- Are there any bgfx features in active use that I haven't inventoried — occlusion queries, indirect draws, MRT configurations, MSAA settings — that need explicit mapping?
 
 ## Sources
 
 - 🎯T52 — H.264 streaming dev mode (replaced Dawn wire)
 - 🎯T53 — Migrate from Dawn/WebGPU to bgfx
 - 🎯T24 — Fix Adreno 830 crash in bgfx transient buffer update (resolved by GLES switch)
+- 🎯T38 — ge engine has migrated from bgfx to sokol_gfx (deferred until releases ship)
 - [`papers/adreno-830-bgfx-vulkan-crash.md`](papers/adreno-830-bgfx-vulkan-crash.md)
 - Broader discussion: `~/think` session 2026-04-20 covering declarative rendering APIs and OSS rendering library landscape
+- Sokol vs bgfx scope-items added 2026-05-09 after Grok comparison surfaced multi-threading and transient-buffer mapping as concrete migration cost items

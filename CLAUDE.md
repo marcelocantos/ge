@@ -179,6 +179,27 @@ Module.mk defines these targets so the parent doesn't need to:
 | `ge/ios` | Generate the iOS Xcode project (TODO: needs bgfx port) |
 | `ge/android` | Build the Android debug APK (TODO: needs bgfx port) |
 
+### Android Activity (🎯T41)
+
+ge ships a canonical Android Activity (`ge.GeActivity`) at `android-shared/src/main/java/ge/GeActivity.java`. Consumer apps reference it directly from their AndroidManifest.xml (`android:name="ge.GeActivity"`); no per-app Activity subclass is needed. Gradle source-includes the file from the engine submodule:
+
+```gradle
+sourceSets {
+    main {
+        java.srcDirs = [
+            "${rootDir}/<ge-rel-path>/android-shared/src/main/java",
+            "${rootDir}/<ge-rel-path>/vendor/github.com/libsdl-org/SDL/android-project/app/src/main/java"
+        ]
+    }
+}
+```
+
+`tools/init-android.sh` (`make ge/android-init`) writes the manifest and gradle config above and **does not** scaffold an `app/src/main/java/.../Activity.java` — the per-app Activity tree is gone.
+
+`GeActivity` contains all the SDLActivity boilerplate the engine relies on: `getLibraries()` (returns `{"SDL3", "main"}`), display-cutout listener + `getDisplayCutoutInsets()`, sensor-fused attitude listener + `getAttitude()`, and `applyImmersive()`. Adding new engine-side hooks (more JNI helpers, new lifecycle behaviour) only requires bumping the engine submodule pointer in the consumer; consumer apps inherit the change without editing Java.
+
+**Apps that need custom Activity behaviour** can subclass `ge.GeActivity` in their own `app/src/main/java/<package>/` tree, add `'src/main/java'` back to `java.srcDirs`, and point the manifest at the subclass. Zero-customisation is the supported default — reach for a subclass only when the engine surface genuinely doesn't suffice.
+
 ### Developer Setup
 
 `ge/init` installs common prerequisites (Homebrew packages, Git LFS, VS Code settings, compiledb). The parent's `init` target should depend on it and expand the `ge/INIT_DONE` canned recipe at the end:
