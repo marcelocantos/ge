@@ -1248,6 +1248,23 @@ targets:
     - T42.4
     origin: decomposed from T42 on 2026-05-09
     discovered: 2026-05-09
+  T42.6:
+    name: ge ships an SvgSprite + textured-quad draw primitive so consumers don't reinvent the shader pair
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - 'include/ge/SvgSprite.h declares: SvgSprite struct (tex + width + height); ge::rasterizeSvgSprite(svg, w, h) factory; ge::drawTexturedQuad(view, tex, halfW, halfH) primitive; ge::drawSprite(view, sprite) and ge::drawSprite(view, sprite, l, t, r, b) overloads'
+    - Implementation reuses the existing ge_compose_{vs,fs}.bin engine shaders — no app-side shader files; lazy-creates the bgfx program + sampler uniform on first call so consumers don't need an init step
+    - Geometry pushed in the primitive form is centred on origin, spans (-halfW, -halfH) .. (halfW, halfH) in model space, with UVs that map y-up world space to top-down SVG pixel space (y=+halfH is SVG top)
+    - Premultiplied-alpha blend state (BLEND_FUNC(BLEND_ONE, BLEND_INV_SRC_ALPHA)) is set automatically
+    - tiltbuggy's icy pond uses ge::rasterizeSvgSprite + ge::drawSprite(view, sprite, l, t, r, b) instead of any app-side shader plumbing — no APP_SHADERS additions, no app-level vertex layout, just one factory call + one draw
+    context: 'Discovered during T42.2 dogfooding in tiltbuggy: every consumer of ge::rasterizeSvg would otherwise need to add their own textured-quad shader pair, vertex layout, sampler uniform, and alpha-blend state. The engine already has the exact shader pair (used by DirectRenderHost''s compose pass) — just need an API that lazy-binds it. Convention nailed down: 1 model-space unit = 1 source pixel; the sprite''s pixel dims travel with the texture handle so callers don''t carry aspect math in setTransform.'
+    depends_on:
+    - T42.2
+    origin: decomposed from T42 on 2026-05-09 during dogfooding
+    discovered: 2026-05-09
+    achieved: 2026-05-09
   T43:
     name: ge handles audio focus changes (incoming calls, alarms, other media) cross-platform
     status: identified
