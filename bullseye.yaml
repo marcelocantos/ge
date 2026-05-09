@@ -1113,6 +1113,32 @@ targets:
     origin: migrated from docs/targets.md
     discovered: 2026-04-12
     achieved: 2026-04-26
+  T40:
+    name: ge::Rect provides standard math operations for layout, hit-testing, and culling
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - ge::Rect exposes size() and center() returning ge::la::float2
+    - ge::Rect::empty() returns true when w<=0 or h<=0
+    - ge::Rect::contains(la::float2) tests point-in-rect with half-open semantics ([x,x+w) x [y,y+h))
+    - ge::Rect::contains(const Rect&) tests rect-fully-inside
+    - ge::Rect::intersects(const Rect&) tests overlap (boundary-touching does not count as overlap)
+    - ge::Rect::intersection(const Rect&) returns the overlap rect or an empty rect when there is no overlap
+    - ge::Rect::unioned(const Rect&) returns the bounding rect; if either input is empty the other is returned
+    - ge::Rect::inset(float dx, float dy) shrinks the rect by dx on left+right and dy on top+bottom (negative values expand)
+    - ge::Rect::inset(const SafeAreaInsets&) shrinks by per-edge insets
+    - ge::Rect::translated(la::float2) returns a translated copy
+    - operator==/!= on Rect compares all four fields
+    - tiltbuggy or unit tests exercise at least the contains/intersects/inset paths
+    context: Filed 2026-05-09. v0.6.0 added Rect with corner accessors and v0.7.0 added Context sizing scalars (pixelsPerPt, deviceUiScale), but ge::Rect itself is still just a x/y/w/h POD with no math. Consumers (multimaze2, tiltbuggy) re-roll point-in-rect tests, hit-test math, intersection-for-culling, and inset-for-padding inline at every call site, which is busywork and a forking risk (each consumer's intersection can drift in semantics — half-open vs closed, empty-rect handling, etc.). Standardising the operations on Rect itself fixes this once. Half-open semantics for contains/intersects matches the rest of the engine's SDL/bgfx pixel coordinate system. inset(SafeAreaInsets) bridges Context's safe-area accessors with arbitrary rects (the engine-internal rectFromInsets helper in Context.cpp can be expressed as Rect at full surface dims, then inset(insets)).
+    tags:
+    - api
+    - rect
+    - math
+    - ergonomics
+    origin: manual
+    discovered: 2026-05-09
   T5:
     name: Player has a connection management screen
     status: identified

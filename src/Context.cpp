@@ -3,7 +3,29 @@
 
 #include <ge/SessionHost.h>
 
+#include <algorithm>
+
 namespace ge {
+
+Rect Rect::intersection(const Rect& other) const {
+    if (empty() || other.empty()) return {};
+    const float l = std::max(x, other.x);
+    const float t = std::max(y, other.y);
+    const float r = std::min(x + w, other.x + other.w);
+    const float b = std::min(y + h, other.y + other.h);
+    if (r <= l || b <= t) return {};
+    return Rect{l, t, r - l, b - t};
+}
+
+Rect Rect::unioned(const Rect& other) const {
+    if (empty()) return other;
+    if (other.empty()) return *this;
+    const float l = std::min(x, other.x);
+    const float t = std::min(y, other.y);
+    const float r = std::max(x + w, other.x + other.w);
+    const float b = std::max(y + h, other.y + other.h);
+    return Rect{l, t, r - l, b - t};
+}
 
 struct Context::M {
     int surfaceWidth;
@@ -16,13 +38,6 @@ struct Context::M {
     std::shared_ptr<sqlpipe::Database> db;
 };
 
-namespace {
-Rect rectFromInsets(int sw, int sh, const SafeAreaInsets& sa) {
-    return Rect{float(sa.left), float(sa.top),
-                float(sw - sa.left - sa.right), float(sh - sa.top - sa.bottom)};
-}
-}
-
 Context::Context(int surfaceWidth, int surfaceHeight, DeviceClass deviceClass,
                  const std::string& dbPath,
                  const std::string& schemaDdl)
@@ -33,13 +48,9 @@ Context::Context(int surfaceWidth, int surfaceHeight, DeviceClass deviceClass,
         .db = std::make_shared<sqlpipe::Database>(dbPath, schemaDdl),
     })) {}
 
-Rect Context::drawSafeRect() const {
-    return rectFromInsets(m->surfaceWidth, m->surfaceHeight, m->drawInsets);
-}
-Rect Context::uiSafeRect() const {
-    return rectFromInsets(m->surfaceWidth, m->surfaceHeight, m->uiInsets);
-}
-Rect Context::fullRect() const {
+Rect Context::drawSafeRect() const { return fullRect().inset(m->drawInsets); }
+Rect Context::uiSafeRect()   const { return fullRect().inset(m->uiInsets);   }
+Rect Context::fullRect()     const {
     return Rect{0, 0, float(m->surfaceWidth), float(m->surfaceHeight)};
 }
 
