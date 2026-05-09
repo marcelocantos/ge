@@ -178,6 +178,39 @@ Module.mk defines these targets so the parent doesn't need to:
 | `ged` | Build the ged daemon (`bin/ged`), compiling the dashboard first |
 | `ge/ios` | Generate the iOS Xcode project (TODO: needs bgfx port) |
 | `ge/android` | Build the Android debug APK (TODO: needs bgfx port) |
+| `ge/app-icons` | Expand `icons/icon.svg` into iOS + Android icon resources (🎯T50) |
+
+### App icons (🎯T50)
+
+ge ships a build-time tool, `bin/ge-icon-gen`, that takes one source SVG and writes both platforms' app-icon resource layouts. SVG → PNG rasterization runs through `ge::rasterizeSvgToPixels` (T42) so the output is sharp at every size — no resampling artefacts.
+
+**Why SVG → PNG and not native vector?** iOS accepts vector via PDF (Xcode 11+) and Android via VectorDrawable XML (API 26+). Neither accepts plain SVG, both conversions are lossy for the SVG features designers actually use (gradients, masks, filters, text). Rasterizing once at each platform-required pixel grid is predictable, lossless from the SVG, and saves ~10–50 KB per app — trivial for a game binary.
+
+**Consumer workflow:**
+
+1. Author `icons/icon.svg` in your project root. Square aspect, full-bleed (no transparent margins — iOS expects opaque content; Android launcher applies its own mask).
+2. Run `make ge/app-icons`. Outputs land in `ios/Assets.xcassets/AppIcon.appiconset/` and `android/app/src/main/res/{mipmap-*,drawable,mipmap-anydpi-v26}/`.
+3. **iOS**: the template's `Info.plist.in` already has `CFBundleIconName=AppIcon` and the `CMakeLists.txt.in` bundles `Assets.xcassets` when present. Re-run `make ge/ios-init` if your `ios/` is older than the template change.
+4. **Android**: add `android:icon="@mipmap/ic_launcher"` and `android:roundIcon="@mipmap/ic_launcher_round"` to your `AndroidManifest.xml`'s `<application>` element. The template doesn't ship the reference by default because Android requires the resources to exist before the build, and `make ge/app-icons` is the step that creates them.
+
+**What gets generated:**
+
+- iOS: `Assets.xcassets/AppIcon.appiconset/icon.png` (1024×1024) + `Contents.json`. Single-source mode (Xcode 15+) — Xcode generates the smaller per-size icons automatically at build time.
+- Android legacy: `mipmap-{m,h,xh,xxh,xxxh}dpi/ic_launcher.png` and matching `_round.png` at 48 / 72 / 96 / 144 / 192 px.
+- Android adaptive: `drawable/ic_launcher_foreground.png` (432×432, full-bleed master SVG) + `drawable/ic_launcher_background.xml` (solid colour from `ge/APP_ICON_BG_COLOR`, default white) + `mipmap-anydpi-v26/ic_launcher.xml` and `_round.xml` adaptive manifests.
+
+**Override knobs in `Module.mk`:**
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `ge/APP_ICON_SVG` | `icons/icon.svg` | Source SVG path |
+| `ge/APP_ICON_IOS_OUT` | `ios/Assets.xcassets/AppIcon.appiconset` | iOS output dir |
+| `ge/APP_ICON_ANDROID_RES_OUT` | `android/app/src/main/res` | Android `res/` dir |
+| `ge/APP_ICON_BG_COLOR` | `FFFFFF` | Adaptive-icon background hex (no leading `#` — Make eats it as a comment; the tool prepends `#` itself) |
+
+**Constraints:** SVG-only input. PNG / JPEG sources are rejected with a clear error pointing at SVG. Multi-size resampling of raster sources is not supported — author the icon as SVG.
+
+**Limitations not covered yet:** explicit `icons/icon-foreground.svg` + `icons/icon-background.svg` for split adaptive-icon control on Android (today: full-bleed master goes into the foreground, background is a solid colour). iOS 18 light/dark/tinted variants. iOS animated app icons. All deferable to future targets when a real consumer needs them.
 
 ### Android Activity (🎯T41)
 

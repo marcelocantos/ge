@@ -15,6 +15,11 @@
     <string>1.0</string>
     <key>CFBundleExecutable</key>
     <string>$(EXECUTABLE_NAME)</string>
+    <!-- App-icon set produced by `make ge/app-icons`. The xcassets is
+         bundled by tools/ios-template/CMakeLists.txt.in; consumers
+         author icons/icon.svg in their project root. -->
+    <key>CFBundleIconName</key>
+    <string>AppIcon</string>
     <key>UILaunchScreen</key>
     <dict/>
     <!-- This list and the prefersInterfaceOrientationLocked swizzle in
