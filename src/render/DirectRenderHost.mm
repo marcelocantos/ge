@@ -277,7 +277,13 @@ DirectRenderHost::DirectRenderHost(const SessionHostConfig& config)
     i_->ctx->setUiSafeInsets(uiSafeInsets());
     {
         SDL_Window* win = i_->bgfxCtx->window();
-        const float ppt = win ? SDL_GetWindowPixelDensity(win) : 1.0f;
+        // SDL_GetWindowDisplayScale = pixelDensity × displayContentScale.
+        // On iOS the second factor is always 1.0, so this matches
+        // SDL_GetWindowPixelDensity (== UIKit nativeScale). On Android
+        // the pixel density is always 1.0 (SDL exposes the surface in
+        // raw pixels) and the density bucket lives in the content scale,
+        // so this is what folds Android density into pixelsPerPt.
+        const float ppt = win ? SDL_GetWindowDisplayScale(win) : 1.0f;
         i_->ctx->setPixelsPerPt(ppt > 0.0f ? ppt : 1.0f);
         i_->ctx->setDeviceUiScale(computeDeviceUiScale(deviceClass(), i_->width, i_->height, ppt));
     }
@@ -491,7 +497,13 @@ void DirectRenderHost::beginFrame() {
         i_->ctx->setDrawSafeInsets(drawSafeInsets());
         i_->ctx->setUiSafeInsets(uiSafeInsets());
         SDL_Window* win = i_->bgfxCtx->window();
-        const float ppt = win ? SDL_GetWindowPixelDensity(win) : 1.0f;
+        // SDL_GetWindowDisplayScale = pixelDensity × displayContentScale.
+        // On iOS the second factor is always 1.0, so this matches
+        // SDL_GetWindowPixelDensity (== UIKit nativeScale). On Android
+        // the pixel density is always 1.0 (SDL exposes the surface in
+        // raw pixels) and the density bucket lives in the content scale,
+        // so this is what folds Android density into pixelsPerPt.
+        const float ppt = win ? SDL_GetWindowDisplayScale(win) : 1.0f;
         i_->ctx->setPixelsPerPt(ppt > 0.0f ? ppt : 1.0f);
         i_->ctx->setDeviceUiScale(computeDeviceUiScale(deviceClass(), i_->width, i_->height, ppt));
     }
