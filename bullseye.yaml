@@ -1142,7 +1142,7 @@ targets:
     achieved: 2026-05-09
   T41:
     name: ge ships a one-size-fits-all Android Activity that consumers reference directly
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -1154,6 +1154,225 @@ targets:
     - Existing consumers (multimaze2, esfera2, yourworld2, tiltbuggy) drop their per-app Activity .java file and update AndroidManifest.xml. Migration steps documented
     - Drift between consumer Activities and ge's expected Java surface becomes structurally impossible - bumping the ge submodule pointer is sufficient to pick up new engine-side hooks
     origin: multimaze2 5/2026 - hit a crash because MultiMazeActivity was 2-3 ge versions behind the template (missing getAttitude); the per-app Activity is pure boilerplate that drifts
+    discovered: 2026-05-09
+    achieved: 2026-05-09
+  T42:
+    name: ge ships lunasvg as the canonical SVG rasterizer
+    status: converging
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - 'lunasvg is vendored under ge/vendor/sammycage/lunasvg as a git submodule and built statically into libge.a (or alongside it) on every supported platform: macOS arm64, iOS arm64, iOS-sim arm64, Android arm64, desktop Linux x86_64'
+    - ge exposes a public API ge::rasterizeSvg(std::string_view svg, int targetW, int targetH) returning bgfx::TextureHandle, suitable for procedural SVG generation. Empty handle on failure with a logged error
+    - Behind the scenes, rasterizeSvg uses lunasvg::Document::loadFromData and renderToBitmap. Pixels are premultiplied to match ge's existing premultiplied-alpha render pipeline. RGBA8 output
+    - ge no longer relies on SDL_image's IMG_LoadSizedSVG_IO for SVG (which uses nanosvg, can not render text or clipPath). Existing app code that goes through SDL_image for non-SVG formats (PNG, etc.) is unaffected
+    - A bundled TTF (e.g. DejaVuSans-Bold, Roboto-Bold, or another permissive sans-serif) lives under ge/data/fonts/ and is the default font ge::rasterizeSvg uses when an SVG references a generic font-family. Apps can override by configuring lunasvg's font resolver before render. Cross-platform consistent text rendering, no platform-font-lookup roulette
+    - The plutosvg/plutovg static libs that the SDL3 build pulls in for SDL_ttf's OpenType color emoji support are unaffected. They serve a different concern (color font glyphs) and stay where they are
+    - 'Documentation in ge/CLAUDE.md describes the SVG rendering surface: when to use rasterizeSvg, what SVG features lunasvg supports, where the bundled font lives, and how to override it'
+    - MultiMaze 2 (or whatever first consumer is ready) drops its workaround code paths that compensated for nanosvg's limits and uses ge::rasterizeSvg directly. Pattern is then available for esfera2, yourworld2, tiltbuggy as they need it
+    origin: multimaze2 5/2026 - tried to render chrome buttons procedurally via SVG, discovered SDL_image's SVG path uses nanosvg (no text, no clipPath) not the plutosvg statically linked elsewhere in the build. Rather than work around nanosvg, swap to lunasvg as the canonical SVG renderer for ge consumers
+    discovered: 2026-05-09
+  T42.1:
+    name: lunasvg vendored under ge/vendor and builds into libge.a on macOS arm64
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - lunasvg pinned via .gitmodules at vendor/github.com/sammycage/lunasvg (a tagged release, not master)
+    - Module.mk compiles lunasvg's source files (and any internal plutovg sources lunasvg vendors) into objects under $(BUILD_DIR)/ge/vendor/lunasvg/ and links them into $(ge/LIB)
+    - make from a clean tree on macOS arm64 produces libge.a with the lunasvg symbols present (nm | grep lunasvg shows entries)
+    - NOTICES.md gains an entry for lunasvg (MIT) and any sub-libraries it bundles, with attribution copied from upstream
+    context: Foundation step for T42. No public API yet — this just gets the source compiling and linking inside libge.a so subsequent sub-targets can call into it without rebuilding the build wiring.
+    origin: decomposed from T42 on 2026-05-09
+    discovered: 2026-05-09
+    achieved: 2026-05-09
+  T42.2:
+    name: ge::rasterizeSvg public API exists and renders correctly on macOS
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - include/ge/SvgRasterizer.h declares ge::rasterizeSvg(std::string_view svg, int targetW, int targetH) -> bgfx::TextureHandle; empty handle on parse/render failure with a logged error
+    - src/SvgRasterizer.cpp implements the API via lunasvg::Document::loadFromData + renderToBitmap, converts the resulting bitmap into RGBA8 premultiplied pixels in the byte order bgfx::TextureFormat::RGBA8 expects, and uploads via bgfx::createTexture2D + bgfx::copy
+    - A unit test under src/SvgRasterizer_test.cpp loads a small no-text SVG (e.g. a coloured rect with a clipPath the nanosvg path could not handle), rasterizes it, and asserts at least one expected RGBA pixel value via the rasterized bitmap (CPU-side, not bgfx). Builds clean and passes in `make unit-test`
+    - make && make unit-test on macOS arm64 succeed end-to-end
+    context: Public API surface for T42. No font resolver work yet — text rendering with bundled TTF is T42.4. This sub-target verifies the rasterizer pipeline (SVG→bitmap→RGBA premul→bgfx) is sound for the no-text case.
+    depends_on:
+    - T42.1
+    origin: decomposed from T42 on 2026-05-09
+    discovered: 2026-05-09
+    achieved: 2026-05-09
+  T42.3:
+    name: lunasvg builds into libge across all supported ge platforms
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - iOS arm64 builds (xcode project from ge/tools/ios) link libge.a with lunasvg in it; the iOS player still launches
+    - iOS-sim arm64 builds (Xcode iphonesimulator scheme) link libge.a with lunasvg in it
+    - Android arm64 build (Gradle, tools/android) links libge.so / libge.a with lunasvg in it; the Android player still launches
+    - Desktop Linux x86_64 build (CI) links libge.a with lunasvg in it
+    - 'ge/tools/macos/build-deps.sh and ge/tools/ios/build-deps.sh updated if and only if lunasvg is treated as a per-platform pre-built dependency rather than a Module.mk-compiled source. Default expectation: lunasvg is just compiled by Module.mk on every platform like Box2D, no extra script work needed'
+    context: 'Cross-platform coverage for T42. Each platform target gets its own pass: try the build, debug platform-specific compiler issues if any (lunasvg uses C++17, plutovg is C99). Most likely outcome is everything just works because the existing Module.mk pattern is platform-portable. Per ge target devices: Jevons (iOS), Minicades (iPad), Galaxy S21 Ultra + Tab A9 (Android), no Pippa.'
+    depends_on:
+    - T42.2
+    origin: decomposed from T42 on 2026-05-09
+    discovered: 2026-05-09
+  T42.4:
+    name: ge bundles a permissive TTF and uses it as the default font for ge::rasterizeSvg
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - A permissive sans-serif TTF (e.g. DejaVuSans-Bold OFL, Roboto-Bold Apache-2.0, Inter OFL) lives at ge/data/fonts/, and NOTICES.md attributes it
+    - ge::rasterizeSvg installs the bundled font with lunasvg's font resolver before render, so SVGs that reference generic family names (sans-serif, serif, monospace) render text consistently across all platforms
+    - 'Apps can override the resolver: a documented hook (e.g. a ge::SvgFontConfig parameter, or a global ge::setSvgFontResolver function) lets the app swap in its own TTFs'
+    - A unit test renders an SVG with a <text> element using the bundled font and asserts a non-zero alpha glyph footprint at expected coordinates (CPU-side bitmap inspection)
+    - ge/data/fonts/ assets are picked up by Resource() / shipped into iOS bundle Resources/ and Android assets/ alongside other ge data, OR loaded as bytes from a header-embedded blob — whichever the engine already does for built-in assets
+    context: Text-rendering completion for T42. Independent of T42.3 — text works on whichever platforms T42.3 has unlocked. Pick a permissive licence (OFL or Apache-2.0). DejaVuSans-Bold is ~700 KB, Inter Regular is ~300 KB; size matters because the asset ships in every consuming app.
+    depends_on:
+    - T42.2
+    origin: decomposed from T42 on 2026-05-09
+    discovered: 2026-05-09
+  T42.5:
+    name: ge/CLAUDE.md documents the SVG rendering surface
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - 'A new section in ge/CLAUDE.md (under Public API → Rendering or its own SVG heading) explains: when to reach for ge::rasterizeSvg vs. precomputed PNG/ASTC, what SVG features lunasvg supports (text, clipPath, gradients, masks — and what it doesn''t, e.g. no SMIL animation, limited filter support), where the bundled font lives, and how to override the font resolver'
+    - An example snippet shows the typical call site (load SVG bytes from a Resource path, call rasterizeSvg, get a bgfx::TextureHandle to draw with)
+    - NOTICES.md is referenced from the docs section so consumers know where the licence chain (lunasvg + plutovg + bundled font) lives
+    context: Docs completion for T42. Lands once the API and font work are stable so the docs reflect the shipped surface, not a moving target.
+    depends_on:
+    - T42.4
+    origin: decomposed from T42 on 2026-05-09
+    discovered: 2026-05-09
+  T42.6:
+    name: ge ships an SvgSprite + textured-quad draw primitive so consumers don't reinvent the shader pair
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - 'include/ge/SvgSprite.h declares: SvgSprite struct (tex + width + height); ge::rasterizeSvgSprite(svg, w, h) factory; ge::drawTexturedQuad(view, tex, halfW, halfH) primitive; ge::drawSprite(view, sprite) and ge::drawSprite(view, sprite, l, t, r, b) overloads'
+    - Implementation reuses the existing ge_compose_{vs,fs}.bin engine shaders — no app-side shader files; lazy-creates the bgfx program + sampler uniform on first call so consumers don't need an init step
+    - Geometry pushed in the primitive form is centred on origin, spans (-halfW, -halfH) .. (halfW, halfH) in model space, with UVs that map y-up world space to top-down SVG pixel space (y=+halfH is SVG top)
+    - Premultiplied-alpha blend state (BLEND_FUNC(BLEND_ONE, BLEND_INV_SRC_ALPHA)) is set automatically
+    - tiltbuggy's icy pond uses ge::rasterizeSvgSprite + ge::drawSprite(view, sprite, l, t, r, b) instead of any app-side shader plumbing — no APP_SHADERS additions, no app-level vertex layout, just one factory call + one draw
+    context: 'Discovered during T42.2 dogfooding in tiltbuggy: every consumer of ge::rasterizeSvg would otherwise need to add their own textured-quad shader pair, vertex layout, sampler uniform, and alpha-blend state. The engine already has the exact shader pair (used by DirectRenderHost''s compose pass) — just need an API that lazy-binds it. Convention nailed down: 1 model-space unit = 1 source pixel; the sprite''s pixel dims travel with the texture handle so callers don''t carry aspect math in setTransform.'
+    depends_on:
+    - T42.2
+    origin: decomposed from T42 on 2026-05-09 during dogfooding
+    discovered: 2026-05-09
+    achieved: 2026-05-09
+  T43:
+    name: ge handles audio focus changes (incoming calls, alarms, other media) cross-platform
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - 'Android: GeActivity registers an OnAudioFocusChangeListener (AudioManager.requestAudioFocus); on AUDIOFOCUS_LOSS / LOSS_TRANSIENT / LOSS_TRANSIENT_CAN_DUCK the engine pauses ge::Audio output, on AUDIOFOCUS_GAIN it resumes'
+    - 'iOS: SessionHost subscribes to AVAudioSessionInterruptionNotification + AVAudioSessionRouteChangeNotification; same pause/resume behaviour on interruption begin/end and on category-default route changes (e.g. headphones unplugged)'
+    - Behaviour is automatic — no game code changes required, mirroring the iOS lifecycle backgrounding work in 🎯T7
+    - Pause is silent (audio buffer fades or hard-stops); resume restarts at the level the game last set
+    - Desktop platforms are unaffected (no concept of audio focus contention)
+    - Documented in CLAUDE.md alongside the existing audio-on-background story
+    context: 'Mobile games universally need to handle audio focus loss — incoming phone calls, alarms, Siri / Google Assistant invocation, another media app starting playback. iOS surfaces this via AVAudioSessionInterruptionNotification (begin / end) plus AVAudioSessionRouteChangeNotification (e.g. unplugging headphones). Android surfaces it via AudioManager.OnAudioFocusChangeListener. Both have similar three-state semantics (lost / lost-transient / gained), and both want the same engine response: pause output on loss, resume on gain. Currently every consumer would have to re-roll this against their own audio code; centralising in ge eliminates the per-app boilerplate. Pairs with 🎯T7 (audio pauses when the app is backgrounded) — both are "engine intercepts a system audio signal and routes it through ge::Audio".'
+    tags:
+    - api
+    - audio
+    - android
+    - ios
+    - lifecycle
+    origin: manual
+    discovered: 2026-05-09
+  T44:
+    name: ge surfaces system back-press as a game callback (Android predictive back + iOS edge swipe)
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - 'RunConfig grows an onBackPressed callback (returns bool: true = consumed, false = let the platform default fire)'
+    - 'Android: GeActivity registers OnBackInvokedCallback via OnBackInvokedDispatcher (API 33+) for the predictive-back gesture, with a fallback registration of onBackPressed() for older API levels; both forward to the engine which forwards to onBackPressed()'
+    - 'iOS: edge-swipe-back is irrelevant in fullscreen games (the system gesture is suppressed by the immersive flag), so onBackPressed is Android-only in practice; on iOS the callback is registered but never fires — documented'
+    - 'If the game returns false (or doesn''t register onBackPressed), the platform default fires (Android: finish() the activity → task moves to background)'
+    - ge::SessionHostConfig has no separate enable flag — registering an onBackPressed callback is the opt-in
+    - Documented in CLAUDE.md alongside the existing input flow
+    context: Android Back is universal in mobile games — players hit it expecting a pause menu, a "go back one screen", or "exit confirmation", not silent process kill. Currently consumer apps would have to subclass GeActivity to override onBackPressed (defeating 🎯T41's "zero-customisation default"). Surfacing it as a `RunConfig.onBackPressed` callback keeps the customisation knob in C++ where the rest of the game logic lives. Predictive back (API 33+) requires `OnBackInvokedDispatcher.registerOnBackInvokedCallback()` rather than the legacy onBackPressed override; ge handles the version split in GeActivity. iOS is a no-op in practice (the immersive flag suppresses edge-swipe-back), so this is effectively an Android feature with cross-platform-shaped API.
+    tags:
+    - api
+    - input
+    - android
+    - lifecycle
+    origin: manual
+    discovered: 2026-05-09
+  T45:
+    name: ge surfaces OS memory-pressure warnings to games for cache eviction
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - 'RunConfig grows an onMemoryWarning(MemoryPressureLevel) callback (enum: Low / Moderate / Critical, mapping the platform-native level)'
+    - 'Android: GeActivity overrides onTrimMemory(int level); the engine maps TRIM_MEMORY_RUNNING_MODERATE to Low, TRIM_MEMORY_RUNNING_LOW + TRIM_MEMORY_BACKGROUND to Moderate, TRIM_MEMORY_RUNNING_CRITICAL + TRIM_MEMORY_COMPLETE to Critical'
+    - 'iOS: SessionHost subscribes to UIApplicationDidReceiveMemoryWarningNotification and forwards as Critical (iOS doesn''t grade pressure); also forwards on applicationWillTerminate'
+    - Engine drops its own caches first (texture mip cache, audio decoder buffers, font glyph atlas) before invoking the game callback, so the game can assume engine-internal slack is gone by the time it sees the warning
+    - Documented in CLAUDE.md alongside the existing lifecycle handling
+    - tiltbuggy or another sample logs the level on receipt to verify wiring (no real cache to drop in tiltbuggy)
+    context: Mobile platforms send graded memory-pressure signals before killing apps; games with non-trivial asset caches (texture atlases, mip pyramids, audio buffers) should drop their own caches when warned rather than getting OOM-killed. iOS sends a single boolean warning via UIApplicationDidReceiveMemoryWarningNotification; Android grades pressure in five levels via onTrimMemory(int). Surfacing both as a unified Low/Moderate/Critical enum keeps games from caring about which platform they're on while still letting them be more aggressive on Critical than Low. The engine drops its own caches first because it knows what's safe to drop; the game callback fires after engine cleanup so the game's response is layered on top of whatever the engine already freed.
+    tags:
+    - api
+    - lifecycle
+    - memory
+    - android
+    - ios
+    origin: manual
+    discovered: 2026-05-09
+  T46:
+    name: ge ships cross-platform push notifications (FCM on both iOS and Android)
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - 'Public API: Context::registerForPush() triggers the platform''s permission prompt + token acquisition. Idempotent — calling more than once does not re-prompt'
+    - RunConfig.onPushToken(std::string token) fires when a token is acquired or rotates; the game forwards the string to its backend. Token format is FCM's (works for both APNs- and FCM-routed devices)
+    - RunConfig.onPushReceived(const PushPayload& p) fires for notifications delivered while the app is in the foreground. PushPayload exposes title, body, and a string-keyed data dictionary; raw provider payload is also available for advanced use
+    - 'Provider: Firebase Cloud Messaging on BOTH platforms. FCM forwards to APNs for iOS delivery, so the backend has one token type and one send-API to integrate against. Google dependency on iOS is acknowledged and acceptable for the studio''s use case'
+    - 'Per-app credentials: apps ship google-services.json (Android, in app/) and configure APNs in their iOS bundle (entitlement + the FCM-provided APNs key registered in the Firebase console). Engine wiring does not embed any credentials'
+    - 'Build system: tools/android-template/app/build.gradle.in pulls in Firebase BoM + firebase-messaging via a new dependencies block; tools/ios-template/Info.plist.in or the bundle config opts into UIBackgroundModes ''remote-notification'' and the aps-environment entitlement; init-android.sh warns when app/google-services.json is missing'
+    - GeActivity registers a FirebaseMessagingService subclass (ge.GePushService); iOS adds an AppDelegate-equivalent extension to ge::SessionHost that registers for remote notifications and forwards token + payload events through ge::run
+    - Background-delivered notifications display via the OS's standard UI without engine involvement — the engine is only on the path for foreground delivery + token plumbing
+    - Documented in CLAUDE.md including the 'one-time consumer setup' steps (create Firebase project, drop google-services.json into app/, enable APNs in the Apple developer portal, paste the APNs key into Firebase)
+    - 'Sample (tiltbuggy or a small new sample) demonstrates: registerForPush, log the token, log a foreground notification when one arrives via the Firebase console''s test-send'
+    context: |-
+      Push is the first feature in the "consumer apps need this universally but the platforms do it very differently" bucket where ge can land a real cross-platform abstraction rather than punting to per-app boilerplate.
+
+      Provider choice: FCM-everywhere. The alternative — APNs direct on iOS, FCM on Android — would mean two SDKs, two backend integrations, and two token formats forever. FCM transparently routes to APNs for iOS (Firebase exchanges the APNs key in their console), so the studio's backend talks to one Google API for everyone. The Google dependency on iOS is real but tolerable for game shipping; not appropriate for privacy-focused / non-Google-aligned apps but that's not the studio's profile.
+
+      Engine surface (proposed):
+      - Context::registerForPush() — triggers permission ask (iOS UNUserNotificationCenter / Android POST_NOTIFICATIONS) and token acquisition.
+      - RunConfig.onPushToken(std::string) — token delivery / rotation.
+      - RunConfig.onPushReceived(const PushPayload&) — foreground delivery only; background notifications display through the OS without engine involvement.
+      - PushPayload exposes the typed essentials (title, body, data dict) plus the raw provider payload for advanced consumers.
+
+      Per-app credentials are still per-app: google-services.json in the Android app/, APNs entitlement + FCM-registered APNs key on iOS. Engine ships the wiring, app supplies the secrets — same pattern as any auth integration.
+
+      Build-system impact is bigger than any other GeActivity hook so far: Firebase BoM + firebase-messaging in app/build.gradle.in (Android side); UIBackgroundModes + aps-environment entitlement in the iOS template (likely already partly there for any future push work); init-android.sh sanity-check for google-services.json.
+
+      Out of scope for this target:
+      - Local (non-push) notifications — separate target, simpler API.
+      - Notification action buttons / categories — once the basics ship.
+      - Rich media notifications (images, video) — once the basics ship.
+      - Topic-based subscriptions / FCM channel API surface — exposed via the raw provider payload for now.
+
+      Originated from a design discussion about which 'probably skip' Activity-level hooks were genuinely cross-platform-shaped and worth ge owning vs. leaving per-app. Push was the strongest candidate; in-app review may follow as a smaller sibling target if the studio adopts that flow.
+    tags:
+    - api
+    - push
+    - fcm
+    - android
+    - ios
+    - build-system
+    origin: manual
     discovered: 2026-05-09
   T5:
     name: Player has a connection management screen

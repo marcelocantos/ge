@@ -46,6 +46,8 @@ static void runDirect(Factory factory, const SessionHostConfig& config) {
     applyImmersive(config.immersive);
     RunConfig rc = factory(host.context());
     host.setEventHandler(rc.onEvent);
+    host.setBackPressedHandler(rc.onBackPressed);
+    host.setMemoryWarningHandler(rc.onMemoryWarning);
 
     wire::SessionConfig sc{};
     sc.sensors = config.sensors;

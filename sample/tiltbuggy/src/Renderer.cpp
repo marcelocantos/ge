@@ -5,6 +5,7 @@
 #include "Scene.h"
 
 #include <ge/FileIO.h>
+#include <ge/SvgSprite.h>
 
 #include <bgfx/bgfx.h>
 #include <bx/math.h>
@@ -14,7 +15,71 @@
 #include <cstring>
 #include <iterator>
 #include <string>
+#include <string_view>
 #include <vector>
+
+namespace {
+
+// Procedurally drawn icy pond. Irregular bezier border so the puddle
+// doesn't look like a rectangle; radial gradient for the icy sheen;
+// stroked cracks under a clip-path so they don't escape the border.
+// clipPath + gradients are exactly the SVG features SDL_image's nanosvg
+// path can't render — this is the smoke test that lunasvg is doing its
+// job.
+constexpr std::string_view kIcyPondSvg = R"SVG(<svg xmlns="http://www.w3.org/2000/svg" width="384" height="256" viewBox="0 0 384 256">
+  <defs>
+    <radialGradient id="ice" cx="0.45" cy="0.4" r="0.7">
+      <stop offset="0%"   stop-color="#FFFFFF"/>
+      <stop offset="35%"  stop-color="#E5F4FF"/>
+      <stop offset="100%" stop-color="#7AAACE"/>
+    </radialGradient>
+    <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%"   stop-color="#FFFFFF" stop-opacity="0.55"/>
+      <stop offset="100%" stop-color="#FFFFFF" stop-opacity="0"/>
+    </linearGradient>
+    <clipPath id="pondClip">
+      <path d="M 30,90
+               C 18,52 80,18 150,28
+               C 220,38 258,6 320,28
+               C 380,50 366,140 344,182
+               C 322,224 244,254 184,238
+               C 124,222 56,238 32,182
+               C 6,140 42,128 30,90 Z"/>
+    </clipPath>
+  </defs>
+
+  <path d="M 30,90
+           C 18,52 80,18 150,28
+           C 220,38 258,6 320,28
+           C 380,50 366,140 344,182
+           C 322,224 244,254 184,238
+           C 124,222 56,238 32,182
+           C 6,140 42,128 30,90 Z"
+        fill="url(#ice)"/>
+
+  <ellipse cx="180" cy="80" rx="130" ry="34" fill="url(#sheen)"
+           clip-path="url(#pondClip)"/>
+
+  <g clip-path="url(#pondClip)" stroke="#FFFFFF" stroke-opacity="0.55"
+     stroke-width="1.4" fill="none" stroke-linecap="round">
+    <path d="M 80,60 L 200,140 L 160,205"/>
+    <path d="M 220,40 L 250,118"/>
+    <path d="M 100,180 L 180,158"/>
+    <path d="M 280,90 L 332,150"/>
+    <path d="M 60,150 L 120,148"/>
+  </g>
+
+  <path d="M 30,90
+           C 18,52 80,18 150,28
+           C 220,38 258,6 320,28
+           C 380,50 366,140 344,182
+           C 322,224 244,254 184,238
+           C 124,222 56,238 32,182
+           C 6,140 42,128 30,90 Z"
+        fill="none" stroke="#4A7A9C" stroke-width="2.5" stroke-opacity="0.65"/>
+</svg>)SVG";
+
+} // namespace
 
 namespace tiltbuggy {
 
@@ -95,11 +160,13 @@ constexpr uint32_t rgb(uint32_t r, uint32_t g, uint32_t b) {
 struct Renderer::Impl {
     bgfx::VertexLayout  layout;
     bgfx::ProgramHandle program = BGFX_INVALID_HANDLE;
+    ge::SvgSprite       pond;
 };
 
 Renderer::Renderer() : i_(std::make_unique<Impl>()) {}
 Renderer::~Renderer() {
     if (bgfx::isValid(i_->program)) bgfx::destroy(i_->program);
+    if (bgfx::isValid(i_->pond.tex)) bgfx::destroy(i_->pond.tex);
 }
 
 void Renderer::init(const char* shaderDir) {
@@ -108,6 +175,10 @@ void Renderer::init(const char* shaderDir) {
     bgfx::ShaderHandle vs = loadShader(shaderDir, "simple_vs");
     bgfx::ShaderHandle fs = loadShader(shaderDir, "simple_fs");
     i_->program = bgfx::createProgram(vs, fs, /*destroyShaders=*/true);
+
+    // Rasterize the icy-pond SVG to a bgfx texture sized at 384×256 pixels
+    // (matching the SVG viewBox and the ice patch's 1.5:1 world aspect).
+    i_->pond = ge::rasterizeSvgSprite(kIcyPondSvg, 384, 256);
 }
 
 void Renderer::drawFrame(const Scene& scene, const ge::Context& c,
@@ -165,14 +236,14 @@ void Renderer::drawFrame(const Scene& scene, const ge::Context& c,
     const float bgB =  orthoH - (rect.y + rect.h) * pxToWorldY;
     pushRect(verts, bgL, bgB, bgR, bgT, rgb(0xAA, 0x66, 0x44));
 
-    // 2. Surface rects.
+    // 2. Surface rects (excluding ice — drawn as a textured sprite below).
     for (const auto& surf : scene.surfaces()) {
         uint32_t color;
         switch (surf.type) {
-            case SurfaceType::Ice:     color = rgb(0x88, 0xCC, 0xFF); break;
+            case SurfaceType::Ice:     continue;  // see ice-sprite pass below
             case SurfaceType::Dirt:    color = rgb(0xAA, 0x66, 0x44); break;
             case SurfaceType::Asphalt: continue;
-            default:                  continue;
+            default:                   continue;
         }
         pushRect(verts, surf.l, surf.b, surf.r, surf.t, color);
     }
@@ -202,6 +273,22 @@ void Renderer::drawFrame(const Scene& scene, const ge::Context& c,
     bgfx::setVertexBuffer(0, &tvb, 0, numVerts);
     bgfx::setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A);
     bgfx::submit(0, i_->program);
+
+    // Ice-sprite pass — drawn after the colour batch so the pond sits on top
+    // of the dirt/background. Each ice surface gets a copy of the same
+    // SVG-rasterized texture, inflated 25% past the collision rect so the
+    // irregular bezier border has visible overhang past where the friction
+    // actually changes.
+    if (!i_->pond.isNull()) {
+        for (const auto& surf : scene.surfaces()) {
+            if (surf.type != SurfaceType::Ice) continue;
+            const float pw = (surf.r - surf.l) * 0.125f;
+            const float ph = (surf.t - surf.b) * 0.125f;
+            ge::drawSprite(0, i_->pond,
+                           surf.l - pw, surf.t + ph,
+                           surf.r + pw, surf.b - ph);
+        }
+    }
 }
 
 } // namespace tiltbuggy

@@ -38,6 +38,13 @@ public:
     void endFrame(uint32_t bgfxFrameNumber) override;
     bool shouldQuit() const override;
 
+    // Wire 🎯T44 / 🎯T45 callbacks. Called once after the game's factory
+    // returns its RunConfig (in runDirect). Pass the RunConfig fields
+    // straight in; the host stores them and dispatches drained events
+    // on the game thread inside pumpEvents.
+    void setBackPressedHandler(std::function<void()>);
+    void setMemoryWarningHandler(std::function<void(MemoryPressureLevel)>);
+
 private:
     void submitCompose(float tx, float ty);
     la::float2 updateParallax();

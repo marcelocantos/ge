@@ -24,6 +24,20 @@ enum class DeviceClass : uint8_t {
     Desktop = 3,
 };
 
+// OS memory-pressure level forwarded to RunConfig::onMemoryWarning.
+// iOS sends a single warning (mapped to Critical); Android grades into
+// five buckets which the engine collapses to three:
+//
+//   Low      ↔ TRIM_MEMORY_RUNNING_MODERATE
+//   Moderate ↔ TRIM_MEMORY_RUNNING_LOW + TRIM_MEMORY_BACKGROUND
+//   Critical ↔ TRIM_MEMORY_RUNNING_CRITICAL + TRIM_MEMORY_COMPLETE +
+//              UIApplicationDidReceiveMemoryWarningNotification
+enum class MemoryPressureLevel : uint8_t {
+    Low      = 0,
+    Moderate = 1,
+    Critical = 2,
+};
+
 // Pixel rectangle on the render surface ({x, y} = top-left, {w, h} = size).
 //
 // Float fields, even though the surface is integer-sized at the
@@ -223,6 +237,30 @@ struct RunConfig {
     std::function<void(const Context&)> onRender;
     std::function<void(const SDL_Event&)> onEvent;
     std::function<void()> onShutdown;
+
+    // System back-press (Android Back button / predictive-back gesture,
+    // 🎯T44). When set, the engine consumes the gesture and runs this
+    // callback on the game thread; OS default (Activity.finish) is
+    // suppressed. When unset (the default), the OS handles back —
+    // typically by moving the app to background. iOS is a no-op in
+    // practice because the immersive flag suppresses edge-swipe-back.
+    //
+    // Use to surface a pause menu, confirm exit, or step back through
+    // an in-game stack.
+    std::function<void()> onBackPressed;
+
+    // OS memory-pressure warning (🎯T45). Fires on the game thread
+    // when the platform reports memory pressure: iOS sends a single
+    // warning (always Critical); Android grades into Low / Moderate /
+    // Critical (see MemoryPressureLevel). Engine drops its own caches
+    // first, so by the time this fires there's no engine-internal
+    // slack left — the game's response is layered on top.
+    //
+    // Recommended action: drop high-cost caches (texture mips, audio
+    // decoders, font glyph atlases). On Critical, drop everything not
+    // needed for the next few frames; on Low, only drop genuinely
+    // cold caches.
+    std::function<void(MemoryPressureLevel)> onMemoryWarning;
 };
 
 // Configuration for the session host.

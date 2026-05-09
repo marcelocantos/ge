@@ -190,6 +190,46 @@ compiled into the Android player.
 - Copyright: © 2020–2024 Samuel Ugochukwu.
 - Notice: See `vendor/github.com/libsdl-org/SDL_ttf/external/plutovg/LICENSE`.
 
+### lunasvg
+- Source: https://github.com/sammycage/lunasvg
+- Version: tag `v3.5.0` (commit `83c58df`)
+- Licence: MIT
+- Copyright: © 2020–2025 Samuel Ugochukwu.
+- Notice: See `vendor/github.com/sammycage/lunasvg/LICENSE`.
+- Used by: `ge::rasterizeSvg` — the canonical SVG rasterizer in
+  ge. Compiled directly into `libge.a`; not used at runtime by SDL_ttf.
+
+### plutovg (vendored under lunasvg, used by ge::rasterizeSvg)
+- Source: https://github.com/sammycage/plutovg (shipped as a nested
+  subdirectory of lunasvg v3.5.0 — `vendor/github.com/sammycage/lunasvg/plutovg/`)
+- Version: 1.3.1 (the version lunasvg v3.5.0 pins).
+- Licence: MIT (with portions derived from FreeType under the FTL — see below).
+- Copyright: © 2020–2025 Samuel Ugochukwu.
+- Notice: See `vendor/github.com/sammycage/lunasvg/plutovg/LICENSE`.
+- Distinct from the older plutovg `v0.0.12` shipped via SDL_ttf for
+  color emoji support — see "plutovg (via SDL_ttf)" entry above. Both
+  are present in the build: SDL_ttf's prebuilt path satisfies its own
+  references; the lunasvg-bundled plutovg satisfies ge::rasterizeSvg.
+
+### FreeType (portions, vendored under plutovg)
+- Source: plutovg's `plutovg-ft-*.c` files derive raster / stroker /
+  math code from FreeType. See
+  `vendor/github.com/sammycage/lunasvg/plutovg/FTL.TXT`.
+- Licence: FreeType Licence (FTL, BSD-style) OR GPL-2.0 — licensee's
+  choice. ge consumes under FTL.
+- Copyright: © 1996–2024 The FreeType Project (David Turner, Robert
+  Wilhelm, and Werner Lemberg).
+- Notice: The full FTL text is reproduced in
+  `vendor/github.com/sammycage/lunasvg/plutovg/FTL.TXT`.
+
+### stb_image / stb_image_write / stb_truetype (portions, vendored under plutovg)
+- Source: plutovg's `plutovg-stb-*.h` files are vendored copies of
+  Sean Barrett's stb single-file libraries.
+- Licence: MIT OR Public Domain (dual; ge consumes under MIT).
+- Copyright: © 2017 Sean Barrett.
+- Notice: The dual-licence text is at the bottom of each
+  `vendor/github.com/sammycage/lunasvg/plutovg/source/plutovg-stb-*.h`.
+
 ### QR-Code-generator
 - Source: https://github.com/nayuki/QR-Code-generator
 - Version: commit `2c9044de6b` (tag `v1.8.0`)
