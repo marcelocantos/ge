@@ -50,7 +50,9 @@ ge/INCLUDES = \
 	-I$(ge)/vendor/github.com/erincatto/box2d/include \
 	-I$(ge)/vendor/github.com/chriskohlhoff/asio/include \
 	-I$(ge)/vendor/github.com/sqliteai/liteparser/src \
-	-DSQLITE_ENABLE_SESSION -DSQLITE_ENABLE_PREUPDATE_HOOK -DSQLITE_ENABLE_DESERIALIZE
+	-I$(ge)/vendor/github.com/sammycage/lunasvg/include \
+	-DSQLITE_ENABLE_SESSION -DSQLITE_ENABLE_PREUPDATE_HOOK -DSQLITE_ENABLE_DESERIALIZE \
+	-DLUNASVG_BUILD_STATIC
 
 # bgfx + bx + bimg (vendored, compiled from source)
 ge/BX_DIR = $(ge)/vendor/github.com/bkaradzic/bx
@@ -114,6 +116,7 @@ ge/SRC_DIRECT = \
 	$(ge)/src/Immersive_stub.cpp \
 	$(ge)/src/CutoutInsets_stub.cpp \
 	$(ge)/src/Attitude_apple.mm \
+	$(ge)/src/SvgRasterizer.cpp \
 	$(ge)/src/render/DirectRenderHost.mm \
 	$(ge)/tools/player_orientation_stub.cpp
 
@@ -249,7 +252,8 @@ ge/VENDOR_CPP_OBJ = $(patsubst $(ge)/vendor/src/%.cpp,$(BUILD_DIR)/ge/vendor/%.o
 ge/TEST_SRC = \
 	$(ge)/src/main_test.cpp \
 	$(ge)/src/DampedRotation_test.cpp \
-	$(ge)/src/Rect_test.cpp
+	$(ge)/src/Rect_test.cpp \
+	$(ge)/src/SvgRasterizer_test.cpp
 ge/TEST_OBJ = $(patsubst $(ge)/src/%.cpp,$(BUILD_DIR)/ge/src/%.o,$(ge/TEST_SRC))
 
 # Shared variables (parent can += to extend)
@@ -530,6 +534,26 @@ ge/imgdiff: $(ge/IMGDIFF)
 $(ge/IMGDIFF): $(ge)/tools/imgdiff.cpp
 	@mkdir -p $(@D)
 	$(CXX) -std=c++20 -O2 -I$(ge)/include -I$(ge)/vendor/include $< -o $@
+
+# ────────────────────────────────────────────────
+# Unit tests (doctest)
+#
+# `make unit-test` builds bin/ge-test from $(ge/TEST_SRC) and runs it.
+# Tests link against libge.a, so they have access to all engine headers
+# and engine-defined classes. The runner reaches into bgfx/SDL only at
+# link time (libge.a's references resolve through them); the tests
+# themselves don't initialise bgfx, so they're side-effect free.
+# ────────────────────────────────────────────────
+
+ge/TEST_BIN = bin/ge-test
+
+.PHONY: unit-test
+unit-test: $(ge/TEST_BIN)
+	$(ge/TEST_BIN)
+
+$(ge/TEST_BIN): $(ge/TEST_OBJ) $(ge/LIB) $(ge/BGFX_LIBS) $(APP_LIBS)
+	@mkdir -p $(@D)
+	$(CXX) $(ge/TEST_OBJ) $(APP_LIBS) $(ge/LIB) $(ge/BGFX_LIBS) $(ge/SDL_LIBS) $(FRAMEWORKS) -o $@
 
 # ────────────────────────────────────────────────
 # Mobile targets
