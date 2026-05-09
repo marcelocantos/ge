@@ -1140,6 +1140,21 @@ targets:
     origin: manual
     discovered: 2026-05-09
     achieved: 2026-05-09
+  T41:
+    name: ge ships a one-size-fits-all Android Activity that consumers reference directly
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - 'ge ships a single GeActivity class (proposed: ge.GeActivity) containing all the SDLActivity boilerplate currently duplicated across consumers - getLibraries returning SDL3 plus main, cutoutInsets field with OnApplyWindowInsetsListener, getDisplayCutoutInsets, applyImmersive, getAttitude and the sensor listener, and any future engine-mandated hooks'
+    - Consumer apps reference ge.GeActivity directly from their AndroidManifest.xml; there is no per-app Activity subclass required for engine functionality
+    - ge.GeActivity is delivered via a mechanism that does not require consumers to copy or maintain Java source - Gradle source-include from the submodule (e.g. sourceSets.main.java.srcDirs += '../ge/android-shared/src/main/java'), Gradle subproject, or published AAR. Choice documented in ge/CLAUDE.md
+    - Apps that need custom Activity behaviour can subclass ge.GeActivity - but zero-customisation is the supported default
+    - ge/tools/android-template no longer scaffolds a per-app Activity.java; android-init configures Gradle to pull GeActivity from ge instead
+    - Existing consumers (multimaze2, esfera2, yourworld2, tiltbuggy) drop their per-app Activity .java file and update AndroidManifest.xml. Migration steps documented
+    - Drift between consumer Activities and ge's expected Java surface becomes structurally impossible - bumping the ge submodule pointer is sufficient to pick up new engine-side hooks
+    origin: multimaze2 5/2026 - hit a crash because MultiMazeActivity was 2-3 ge versions behind the template (missing getAttitude); the per-app Activity is pure boilerplate that drifts
+    discovered: 2026-05-09
   T5:
     name: Player has a connection management screen
     status: identified
@@ -1183,7 +1198,7 @@ targets:
     discovered: 2026-04-15
   T9:
     name: ge exposes device tilt as optional parallax input to games
-    status: identified
+    status: converging
     value: 5.0
     cost: 5.0
     acceptance:
