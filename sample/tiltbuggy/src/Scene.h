@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
+#include <ge/SessionHost.h>  // ge::Rect
+
 #include <box2d/box2d.h>
 #include <memory>
 #include <vector>
@@ -13,7 +15,9 @@ struct Pose { float x, y, angle; };
 
 enum class SurfaceType { Asphalt, Ice, Dirt };
 struct Surface {
-    float l, t, r, b;   // AABB in world coords, y-up
+    // AABB in world coords (y-up): rect.x = left, rect.y = bottom (smaller y),
+    // rect.w / rect.h positive.
+    ge::Rect    rect;
     SurfaceType type;
 };
 

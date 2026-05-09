@@ -140,34 +140,38 @@ bgfx::ShaderHandle loadShader(const char* shaderDir, const char* name) {
 }
 
 // Append two triangles forming an axis-aligned rect (world space).
-void pushRect(std::vector<PosColorVertex>& verts,
-              float l, float t, float r, float b,
-              uint32_t abgr) {
-    verts.push_back({l, t, 0.0f, abgr});
-    verts.push_back({r, t, 0.0f, abgr});
-    verts.push_back({r, b, 0.0f, abgr});
-    verts.push_back({l, t, 0.0f, abgr});
-    verts.push_back({r, b, 0.0f, abgr});
-    verts.push_back({l, b, 0.0f, abgr});
+void pushRect(std::vector<PosColorVertex>& verts, ge::Rect r, uint32_t abgr) {
+    const float x0 = r.x;
+    const float x1 = r.x + r.w;
+    const float y0 = r.y;
+    const float y1 = r.y + r.h;
+    verts.push_back({x0, y1, 0.0f, abgr});
+    verts.push_back({x1, y1, 0.0f, abgr});
+    verts.push_back({x1, y0, 0.0f, abgr});
+    verts.push_back({x0, y1, 0.0f, abgr});
+    verts.push_back({x1, y0, 0.0f, abgr});
+    verts.push_back({x0, y0, 0.0f, abgr});
 }
 
-// Append two triangles forming a rotated rect centred at (cx,cy).
+// Append two triangles forming a rotated rect: the AABB `rect` rotated by
+// `angle` around its centre.
 void pushRotatedRect(std::vector<PosColorVertex>& verts,
-                     float cx, float cy, float hw, float hh,
-                     float angle, uint32_t abgr) {
+                     ge::Rect rect, float angle, uint32_t abgr) {
     const float c = std::cos(angle);
     const float s = std::sin(angle);
+    const auto  centre = rect.center();
+    const float hw = rect.w * 0.5f;
+    const float hh = rect.h * 0.5f;
     // Four corners in local space: (±hw, ±hh)
-    float lx[4] = { -hw,  hw,  hw, -hw };
-    float ly[4] = { -hh, -hh,  hh,  hh };
+    const float lx[4] = { -hw,  hw,  hw, -hw };
+    const float ly[4] = { -hh, -hh,  hh,  hh };
     PosColorVertex v[4];
     for (int i = 0; i < 4; ++i) {
-        v[i].x    = cx + lx[i] * c - ly[i] * s;
-        v[i].y    = cy + lx[i] * s + ly[i] * c;
+        v[i].x    = centre.x + lx[i] * c - ly[i] * s;
+        v[i].y    = centre.y + lx[i] * s + ly[i] * c;
         v[i].z    = 0.0f;
         v[i].abgr = abgr;
     }
-    // Two triangles: 0-1-2, 0-2-3
     verts.push_back(v[0]); verts.push_back(v[1]); verts.push_back(v[2]);
     verts.push_back(v[0]); verts.push_back(v[2]); verts.push_back(v[3]);
 }
@@ -255,25 +259,25 @@ void Renderer::drawFrame(const Scene& scene, const ge::Context& c,
     // Brown playfield placed at c.drawSafeRect() — tiltbuggy is touch-
     // free, so the maze can extend into gesture zones (the wider rect).
     // World maps [-orthoW, +orthoW] to [0, surf.w] in pixels.
-    auto rect = c.drawSafeRect();
+    auto safeRect = c.drawSafeRect();
     const float pxToWorldX = (surf.w > 0) ? (2.f * orthoW / float(surf.w)) : 0.f;
     const float pxToWorldY = (surf.h > 0) ? (2.f * orthoH / float(surf.h)) : 0.f;
-    const float bgL = -orthoW + rect.x            * pxToWorldX;
-    const float bgR = -orthoW + (rect.x + rect.w) * pxToWorldX;
-    const float bgT =  orthoH - rect.y            * pxToWorldY;
-    const float bgB =  orthoH - (rect.y + rect.h) * pxToWorldY;
-    pushRect(verts, bgL, bgB, bgR, bgT, rgb(0xAA, 0x66, 0x44));
+    const float bgL = -orthoW + safeRect.x                * pxToWorldX;
+    const float bgR = -orthoW + (safeRect.x + safeRect.w) * pxToWorldX;
+    const float bgB =  orthoH - (safeRect.y + safeRect.h) * pxToWorldY;
+    const float bgT =  orthoH - safeRect.y                * pxToWorldY;
+    pushRect(verts, ge::Rect{bgL, bgB, bgR - bgL, bgT - bgB}, rgb(0xAA, 0x66, 0x44));
 
     // 2. Surface rects (excluding ice — drawn as a textured sprite below).
-    for (const auto& surf : scene.surfaces()) {
+    for (const auto& s : scene.surfaces()) {
         uint32_t color;
-        switch (surf.type) {
+        switch (s.type) {
             case SurfaceType::Ice:     continue;  // see ice-sprite pass below
             case SurfaceType::Dirt:    color = rgb(0xAA, 0x66, 0x44); break;
             case SurfaceType::Asphalt: continue;
             default:                   continue;
         }
-        pushRect(verts, surf.l, surf.b, surf.r, surf.t, color);
+        pushRect(verts, s.rect, color);
     }
 
     // 3. Buggy — sized in proportion to the world (kept at 1/20 of the
@@ -283,8 +287,7 @@ void Renderer::drawFrame(const Scene& scene, const ge::Context& c,
     const float hw = scene.halfExtent() * 0.05f;
     const float hh = hw * 0.5f;
     pushRotatedRect(verts,
-        pose.x, pose.y,
-        hw, hh,
+        ge::Rect{pose.x - hw, pose.y - hh, 2.f * hw, 2.f * hh},
         pose.angle,
         rgb(0xFF, 0xCC, 0x33));
 
@@ -312,15 +315,20 @@ void Renderer::drawFrame(const Scene& scene, const ge::Context& c,
     // TOP (larger y) and `h` is NEGATIVE, flipping the y basis so the
     // sprite's source-image top lands at world top.
     if (!i_->pond.isNull()) {
-        for (const auto& surf : scene.surfaces()) {
-            if (surf.type != SurfaceType::Ice) continue;
-            const float pw = (surf.r - surf.l) * 0.125f;
-            const float ph = (surf.t - surf.b) * 0.125f;
+        for (const auto& s : scene.surfaces()) {
+            if (s.type != SurfaceType::Ice) continue;
+            // Inflate 25% so the irregular bezier border has visible overhang
+            // past the (rectangular) collision area.
+            const float pw = s.rect.w * 0.125f;
+            const float ph = s.rect.h * 0.125f;
+            // y-up: rect.y is the bottom edge in scene's y-up world. To put the
+            // sprite top-down upright on screen, frame() needs y at the TOP
+            // (larger world y) and h NEGATIVE (basis points toward smaller y).
             const auto m = ge::frame(ge::Rect{
-                surf.l - pw,
-                surf.t + ph,                          // y = TOP in y-up
-                (surf.r - surf.l) + 2.f * pw,
-                -((surf.t - surf.b) + 2.f * ph),      // h NEGATIVE for y-up
+                s.rect.x - pw,
+                s.rect.y + s.rect.h + ph,        // top in y-up = bottom + height
+                s.rect.w + 2.f * pw,
+                -(s.rect.h + 2.f * ph),           // negative for y-up
             });
             bgfx::setTransform(&m[0][0]);
             i_->pond.draw(0);
