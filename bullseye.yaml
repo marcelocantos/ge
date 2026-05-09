@@ -1158,7 +1158,7 @@ targets:
     achieved: 2026-05-09
   T42:
     name: ge ships lunasvg as the canonical SVG rasterizer
-    status: converging
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -1172,6 +1172,7 @@ targets:
     - MultiMaze 2 (or whatever first consumer is ready) drops its workaround code paths that compensated for nanosvg's limits and uses ge::rasterizeSvg directly. Pattern is then available for esfera2, yourworld2, tiltbuggy as they need it
     origin: multimaze2 5/2026 - tried to render chrome buttons procedurally via SVG, discovered SDL_image's SVG path uses nanosvg (no text, no clipPath) not the plutosvg statically linked elsewhere in the build. Rather than work around nanosvg, swap to lunasvg as the canonical SVG renderer for ge consumers
     discovered: 2026-05-09
+    achieved: 2026-05-09
   T42.1:
     name: lunasvg vendored under ge/vendor and builds into libge.a on macOS arm64
     status: achieved
@@ -1204,7 +1205,7 @@ targets:
     achieved: 2026-05-09
   T42.3:
     name: lunasvg builds into libge across all supported ge platforms
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -1218,6 +1219,7 @@ targets:
     - T42.2
     origin: decomposed from T42 on 2026-05-09
     discovered: 2026-05-09
+    achieved: 2026-05-09
   T42.4:
     name: ge::rasterizeSvg uses ge::resolveFont for default font registration; apps override via ge::registerSvgFontFace
     status: achieved
