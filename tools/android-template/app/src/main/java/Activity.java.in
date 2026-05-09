@@ -1,13 +1,18 @@
 package __PACKAGE__;
 
+import android.content.Context;
 import android.graphics.Insets;
+import android.hardware.Sensor;
+import android.hardware.SensorEvent;
+import android.hardware.SensorEventListener;
+import android.hardware.SensorManager;
 import android.os.Bundle;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
 
 import org.libsdl.app.SDLActivity;
 
-public class __ACTIVITY__ extends SDLActivity {
+public class __ACTIVITY__ extends SDLActivity implements SensorEventListener {
     @Override
     protected String[] getLibraries() {
         return new String[]{"SDL3", "main"};
@@ -21,6 +26,14 @@ public class __ACTIVITY__ extends SDLActivity {
     // native reads on the game thread.
     private volatile int[] cutoutInsets = new int[]{0, 0, 0, 0};
 
+    // Latest sensor-fused attitude as a unit quaternion (x, y, z, w),
+    // updated by the SensorEventListener and read from native via
+    // getAttitude() for the parallax pipeline. Identity until the
+    // first onSensorChanged fires.
+    private volatile float[] attitude = new float[]{0f, 0f, 0f, 1f};
+    private SensorManager sensorManager;
+    private Sensor gameRotationVector;
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -29,7 +42,49 @@ public class __ACTIVITY__ extends SDLActivity {
             cutoutInsets = new int[]{c.left, c.right, c.top, c.bottom};
             return ins;
         });
+        sensorManager = (SensorManager) getSystemService(Context.SENSOR_SERVICE);
+        gameRotationVector = sensorManager == null ? null
+            : sensorManager.getDefaultSensor(Sensor.TYPE_GAME_ROTATION_VECTOR);
     }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (sensorManager != null && gameRotationVector != null) {
+            sensorManager.registerListener(this, gameRotationVector,
+                SensorManager.SENSOR_DELAY_GAME);
+        }
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        if (sensorManager != null) sensorManager.unregisterListener(this);
+    }
+
+    @Override
+    public void onSensorChanged(SensorEvent ev) {
+        if (ev.sensor.getType() != Sensor.TYPE_GAME_ROTATION_VECTOR) return;
+        float qx = ev.values[0], qy = ev.values[1], qz = ev.values[2];
+        // values[3] (w) is provided since API 18 — defensively recover
+        // it from the vector part if absent.
+        float qw;
+        if (ev.values.length > 3) {
+            qw = ev.values[3];
+        } else {
+            float ss = qx * qx + qy * qy + qz * qz;
+            qw = ss < 1f ? (float) Math.sqrt(1f - ss) : 0f;
+        }
+        attitude = new float[]{qx, qy, qz, qw};
+    }
+
+    @Override
+    public void onAccuracyChanged(Sensor sensor, int accuracy) { }
+
+    // Called from native (Attitude_android.cpp) each frame to populate
+    // Context::parallax(). Returns the current quaternion as a four-
+    // element float array (x, y, z, w).
+    public float[] getAttitude() { return attitude; }
 
     // Called from native (CutoutInsets_android.cpp) each frame to
     // populate Context::drawSafeRect on Android.

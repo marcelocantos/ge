@@ -35,6 +35,7 @@ struct Context::M {
     SafeAreaInsets uiInsets;    // cutouts + gesture / tappable zones
     float pixelsPerPt = 1.0f;
     float deviceUiScale = 1.0f;
+    la::float2 parallax{0.0f, 0.0f};
     std::shared_ptr<sqlpipe::Database> db;
 };
 
@@ -58,6 +59,7 @@ DeviceClass Context::deviceClass() const { return m->deviceClass; }
 float Context::pixelsPerPt() const  { return m->pixelsPerPt; }
 float Context::ptsPerPixel() const  { return 1.0f / m->pixelsPerPt; }
 float Context::deviceUiScale() const { return m->deviceUiScale; }
+la::float2 Context::parallax() const { return m->parallax; }
 std::shared_ptr<sqlpipe::Database> Context::db() const { return m->db; }
 
 void Context::setDimensions(int surfaceWidth, int surfaceHeight) {
@@ -68,5 +70,6 @@ void Context::setDrawSafeInsets(SafeAreaInsets sa) { m->drawInsets = sa; }
 void Context::setUiSafeInsets(SafeAreaInsets sa)   { m->uiInsets   = sa; }
 void Context::setPixelsPerPt(float v)              { m->pixelsPerPt = v; }
 void Context::setDeviceUiScale(float v)            { m->deviceUiScale = v; }
+void Context::setParallax(la::float2 p)            { m->parallax = p; }
 
 } // namespace ge

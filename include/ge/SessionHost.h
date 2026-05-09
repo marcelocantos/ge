@@ -177,6 +177,22 @@ public:
     // the player→server pixelRatio plumbing populates it.
     float deviceUiScale() const;
 
+    // Current parallax delta in screen-local radians: x is rotation
+    // around the screen-X axis (forward/back tilt), y is rotation
+    // around the screen-Y axis (left/right tilt). Already scaled by
+    // SessionHostConfig.parallaxFactor and absorbed by the engine's
+    // EMA baseline (sustained tilts settle to zero, so the value is
+    // always small).
+    //
+    // Returns {0, 0} when parallaxFactor == 0, on platforms with no
+    // attitude sensor (desktop), and during the first ~τ seconds of a
+    // session while the baseline is converging.
+    //
+    // Typical use: `cameraOffset += ctx.parallax() * depth;` for a
+    // 2D parallax shift, or feed straight into a small rotation matrix
+    // for a 3D scene tilt.
+    la::float2 parallax() const;
+
     // The engine-provided database.
     std::shared_ptr<sqlpipe::Database> db() const;
 
@@ -188,6 +204,7 @@ public:
     void setUiSafeInsets(SafeAreaInsets);
     void setPixelsPerPt(float);
     void setDeviceUiScale(float);
+    void setParallax(la::float2);
 
 private:
     struct M;
@@ -242,6 +259,28 @@ struct SessionHostConfig {
     // play) should leave this false and call SDL_DisableScreenSaver /
     // SDL_EnableScreenSaver at the appropriate moments.
     bool disableScreenSaver = false;
+
+    // Device-tilt parallax. 0 = off (default). > 0 enables Core Motion
+    // (iOS) / SensorManager TYPE_GAME_ROTATION_VECTOR (Android) and
+    // scales the resulting screen-XY tilt before the engine exposes it
+    // via Context::parallax(). The same float controls both opt-in and
+    // sensitivity — collapsing what would otherwise be a separate bool
+    // + sensitivity float into one knob.
+    //
+    // The engine maintains an EMA baseline (τ ≈ 1.0s) so sustained
+    // tilts become the new neutral; only recent motion produces a
+    // non-zero parallax. Apps multiply ctx.parallax() by their own
+    // depth/sensitivity to produce camera offsets, layer shifts, or
+    // scene rotations.
+    //
+    // Platform support:
+    //   * iOS — CMMotionManager.deviceMotion.attitude (sensor-fused
+    //     gyro + accel; drift-free, captures vertical-axis twist).
+    //   * Android — Sensor.TYPE_GAME_ROTATION_VECTOR via JNI; same
+    //     fused-quaternion semantics, no magnetometer dependency
+    //     so indoor magnetic interference doesn't muddy the signal.
+    //   * Desktop — no-op (Context::parallax() returns {0, 0}).
+    float parallaxFactor = 0.0f;
 
     // Take the entire screen — hide system chrome (status bar, gesture
     // / navigation bar) so the game owns the full surface. Reduces
