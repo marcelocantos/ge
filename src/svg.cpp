@@ -1,12 +1,11 @@
 // Copyright 2026 Marcelo Cantos
 // SPDX-License-Identifier: Apache-2.0
 
-#include <ge/SvgRasterizer.h>
+#include <ge/svg.h>
 
 #include <ge/FontLoader.h>
 
 #include <bgfx/bgfx.h>
-#include <lunasvg.h>
 #include <spdlog/spdlog.h>
 
 #include <cstdint>
@@ -18,9 +17,7 @@ namespace ge {
 namespace {
 
 // Register one of the platform's logical font URIs (e.g. "system:sans-serif")
-// with lunasvg's font cache as the named family. Best-effort — if resolveFont
-// returns no candidate, log a warning and move on; the SVG will still rasterize
-// minus the missing family.
+// with lunasvg's font cache as the named family. Best-effort.
 void registerPlatformFont(const char* family, bool bold, bool italic, const char* uri) {
     auto ref = resolveFont(uri);
     if (ref.path.empty()) {
@@ -34,13 +31,6 @@ void registerPlatformFont(const char* family, bool bold, bool italic, const char
     }
 }
 
-// Lazy-register default sans-serif / serif / monospace via ge::resolveFont
-// on first call into the rasterizer. Apps that need other faces (or want to
-// override the defaults) should call registerSvgFontFace.
-//
-// std::call_once gives us thread-safe lazy init in case rasterizeSvgToPixels
-// is invoked concurrently — pure CPU code that has no other reason to be
-// thread-confined.
 void ensureDefaultFonts() {
     static std::once_flag flag;
     std::call_once(flag, []{
@@ -53,34 +43,14 @@ void ensureDefaultFonts() {
     });
 }
 
-} // namespace
-
-bool registerSvgFontFace(const std::string& family, bool bold, bool italic,
-                         const FontRef& ref) {
-    if (ref.path.empty()) return false;
-    return lunasvg_add_font_face_from_file(family.c_str(), bold, italic, ref.path.c_str());
-}
-
-SvgPixels rasterizeSvgToPixels(std::string_view svg, int targetW, int targetH) {
+// lunasvg returns ARGB32 premultiplied. On little-endian (the only target
+// ge supports) that's bytes B,G,R,A per pixel in memory.
+// bgfx::TextureFormat::RGBA8 expects R,G,B,A. Swap byte 0 and byte 2 in
+// each pixel; keep premultiplication.
+SvgPixels bitmapToPixels(const lunasvg::Bitmap& bm) {
     SvgPixels out;
+    if (bm.isNull()) return out;
 
-    ensureDefaultFonts();
-
-    auto doc = lunasvg::Document::loadFromData(svg.data(), svg.size());
-    if (!doc) {
-        spdlog::error("ge::rasterizeSvgToPixels: failed to parse SVG ({} bytes)", svg.size());
-        return out;
-    }
-
-    auto bm = doc->renderToBitmap(targetW, targetH);
-    if (bm.isNull()) {
-        spdlog::error("ge::rasterizeSvgToPixels: renderToBitmap returned null ({}x{})", targetW, targetH);
-        return out;
-    }
-
-    // lunasvg returns ARGB32 premultiplied. On little-endian (the only target
-    // ge supports) that's bytes B,G,R,A per pixel in memory. bgfx::TextureFormat::RGBA8
-    // expects R,G,B,A. Swap byte 0 and byte 2 in each pixel; keep premultiplication.
     const int w = bm.width();
     const int h = bm.height();
     const int stride = bm.stride();
@@ -100,25 +70,66 @@ SvgPixels rasterizeSvgToPixels(std::string_view svg, int targetW, int targetH) {
             dRow[x * 4 + 3] = sRow[x * 4 + 3];
         }
     }
-
     return out;
 }
 
-bgfx::TextureHandle rasterizeSvg(std::string_view svg, int targetW, int targetH) {
-    auto pixels = rasterizeSvgToPixels(svg, targetW, targetH);
-    if (pixels.isNull()) {
-        return BGFX_INVALID_HANDLE;
-    }
+Sprite uploadPixels(const SvgPixels& pixels) {
+    if (pixels.isNull()) return Sprite{};
     const bgfx::Memory* mem = bgfx::copy(
         pixels.rgba.data(),
         static_cast<uint32_t>(pixels.rgba.size()));
-    return bgfx::createTexture2D(
+    Sprite out;
+    out.tex = bgfx::createTexture2D(
         static_cast<uint16_t>(pixels.width),
         static_cast<uint16_t>(pixels.height),
         false, 1,
         bgfx::TextureFormat::RGBA8,
         BGFX_TEXTURE_NONE,
         mem);
+    out.width  = pixels.width;
+    out.height = pixels.height;
+    return out;
+}
+
+} // namespace
+
+bool registerSvgFontFace(const std::string& family, bool bold, bool italic,
+                         const FontRef& ref) {
+    if (ref.path.empty()) return false;
+    return lunasvg_add_font_face_from_file(family.c_str(), bold, italic, ref.path.c_str());
+}
+
+SvgPixels rasterizeSvgToPixels(std::string_view svg, int targetW, int targetH) {
+    ensureDefaultFonts();
+
+    auto doc = lunasvg::Document::loadFromData(svg.data(), svg.size());
+    if (!doc) {
+        spdlog::error("ge::rasterizeSvgToPixels: failed to parse SVG ({} bytes)", svg.size());
+        return {};
+    }
+
+    auto bm = doc->renderToBitmap(targetW, targetH);
+    if (bm.isNull()) {
+        spdlog::error("ge::rasterizeSvgToPixels: renderToBitmap returned null ({}x{})", targetW, targetH);
+        return {};
+    }
+    return bitmapToPixels(bm);
+}
+
+Sprite rasterizeSvg(std::string_view svg, int targetW, int targetH) {
+    return uploadPixels(rasterizeSvgToPixels(svg, targetW, targetH));
+}
+
+Sprite renderSvgDocument(const lunasvg::Document& doc, int targetW, int targetH) {
+    // lunasvg::Document::renderToBitmap is non-const in some versions; the
+    // const_cast is safe because renderToBitmap doesn't observably mutate
+    // the document beyond updating an internal layout cache.
+    auto bm = const_cast<lunasvg::Document&>(doc).renderToBitmap(targetW, targetH);
+    if (bm.isNull()) {
+        spdlog::error("ge::renderSvgDocument: renderToBitmap returned null ({}x{})", targetW, targetH);
+        return Sprite{};
+    }
+    return uploadPixels(bitmapToPixels(bm));
 }
 
 } // namespace ge

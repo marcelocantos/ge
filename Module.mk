@@ -117,11 +117,10 @@ ge/SRC_DIRECT = \
 	$(ge)/src/Immersive_stub.cpp \
 	$(ge)/src/CutoutInsets_stub.cpp \
 	$(ge)/src/Attitude_apple.mm \
-	$(ge)/src/SvgRasterizer.cpp \
-	$(ge)/src/SvgSprite.cpp \
-	$(ge)/src/LoadTexture.cpp \
-	$(ge)/src/RasterizeText.cpp \
-	$(ge)/src/SpriteBatch.cpp \
+	$(ge)/src/sprite.cpp \
+	$(ge)/src/svg.cpp \
+	$(ge)/src/png.cpp \
+	$(ge)/src/text.cpp \
 	$(ge)/src/render/DirectRenderHost.mm \
 	$(ge)/tools/player_orientation_stub.cpp
 
@@ -260,10 +259,11 @@ ge/TEST_SRC = \
 	$(ge)/src/main_test.cpp \
 	$(ge)/src/DampedRotation_test.cpp \
 	$(ge)/src/Rect_test.cpp \
-	$(ge)/src/SvgRasterizer_test.cpp \
-	$(ge)/src/LoadTexture_test.cpp \
-	$(ge)/src/RasterizeText_test.cpp \
-	$(ge)/src/SpriteBatch_test.cpp
+	$(ge)/src/svg_test.cpp \
+	$(ge)/src/png_test.cpp \
+	$(ge)/src/text_test.cpp \
+	$(ge)/src/sprite_test.cpp \
+	$(ge)/src/transform_test.cpp
 ge/TEST_OBJ = $(patsubst $(ge)/src/%.cpp,$(BUILD_DIR)/ge/src/%.o,$(ge/TEST_SRC))
 
 # Shared variables (parent can += to extend)

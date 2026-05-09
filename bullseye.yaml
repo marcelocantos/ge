@@ -1453,6 +1453,25 @@ targets:
     origin: discussed during T47-T49 wrap-up; "where did we get to with app icons?" - 2026-05-10
     discovered: 2026-05-10
     achieved: 2026-05-10
+  T51:
+    name: ge ships an interactive lunasvg surface, a unit-square Sprite, ge::frame(Rect), and a header reorg
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - Sprite struct (rename of SvgSprite) lives in include/ge/sprite.h with a single draw(bgfx::ViewId) method. Model space is the unit square (0..1, 0..1), source image fills it, u=v=0 at top-left of source. Caller drives placement via bgfx::setTransform — there is no Rect overload of draw and no drawTexturedQuad. SpriteBatch (T49) folded into the same header; addSprite takes a la::float4x4 modelToWorld + Sprite + colour
+    - include/ge/transform.h declares la::float4x4 ge::frame(Rect) returning the rect's coordinate frame as a 4x4 matrix (origin in translation column, width/height as x/y basis, third row zero so z input flattens to 0). Negative w / h is supported and is how y-up consumers flip orientation. No rectMatrix(from, to) — composition (frame(to) * la::inverse(frame(from))) covers the general case
+    - include/ge/svg.h consolidates rasterizeSvg + rasterizeSvgToPixels + registerSvgFontFace from SvgRasterizer.h, adds the new interactive surface ge::renderSvgDocument(const lunasvg::Document& doc, int w, int h) -> Sprite, and re-exports <lunasvg.h> so consumers get lunasvg::Document / Element / applyStyleSheet / elementFromPoint / etc. via the same include. No mapWorldToSvg helper — hit testing falls out of la::inverse(frame(...)) plus a multiply by sprite.{width,height}
+    - include/ge/png.h replaces ge/LoadTexture.h. loadImage(path) returns Sprite (was loadTexture2D returning bgfx::TextureHandle + out-params)
+    - include/ge/text.h replaces ge/RasterizeText.h. rasterizeText(...) returns Sprite (was TextTexture struct with the same shape)
+    - Old headers (SvgRasterizer.h, SvgSprite.h, LoadTexture.h, RasterizeText.h, SpriteBatch.h) are deleted — pre-1.0, no shims. Module.mk's ge/SRC_DIRECT and ge/TEST_SRC updated to the new file names. ge/INCLUDES unchanged (the lunasvg include path stays public so the re-export through <ge/svg.h> resolves)
+    - 'sample/tiltbuggy/src/Renderer.cpp updated to the new API: i_->pond.draw(view) under bgfx::setTransform(&ge::frame(worldRect)[0][0]); i_->title likewise. Pond + title still render correctly (visual smoke test on macOS)'
+    - Existing unit tests pass after the rename (SvgRasterizer_test, LoadTexture_test, RasterizeText_test, SpriteBatch_test, Rect_test, DampedRotation_test). New test for ge::frame(Rect) verifies forward mapping (unit corners → rect corners) and inverse round-trip
+    - 'ge/CLAUDE.md updates the SVG Rasterization section: Sprite is now generic (not SVG-specific), one model-space convention (unit square), one transform primitive (ge::frame), interactive lunasvg surface documented with the hit-test pattern. Apple TTC bold limitation note carries forward'
+    context: 'Discussed 2026-05-10 after T50. Three threads converged: (a) drop the SvgSprite name — it''s not SVG-specific, just a textured sprite; (b) collapse drawTexturedQuad / Sprite::draw(rect) / mapWorldToSvg into a single setTransform-driven Sprite::draw plus a generic ge::frame(Rect) → la::float4x4; (c) add the interactive lunasvg surface (renderSvgDocument) so consumers can use Document::applyStyleSheet, getElementById, setAttribute, elementFromPoint as live state, with ge handling bgfx upload. Header reorg consolidates sprite/transform/svg/png/text into thematic files. Pre-1.0, so no compat shims. The user''s key insight: rect-to-rect coord mapping is just matrix multiplication; no rectMatrix(from, to) helper needed.'
+    origin: discussed during T50 wrap-up; "would a new class add much value over lunasvg's API?" → "the whole concept bothers me — the matrix is the primitive" — 2026-05-10
+    discovered: 2026-05-10
+    achieved: 2026-05-10
   T6:
     name: Player can switch between active servers without QR
     status: identified

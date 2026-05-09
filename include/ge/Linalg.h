@@ -17,4 +17,20 @@
 
 namespace ge::la {
 using namespace linalg::aliases;
+
+// Re-export common matrix/vector ops so `ge::la::mul`, `ge::la::inverse`,
+// etc. resolve without a separate `using linalg::...` at the call site.
+// linalg's free functions live in the `linalg` namespace itself (not
+// `aliases`), so they're not picked up by the `using namespace` above.
+using linalg::mul;
+using linalg::inverse;
+using linalg::transpose;
+using linalg::dot;
+using linalg::cross;
+using linalg::length;
+using linalg::length2;
+using linalg::normalize;
+using linalg::distance;
+using linalg::lerp;
+using linalg::clamp;
 }

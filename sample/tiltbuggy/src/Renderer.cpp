@@ -5,7 +5,9 @@
 #include "Scene.h"
 
 #include <ge/FileIO.h>
-#include <ge/SvgSprite.h>
+#include <ge/sprite.h>
+#include <ge/svg.h>
+#include <ge/transform.h>
 
 #include <bgfx/bgfx.h>
 #include <bx/math.h>
@@ -180,8 +182,8 @@ constexpr uint32_t rgb(uint32_t r, uint32_t g, uint32_t b) {
 struct Renderer::Impl {
     bgfx::VertexLayout  layout;
     bgfx::ProgramHandle program = BGFX_INVALID_HANDLE;
-    ge::SvgSprite       pond;
-    ge::SvgSprite       title;
+    ge::Sprite          pond;
+    ge::Sprite          title;
 };
 
 Renderer::Renderer() : i_(std::make_unique<Impl>()) {}
@@ -200,11 +202,11 @@ void Renderer::init(const char* shaderDir) {
 
     // Rasterize the icy-pond SVG to a bgfx texture sized at 384×256 pixels
     // (matching the SVG viewBox and the ice patch's 1.5:1 world aspect).
-    i_->pond = ge::rasterizeSvgSprite(kIcyPondSvg, 384, 256);
+    i_->pond = ge::rasterizeSvg(kIcyPondSvg, 384, 256);
 
     // Rasterize the "TILT BUGGY" title SVG. 768x128 = 6:1 aspect; we'll
     // place it in a similarly proportioned world rect above the pond.
-    i_->title = ge::rasterizeSvgSprite(kTitleSvg, 768, 128);
+    i_->title = ge::rasterizeSvg(kTitleSvg, 768, 128);
 }
 
 void Renderer::drawFrame(const Scene& scene, const ge::Context& c,
@@ -305,14 +307,23 @@ void Renderer::drawFrame(const Scene& scene, const ge::Context& c,
     // SVG-rasterized texture, inflated 25% past the collision rect so the
     // irregular bezier border has visible overhang past where the friction
     // actually changes.
+    //
+    // World is y-up (gravity points -y), so the rect's `y` is the rect's
+    // TOP (larger y) and `h` is NEGATIVE, flipping the y basis so the
+    // sprite's source-image top lands at world top.
     if (!i_->pond.isNull()) {
         for (const auto& surf : scene.surfaces()) {
             if (surf.type != SurfaceType::Ice) continue;
             const float pw = (surf.r - surf.l) * 0.125f;
             const float ph = (surf.t - surf.b) * 0.125f;
-            ge::drawSprite(0, i_->pond,
-                           surf.l - pw, surf.t + ph,
-                           surf.r + pw, surf.b - ph);
+            const auto m = ge::frame(ge::Rect{
+                surf.l - pw,
+                surf.t + ph,                          // y = TOP in y-up
+                (surf.r - surf.l) + 2.f * pw,
+                -((surf.t - surf.b) + 2.f * ph),      // h NEGATIVE for y-up
+            });
+            bgfx::setTransform(&m[0][0]);
+            i_->pond.draw(0);
         }
     }
 
@@ -323,9 +334,14 @@ void Renderer::drawFrame(const Scene& scene, const ge::Context& c,
         const float titleTop    = he - 0.04f * he;     // small margin from the top wall
         const float titleHeight = 0.18f * he;
         const float titleWidth  = titleHeight * 6.0f;  // 6:1 aspect
-        ge::drawSprite(0, i_->title,
-                       -titleWidth * 0.5f, titleTop,
-                       +titleWidth * 0.5f, titleTop - titleHeight);
+        const auto m = ge::frame(ge::Rect{
+            -titleWidth * 0.5f,
+            titleTop,                                 // y = top in y-up
+            titleWidth,
+            -titleHeight,                             // h NEGATIVE for y-up
+        });
+        bgfx::setTransform(&m[0][0]);
+        i_->title.draw(0);
     }
 }
 

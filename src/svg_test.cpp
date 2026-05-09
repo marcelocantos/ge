@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include <doctest.h>
-#include <ge/SvgRasterizer.h>
+#include <ge/svg.h>
 
 #include <string_view>
 

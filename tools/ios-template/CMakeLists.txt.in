@@ -89,7 +89,10 @@ set(GE_SOURCES
     ${GE_ROOT}/src/Signal.cpp
     ${GE_ROOT}/src/SessionHost.mm
     ${GE_ROOT}/src/SvgRasterizer.cpp
-    ${GE_ROOT}/src/SvgSprite.cpp
+    ${GE_ROOT}/src/sprite.cpp
+    ${GE_ROOT}/src/svg.cpp
+    ${GE_ROOT}/src/png.cpp
+    ${GE_ROOT}/src/text.cpp
     ${GE_ROOT}/src/render/DirectRenderHost.mm
     ${GE_ROOT}/tools/player_orientation_ios.mm
     ${GE_ROOT}/vendor/src/sqlite3.c
