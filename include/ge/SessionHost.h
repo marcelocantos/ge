@@ -36,6 +36,8 @@ enum class DeviceClass : uint8_t {
 // Corner accessors return la::float2 (linalg's vec<float,2>,
 // re-exported in ge::la — see ge/Linalg.h) so they compose with the
 // rest of the engine's vector math without an intermediate copy.
+struct SafeAreaInsets;
+
 struct Rect {
     float x = 0;
     float y = 0;
@@ -48,7 +50,57 @@ struct Rect {
     la::float2 tr() const { return {x + w, y    }; }
     la::float2 bl() const { return {x,     y + h}; }
     la::float2 br() const { return {x + w, y + h}; }
+
+    // Size and centre helpers.
+    la::float2 size()   const { return {w, h}; }
+    la::float2 center() const { return {x + w * 0.5f, y + h * 0.5f}; }
+
+    // Empty when w or h is non-positive. Empty rects are "no area" —
+    // they intersect nothing and are absorbed by `unioned`.
+    bool empty() const { return w <= 0 || h <= 0; }
+
+    // Half-open hit-test: includes [x, x+w) × [y, y+h). Matches SDL/bgfx
+    // pixel coord convention so adjacent rects tile without overlap.
+    bool contains(la::float2 p) const {
+        return p.x >= x && p.x < x + w && p.y >= y && p.y < y + h;
+    }
+    // True when `other` is entirely inside this rect.
+    bool contains(const Rect& other) const {
+        return !other.empty() && !empty()
+            && other.x >= x && other.y >= y
+            && other.x + other.w <= x + w
+            && other.y + other.h <= y + h;
+    }
+    // True when this and `other` overlap on a positive-area region.
+    // Boundary-touching does not count as overlap.
+    bool intersects(const Rect& other) const {
+        return !empty() && !other.empty()
+            && x < other.x + other.w && other.x < x + w
+            && y < other.y + other.h && other.y < y + h;
+    }
+    // Overlap rect, or an empty rect if there is no overlap.
+    Rect intersection(const Rect& other) const;
+    // Bounding rect of the two. Treats empty rects as "nothing" — if
+    // either is empty the other is returned unchanged.
+    Rect unioned(const Rect& other) const;
+
+    // Shrink (or expand, when negative) by dx on left/right and dy on
+    // top/bottom. The result may be empty.
+    Rect inset(float dx, float dy) const {
+        return Rect{x + dx, y + dy, w - 2 * dx, h - 2 * dy};
+    }
+    // Shrink by per-edge safe-area insets.
+    Rect inset(const SafeAreaInsets& s) const;
+    // Translated copy.
+    Rect translated(la::float2 d) const {
+        return Rect{x + d.x, y + d.y, w, h};
+    }
 };
+
+inline bool operator==(const Rect& a, const Rect& b) {
+    return a.x == b.x && a.y == b.y && a.w == b.w && a.h == b.h;
+}
+inline bool operator!=(const Rect& a, const Rect& b) { return !(a == b); }
 
 // Per-edge insets (pixels) of a safe-area-style boundary within the
 // render surface. Engine-internal struct — used to populate the rect
@@ -59,6 +111,12 @@ struct SafeAreaInsets {
     int left   = 0;
     int right  = 0;
 };
+
+inline Rect Rect::inset(const SafeAreaInsets& s) const {
+    return Rect{x + float(s.left), y + float(s.top),
+                w - float(s.left + s.right),
+                h - float(s.top + s.bottom)};
+}
 
 // Platform context provided to the game by ge::run() — once at session
 // start (passed to the factory) and once per frame (passed to onRender).

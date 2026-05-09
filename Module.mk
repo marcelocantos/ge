@@ -221,7 +221,8 @@ ge/VENDOR_CPP_OBJ = $(patsubst $(ge)/vendor/src/%.cpp,$(BUILD_DIR)/ge/vendor/%.o
 # Test sources
 ge/TEST_SRC = \
 	$(ge)/src/main_test.cpp \
-	$(ge)/src/DampedRotation_test.cpp
+	$(ge)/src/DampedRotation_test.cpp \
+	$(ge)/src/Rect_test.cpp
 ge/TEST_OBJ = $(patsubst $(ge)/src/%.cpp,$(BUILD_DIR)/ge/src/%.o,$(ge/TEST_SRC))
 
 # Shared variables (parent can += to extend)
