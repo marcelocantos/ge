@@ -1219,24 +1219,25 @@ targets:
     origin: decomposed from T42 on 2026-05-09
     discovered: 2026-05-09
   T42.4:
-    name: ge bundles a permissive TTF and uses it as the default font for ge::rasterizeSvg
-    status: identified
+    name: ge::rasterizeSvg uses ge::resolveFont for default font registration; apps override via ge::registerSvgFontFace
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
-    - A permissive sans-serif TTF (e.g. DejaVuSans-Bold OFL, Roboto-Bold Apache-2.0, Inter OFL) lives at ge/data/fonts/, and NOTICES.md attributes it
-    - ge::rasterizeSvg installs the bundled font with lunasvg's font resolver before render, so SVGs that reference generic family names (sans-serif, serif, monospace) render text consistently across all platforms
-    - 'Apps can override the resolver: a documented hook (e.g. a ge::SvgFontConfig parameter, or a global ge::setSvgFontResolver function) lets the app swap in its own TTFs'
-    - A unit test renders an SVG with a <text> element using the bundled font and asserts a non-zero alpha glyph footprint at expected coordinates (CPU-side bitmap inspection)
-    - ge/data/fonts/ assets are picked up by Resource() / shipped into iOS bundle Resources/ and Android assets/ alongside other ge data, OR loaded as bytes from a header-embedded blob — whichever the engine already does for built-in assets
-    context: Text-rendering completion for T42. Independent of T42.3 — text works on whichever platforms T42.3 has unlocked. Pick a permissive licence (OFL or Apache-2.0). DejaVuSans-Bold is ~700 KB, Inter Regular is ~300 KB; size matters because the asset ships in every consuming app.
+    - include/ge/SvgRasterizer.h declares ge::registerSvgFontFace(family, bold, italic, FontRef) — registers a font face with lunasvg's font cache for SVG <text> rendering
+    - ge::rasterizeSvg / rasterizeSvgToPixels lazy-register a default sans-serif / serif / monospace family via ge::resolveFont("system:sans-serif") etc. on first call, IF the consuming app hasn't already registered something for that family
+    - A unit test renders an SVG with a <text> element and asserts the rasterized buffer contains non-zero alpha pixels in the text region (i.e. glyphs were drawn rather than text being silently dropped)
+    - ge does NOT bundle a TTF asset — no asset bloat; consumers ship their own fonts for production typography. Documented as a deliberate choice
+    - Known limitation — faux-bold on Apple TTC system fonts — documented in ge/CLAUDE.md (T42.5) so future readers don't trip on it
+    context: Reframed during T42.4 design (2026-05-09). Original criterion (bundle a permissive TTF) replaced because real games ship licensed/custom fonts; system fonts are dev-time only. resolveFont + override hook is zero-bloat and reuses existing FontLoader infrastructure. Apple's TTC face-index limitation is acknowledged dev-time tax, addressable later via 5-line lunasvg patch if it bites a real consumer.
     depends_on:
     - T42.2
     origin: decomposed from T42 on 2026-05-09
     discovered: 2026-05-09
+    achieved: 2026-05-09
   T42.5:
     name: ge/CLAUDE.md documents the SVG rendering surface
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -1248,6 +1249,7 @@ targets:
     - T42.4
     origin: decomposed from T42 on 2026-05-09
     discovered: 2026-05-09
+    achieved: 2026-05-09
   T42.6:
     name: ge ships an SvgSprite + textured-quad draw primitive so consumers don't reinvent the shader pair
     status: achieved
@@ -1288,7 +1290,7 @@ targets:
     discovered: 2026-05-09
   T44:
     name: ge surfaces system back-press as a game callback (Android predictive back + iOS edge swipe)
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -1306,9 +1308,10 @@ targets:
     - lifecycle
     origin: manual
     discovered: 2026-05-09
+    achieved: 2026-05-09
   T45:
     name: ge surfaces OS memory-pressure warnings to games for cache eviction
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -1327,6 +1330,7 @@ targets:
     - ios
     origin: manual
     discovered: 2026-05-09
+    achieved: 2026-05-09
   T46:
     name: ge ships cross-platform push notifications (FCM on both iOS and Android)
     status: identified
