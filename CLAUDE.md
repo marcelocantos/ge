@@ -253,6 +253,8 @@ player: $(ge/PLAYER)
 | `ge/src/BgfxContext.mm` | bgfx device setup and frame management |
 | `ge/src/Signal.cpp` | SIGINT / graceful shutdown |
 | `ge/src/SessionHost.mm` | `ge::run()` — sideband connect, session lifecycle |
+| `ge/src/SvgRasterizer.cpp` | `ge::rasterizeSvg*` + lazy default font registration via lunasvg |
+| `ge/src/SvgSprite.cpp` | `ge::SvgSprite` + `drawSprite` / `drawTexturedQuad` (lazy textured-quad program) |
 | `ge/src/VideoEncoder_apple.mm` | H.264 encoding via VideoToolbox |
 | `ge/src/VideoDecoder_apple.mm` | H.264 decoding via VideoToolbox |
 | `ge/tools/player_capture_apple.mm` | Player screen capture backend (Apple) |
@@ -406,6 +408,54 @@ ged can run as a launchd agent for auto-start on login and restart-on-crash.
 ### Rendering
 
 - **`BgfxContext`** (`BgfxContext.h`) — Manages the bgfx device lifecycle: initialization (Metal on macOS, Vulkan on Android), frame begin/end, and headless vs. windowed mode. Used internally by `SessionHost`; apps interact with bgfx directly via its API rather than through this class.
+
+### SVG Rasterization (🎯T42)
+
+ge ships [lunasvg](https://github.com/sammycage/lunasvg) (with its bundled plutovg) as the canonical SVG rasterizer. SDL_image's built-in `IMG_LoadSizedSVG_IO` uses nanosvg, which can't render text or `clipPath`; ge bypasses that path entirely. See [NOTICES.md](NOTICES.md) for the licence chain (lunasvg + plutovg + the FreeType-derived raster code + stb_*).
+
+**When to use:** procedural UI chrome, generated icons, anything you'd otherwise hand-author as a static PNG and bake into the asset pipeline. SVG is good for crisp shapes that scale across device DPI without per-resolution variants. For complex hand-drawn art, stick with PNG/ASTC.
+
+**Three layers, smallest at the top:**
+
+- **`ge::rasterizeSvgToPixels(svg, w, h)`** (`SvgRasterizer.h`) — Returns `SvgPixels { rgba, width, height }`: a CPU-side RGBA8 **premultiplied-alpha** byte buffer at the requested pixel dimensions. Empty `rgba` on parse / OOM failure with a logged error. Pure data; bgfx-free; the unit-test friendly path.
+- **`ge::rasterizeSvg(svg, w, h)`** (`SvgRasterizer.h`) — Same pipeline + `bgfx::createTexture2D` + `bgfx::copy`. Returns a `bgfx::TextureHandle`; caller owns it and must `bgfx::destroy` when done. `BGFX_INVALID_HANDLE` on failure. bgfx must be initialised before calling.
+- **`ge::rasterizeSvgSprite(svg, w, h)`** (`SvgSprite.h`) — Returns `SvgSprite { tex, width, height }`: the bgfx handle paired with its source pixel dimensions, so draw helpers can preserve aspect ratio without forcing the caller to encode it in `setTransform`.
+
+**Drawing a sprite onto the screen:**
+
+- **`ge::drawSprite(view, sprite, l, t, r, b)`** — axis-aligned convenience. Fills the world rect (l, b)..(r, t) with the sprite (y-up convention; `t > b`). Builds the pixel→world model matrix internally; submits one quad. Uses premultiplied-alpha blend.
+- **`ge::drawSprite(view, sprite)`** — caller has already set `bgfx::setTransform`. Geometry spans `(-w/2, -h/2)..(w/2, h/2)` in model space (1 unit = 1 source pixel), centred on origin so rotation is around the sprite's centre.
+- **`ge::drawTexturedQuad(view, tex, halfW, halfH)`** — primitive: works with any `bgfx::TextureHandle`, not just SVG-derived ones. Same model-space convention.
+
+The textured-quad shader pair reuses the engine's existing `ge_compose_{vs,fs}.bin` (already shipped for `DirectRenderHost`'s viewport-tilt compose pass). No app-side shader files; `ge::drawSprite` lazy-creates the bgfx program on first call.
+
+**Pattern, end-to-end:**
+
+```cpp
+// In your factory callback, after bgfx is up:
+auto pondSvg = R"SVG(<svg xmlns="..." width="384" height="256">
+  <path d="M 30,90 C ..." fill="url(#ice)"/>
+  ...
+</svg>)SVG";
+ge::SvgSprite pond = ge::rasterizeSvgSprite(pondSvg, 384, 256);
+
+// Per frame:
+ge::drawSprite(0, pond, worldL, worldT, worldR, worldB);
+
+// On shutdown:
+if (bgfx::isValid(pond.tex)) bgfx::destroy(pond.tex);
+```
+
+Sample: `sample/tiltbuggy/src/Renderer.cpp` uses this pattern for the icy-pond surface.
+
+**SVG features lunasvg supports:** path, rect, circle, ellipse, polygon, polyline; fills (solid, linearGradient, radialGradient, pattern); strokes; clipPath; mask; gradients; opacity; nested groups; transforms; `<text>` (basic). It is **not** a SVG 2 / animation engine — no SMIL, no scripting.
+
+**SVG `<text>` and fonts:** SVGs that use `<text>` need fonts registered with lunasvg's font cache before rendering. ge handles this in two layers:
+
+- **Lazy default registration.** On the first call into `rasterizeSvg*`, ge calls `ge::resolveFont("system:sans-serif")` / `serif` / `monospace` (regular and bold each) and feeds the resulting paths into lunasvg via `lunasvg_add_font_face_from_file`. Best-effort — if `resolveFont` finds no candidate, the family is silently unregistered and SVGs that reference it fall back to lunasvg's last-resort behaviour.
+- **App overrides.** Apps that ship custom typography call `ge::registerSvgFontFace(family, bold, italic, FontRef)` (from `SvgRasterizer.h`) before the first rasterize, or alongside it. The path most polished games will take — ship your own face, point `<text font-family="...">` at it, render. ge does NOT bundle a default TTF; that's a deliberate choice (no asset bloat in consuming apps; no engine-imposed typography on shipping titles).
+
+**Apple TTC limitation:** Apple's first-party fonts (SF Pro, Helvetica, HelveticaNeue, etc.) ship as `.ttc` collections where each weight is a separate face inside one file. lunasvg's public C API drops the TTC face index — `lunasvg_add_font_face_from_file(family, bold, italic, path)` always loads face 0 (Regular) regardless of `bold`/`italic`. So requesting bold on an Apple system font yields lunasvg's synthetic **faux-bold** rendering (visibly bolder, less crisp than a real bold cut). Not a problem on Android / Linux / Windows (separate `.ttf` per weight) and not a problem with custom `.ttf` fonts. Treat as dev-time only — ship custom fonts for production typography. Upgrade path if it ever bites: 5-line patch to lunasvg's wrapper to thread the ttcindex through to plutovg's existing `plutovg_font_face_load_from_file(path, ttcindex)`.
 
 ### Protocol
 

@@ -83,6 +83,34 @@ TEST_CASE("rasterizeSvgToPixels: malformed SVG returns null") {
     CHECK(pixels.rgba.empty());
 }
 
+TEST_CASE("rasterizeSvgToPixels: <text> renders glyphs via the lazy default font") {
+    // 64×32 with a "Hi" at y=22 in a 20px sans-serif. The actual glyph metrics
+    // depend on which platform font resolveFont picks, but any reasonable
+    // sans-serif draws SOME ink in the left portion of the image. We only
+    // assert "non-trivial number of opaque pixels in the text band" rather
+    // than exact glyph shapes, which would be brittle across platforms.
+    constexpr std::string_view svg = R"SVG(<svg xmlns="http://www.w3.org/2000/svg" width="64" height="32">
+  <text x="2" y="22" font-family="sans-serif" font-size="20" fill="#000000">Hi</text>
+</svg>)SVG"sv;
+
+    auto pixels = ge::rasterizeSvgToPixels(svg, 64, 32);
+    REQUIRE_FALSE(pixels.isNull());
+    CHECK(pixels.width == 64);
+    CHECK(pixels.height == 32);
+
+    int inkPixels = 0;
+    for (int y = 0; y < pixels.height; ++y) {
+        for (int x = 0; x < pixels.width; ++x) {
+            if (pixelAt(pixels, x, y).a > 0) ++inkPixels;
+        }
+    }
+
+    // Rough sanity floor: a 20px-tall "Hi" should ink at least a couple of
+    // dozen pixels even on the most lightweight default font. If this hits
+    // zero, the font path is broken (or no system font found at all).
+    CHECK(inkPixels > 20);
+}
+
 TEST_CASE("rasterizeSvgToPixels: 50% alpha rect produces premultiplied pixels") {
     constexpr std::string_view svg = R"SVG(<svg xmlns="http://www.w3.org/2000/svg" width="2" height="2">
   <rect x="0" y="0" width="2" height="2" fill="#FF0000" fill-opacity="0.5"/>
