@@ -29,7 +29,7 @@
 // assumes). ge::rasterizeSvgToPixels emits premultiplied RGBA8 — un-premultiply
 // before encoding.
 
-#include <ge/SvgRasterizer.h>
+#include <ge/svg.h>
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include <stb_image_write.h>

@@ -286,8 +286,10 @@ player: $(ge/PLAYER)
 | `ge/src/BgfxContext.mm` | bgfx device setup and frame management |
 | `ge/src/Signal.cpp` | SIGINT / graceful shutdown |
 | `ge/src/SessionHost.mm` | `ge::run()` — sideband connect, session lifecycle |
-| `ge/src/SvgRasterizer.cpp` | `ge::rasterizeSvg*` + lazy default font registration via lunasvg |
-| `ge/src/SvgSprite.cpp` | `ge::SvgSprite` + `drawSprite` / `drawTexturedQuad` (lazy textured-quad program) |
+| `ge/src/sprite.cpp` | `ge::Sprite::draw` + `ge::SpriteBatch` (lazy textured-quad program) |
+| `ge/src/svg.cpp` | `ge::rasterizeSvg*`, `ge::renderSvgDocument`, font registration |
+| `ge/src/png.cpp` | `ge::loadImage` (PNG / JPEG / etc. → Sprite via SDL3_image) |
+| `ge/src/text.cpp` | `ge::rasterizeText` (FreeType) |
 | `ge/src/VideoEncoder_apple.mm` | H.264 encoding via VideoToolbox |
 | `ge/src/VideoDecoder_apple.mm` | H.264 decoding via VideoToolbox |
 | `ge/tools/player_capture_apple.mm` | Player screen capture backend (Apple) |
@@ -442,53 +444,83 @@ ged can run as a launchd agent for auto-start on login and restart-on-crash.
 
 - **`BgfxContext`** (`BgfxContext.h`) — Manages the bgfx device lifecycle: initialization (Metal on macOS, Vulkan on Android), frame begin/end, and headless vs. windowed mode. Used internally by `SessionHost`; apps interact with bgfx directly via its API rather than through this class.
 
-### SVG Rasterization (🎯T42)
+### Sprites, transforms, and SVG (🎯T42, 🎯T47, 🎯T48, 🎯T49, 🎯T50, 🎯T51)
 
-ge ships [lunasvg](https://github.com/sammycage/lunasvg) (with its bundled plutovg) as the canonical SVG rasterizer. SDL_image's built-in `IMG_LoadSizedSVG_IO` uses nanosvg, which can't render text or `clipPath`; ge bypasses that path entirely. See [NOTICES.md](NOTICES.md) for the licence chain (lunasvg + plutovg + the FreeType-derived raster code + stb_*).
+ge has a small, unified surface for "rasterize/load → texture → draw". One `Sprite` struct, one transform primitive (`ge::frame(Rect)`), four rasterization sources.
 
-**When to use:** procedural UI chrome, generated icons, anything you'd otherwise hand-author as a static PNG and bake into the asset pipeline. SVG is good for crisp shapes that scale across device DPI without per-resolution variants. For complex hand-drawn art, stick with PNG/ASTC.
+#### `Sprite` and `ge::frame` — the universal pair
 
-**Three layers, smallest at the top:**
+- **`ge::Sprite`** (`<ge/sprite.h>`) — `{ bgfx::TextureHandle tex; int width, height; }`. The output of every "X to texture" factory in ge: SVG (one-shot or live document), PNG, text, anything else. Caller owns `tex` and must `bgfx::destroy` it. Sprite's model space is the unit square `(0..1, 0..1)` with the source image filling it (u=v=0 at top-left, u=v=1 at bottom-right).
+- **`Sprite::draw(view)`** — pushes a unit-square quad to `view`. Premultiplied-alpha blend state is set automatically. Caller has set `bgfx::setTransform` to a model-to-world matrix — typically `ge::frame(rect)`. Compose with linalg rotation / scaling matrices for non-axis-aligned placement.
+- **`ge::frame(Rect)`** (`<ge/transform.h>`) — returns a `la::float4x4` that maps the unit-square local space to the rect in parent space. Origin in the translation column, `Rect.w` / `Rect.h` as the x / y basis. **Negative `h` flips the y basis** — that is how a y-up parent space tells `frame` to put unit y=0 at the top. No separate y-up / y-down API.
+- **Rect-to-rect mapping** is just composition — `la::mul(frame(b), la::inverse(frame(a)))`. Use `la::mul`, not `operator*`; linalg deprecates the latter for matrices.
+- **Hit testing** falls out of inversion — apply `la::inverse(modelToWorld)` to a parent-space point to get unit-square coords, then scale by `sprite.width` / `sprite.height` to get source-image pixel coords (e.g. for `lunasvg::Document::elementFromPoint`).
 
-- **`ge::rasterizeSvgToPixels(svg, w, h)`** (`SvgRasterizer.h`) — Returns `SvgPixels { rgba, width, height }`: a CPU-side RGBA8 **premultiplied-alpha** byte buffer at the requested pixel dimensions. Empty `rgba` on parse / OOM failure with a logged error. Pure data; bgfx-free; the unit-test friendly path.
-- **`ge::rasterizeSvg(svg, w, h)`** (`SvgRasterizer.h`) — Same pipeline + `bgfx::createTexture2D` + `bgfx::copy`. Returns a `bgfx::TextureHandle`; caller owns it and must `bgfx::destroy` when done. `BGFX_INVALID_HANDLE` on failure. bgfx must be initialised before calling.
-- **`ge::rasterizeSvgSprite(svg, w, h)`** (`SvgSprite.h`) — Returns `SvgSprite { tex, width, height }`: the bgfx handle paired with its source pixel dimensions, so draw helpers can preserve aspect ratio without forcing the caller to encode it in `setTransform`.
+#### Sources of a `Sprite`
 
-**Drawing a sprite onto the screen:**
+- **`ge::rasterizeSvg(svg, w, h)`** (`<ge/svg.h>`) — rasterize an SVG string via lunasvg.
+- **`ge::rasterizeSvgToPixels(svg, w, h)`** (`<ge/svg.h>`) — same but returns CPU-side `SvgPixels { rgba, width, height }` (premul RGBA8). Useful for unit tests and offline image processing.
+- **`ge::renderSvgDocument(lunasvg::Document& doc, w, h)`** (`<ge/svg.h>`) — render an existing `lunasvg::Document` into a Sprite. For the **interactive flow**: hold the Document alive, mutate via lunasvg's API (`applyStyleSheet`, `getElementById`, `setAttribute`, `elementFromPoint`, `querySelectorAll`, …), call this to re-rasterize after state changes. `<ge/svg.h>` re-exports `<lunasvg.h>` so consumers get the full lunasvg surface via the same include.
+- **`ge::loadImage(path)`** (`<ge/png.h>`) — load PNG / JPEG / BMP / etc. via SDL3_image. Path resolved via `ge::resource` (iOS bundle / Android APK / desktop fs). Premultiplies alpha before upload.
+- **`ge::rasterizeText(text, font, sizePt, color)`** (`<ge/text.h>`) — single-line text via FreeType. `font` is a `FontRef` from `ge::resolveFont`. Premul output. Single line / no wrapping today.
 
-- **`ge::drawSprite(view, sprite, l, t, r, b)`** — axis-aligned convenience. Fills the world rect (l, b)..(r, t) with the sprite (y-up convention; `t > b`). Builds the pixel→world model matrix internally; submits one quad. Uses premultiplied-alpha blend.
-- **`ge::drawSprite(view, sprite)`** — caller has already set `bgfx::setTransform`. Geometry spans `(-w/2, -h/2)..(w/2, h/2)` in model space (1 unit = 1 source pixel), centred on origin so rotation is around the sprite's centre.
-- **`ge::drawTexturedQuad(view, tex, halfW, halfH)`** — primitive: works with any `bgfx::TextureHandle`, not just SVG-derived ones. Same model-space convention.
+ge ships [lunasvg](https://github.com/sammycage/lunasvg) (with its bundled plutovg) as the canonical SVG rasterizer. SDL_image's built-in nanosvg path can't render text or `clipPath`; ge bypasses it. See [NOTICES.md](NOTICES.md) for the licence chain (lunasvg + plutovg + FreeType-derived raster code + stb_*).
 
-The textured-quad shader pair reuses the engine's existing `ge_compose_{vs,fs}.bin` (already shipped for `DirectRenderHost`'s viewport-tilt compose pass). No app-side shader files; `ge::drawSprite` lazy-creates the bgfx program on first call.
+**Lunasvg features supported:** path, rect, circle, ellipse, polygon, polyline; fills (solid, linearGradient, radialGradient, pattern); strokes; clipPath; mask; gradients; opacity; nested groups; transforms; `<text>` (basic); CSS via `applyStyleSheet`; CSS selectors via `querySelectorAll`; hit testing via `elementFromPoint`. **Not** a SVG 2 / animation engine — no SMIL, no scripting.
 
-**Pattern, end-to-end:**
+#### `ge::SpriteBatch` — batched draws
+
+`<ge/sprite.h>` also provides `ge::SpriteBatch` for high-volume sprite rendering. `addSprite(modelToWorld, sprite, color)` queues a quad with the matrix applied to the unit-square corners on the CPU; `submit(view)` flushes runs of same-texture sprites in one draw call per (texture, view) pair. Premultiplied-alpha blend by default; override via `setBlendState`. UV sub-rect overload supports atlasing.
+
+#### Patterns
+
+**Static SVG sprite (e.g. tiltbuggy's icy pond):**
 
 ```cpp
-// In your factory callback, after bgfx is up:
-auto pondSvg = R"SVG(<svg xmlns="..." width="384" height="256">
-  <path d="M 30,90 C ..." fill="url(#ice)"/>
-  ...
-</svg>)SVG";
-ge::SvgSprite pond = ge::rasterizeSvgSprite(pondSvg, 384, 256);
+// Init:
+auto pondSvg = R"SVG(<svg xmlns="..." width="384" height="256">…</svg>)SVG";
+ge::Sprite pond = ge::rasterizeSvg(pondSvg, 384, 256);
 
-// Per frame:
-ge::drawSprite(0, pond, worldL, worldT, worldR, worldB);
+// Per frame, in y-up world:
+const auto m = ge::frame(ge::Rect{
+    -0.24f, +0.45f,   // x = left, y = top in y-up (larger y)
+     0.48f, -0.20f,   // w positive, h NEGATIVE for y-up
+});
+bgfx::setTransform(&m[0][0]);
+pond.draw(0);
 
-// On shutdown:
+// Shutdown:
 if (bgfx::isValid(pond.tex)) bgfx::destroy(pond.tex);
 ```
 
-Sample: `sample/tiltbuggy/src/Renderer.cpp` uses this pattern for the icy-pond surface.
+**Interactive SVG panel (CSS + hit testing):**
 
-**SVG features lunasvg supports:** path, rect, circle, ellipse, polygon, polyline; fills (solid, linearGradient, radialGradient, pattern); strokes; clipPath; mask; gradients; opacity; nested groups; transforms; `<text>` (basic). It is **not** a SVG 2 / animation engine — no SMIL, no scripting.
+```cpp
+auto doc = lunasvg::Document::loadFromData(svgBytes);
+doc->applyStyleSheet("button.active { fill: #FFA000 }");
+auto sprite = ge::renderSvgDocument(*doc, 1024, 256);
 
-**SVG `<text>` and fonts:** SVGs that use `<text>` need fonts registered with lunasvg's font cache before rendering. ge handles this in two layers:
+// Per frame: bgfx::setTransform(...) + sprite.draw(view) as above.
 
-- **Lazy default registration.** On the first call into `rasterizeSvg*`, ge calls `ge::resolveFont("system:sans-serif")` / `serif` / `monospace` (regular and bold each) and feeds the resulting paths into lunasvg via `lunasvg_add_font_face_from_file`. Best-effort — if `resolveFont` finds no candidate, the family is silently unregistered and SVGs that reference it fall back to lunasvg's last-resort behaviour.
-- **App overrides.** Apps that ship custom typography call `ge::registerSvgFontFace(family, bold, italic, FontRef)` (from `SvgRasterizer.h`) before the first rasterize, or alongside it. The path most polished games will take — ship your own face, point `<text font-family="...">` at it, render. ge does NOT bundle a default TTF; that's a deliberate choice (no asset bloat in consuming apps; no engine-imposed typography on shipping titles).
+// On tap (parent-space coords → unit-square via inverse, then to image pixels):
+const auto inv     = la::inverse(panelModelToWorld);
+const auto unit    = la::mul(inv, la::float4{tap.x, tap.y, 0, 1});
+auto el = doc->elementFromPoint(unit.x * sprite.width,
+                                unit.y * sprite.height);
+if (el && el.getAttribute("id") == "btn-play") { /* … */ }
 
-**Apple TTC limitation:** Apple's first-party fonts (SF Pro, Helvetica, HelveticaNeue, etc.) ship as `.ttc` collections where each weight is a separate face inside one file. lunasvg's public C API drops the TTC face index — `lunasvg_add_font_face_from_file(family, bold, italic, path)` always loads face 0 (Regular) regardless of `bold`/`italic`. So requesting bold on an Apple system font yields lunasvg's synthetic **faux-bold** rendering (visibly bolder, less crisp than a real bold cut). Not a problem on Android / Linux / Windows (separate `.ttf` per weight) and not a problem with custom `.ttf` fonts. Treat as dev-time only — ship custom fonts for production typography. Upgrade path if it ever bites: 5-line patch to lunasvg's wrapper to thread the ttcindex through to plutovg's existing `plutovg_font_face_load_from_file(path, ttcindex)`.
+// On state change:
+doc->getElementById("btn-play").setAttribute("class", "active");
+if (bgfx::isValid(sprite.tex)) bgfx::destroy(sprite.tex);
+sprite = ge::renderSvgDocument(*doc, 1024, 256);
+```
+
+**SVG `<text>` and fonts** — SVGs that use `<text>` need fonts registered with lunasvg's font cache. ge handles this in two layers:
+
+- **Lazy default registration.** On the first `rasterizeSvg*` / `renderSvgDocument` call, ge calls `ge::resolveFont("system:sans-serif")` / `serif` / `monospace` (regular and bold each) and feeds the paths to lunasvg.
+- **App overrides** — call `ge::registerSvgFontFace(family, bold, italic, FontRef)` before the first rasterize, or alongside it. The path most polished games take — ship your own face, point `<text font-family="...">` at it, render. ge does NOT bundle a default TTF (no asset bloat; no engine-imposed typography).
+
+**Apple TTC limitation** — Apple's first-party fonts (SF Pro, Helvetica, HelveticaNeue) ship as `.ttc` collections; lunasvg's public C API drops the TTC face index, so requesting bold on an Apple system font yields synthetic **faux-bold** rather than the designed Bold cut. Custom fonts (separate `.ttf` per weight) and non-Apple platforms are unaffected. Dev-time only; ship custom fonts for production typography. Upgrade path if it bites: 5-line patch to lunasvg's wrapper to thread the ttcindex through to plutovg's existing `plutovg_font_face_load_from_file(path, ttcindex)`.
 
 ### Protocol
 

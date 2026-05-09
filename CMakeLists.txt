@@ -176,8 +176,10 @@ set(GE_CORE_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/Resource.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/FileIO.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/Signal.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/SvgRasterizer.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/SvgSprite.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/sprite.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/svg.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/png.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/text.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/vendor/src/sqlift.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/vendor/src/sqlpipe.cpp
 )

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include <doctest.h>
-#include <ge/LoadTexture.h>
+#include <ge/png.h>
 
 #include <SDL3/SDL_iostream.h>
 #include <SDL3/SDL_pixels.h>
@@ -29,21 +29,21 @@ uint8_t premul(uint8_t c, uint8_t a) {
 
 } // namespace
 
-TEST_CASE("loadTexture2D premul: fully opaque pixel is unchanged") {
+TEST_CASE("loadImage premul: fully opaque pixel is unchanged") {
     // Alpha=255: premul(C, 255) should equal C for all C.
     for (int c = 0; c <= 255; ++c) {
         CHECK(premul(static_cast<uint8_t>(c), 255) == static_cast<uint8_t>(c));
     }
 }
 
-TEST_CASE("loadTexture2D premul: fully transparent pixel zeroes RGB") {
+TEST_CASE("loadImage premul: fully transparent pixel zeroes RGB") {
     // Alpha=0: premul(C, 0) should equal 0 for all C.
     for (int c = 0; c <= 255; ++c) {
         CHECK(premul(static_cast<uint8_t>(c), 0) == 0u);
     }
 }
 
-TEST_CASE("loadTexture2D premul: 50% alpha halves channel value (within rounding)") {
+TEST_CASE("loadImage premul: 50% alpha halves channel value (within rounding)") {
     // premul(255, 128): 255*128 = 32640; (32640+127)/255 = 128 → 128.
     CHECK(premul(255, 128) == 128u);
     // premul(128, 128): 128*128 = 16384; (16384+127)/255 ≈ 64.
@@ -52,7 +52,7 @@ TEST_CASE("loadTexture2D premul: 50% alpha halves channel value (within rounding
     CHECK(premul(0, 128) == 0u);
 }
 
-TEST_CASE("loadTexture2D premul: premultiplied invariant R <= A holds") {
+TEST_CASE("loadImage premul: premultiplied invariant R <= A holds") {
     // For any C <= 255 and A <= 255, premul(C, A) <= A.
     // (C*A)/255 <= A because C/255 <= 1.
     for (int a = 0; a <= 255; ++a) {
@@ -70,7 +70,7 @@ TEST_CASE("loadTexture2D premul: premultiplied invariant R <= A holds") {
 // SDL/pixel layer — not the bgfx::createTexture2D call.
 // ─────────────────────────────────────────────────────────────────────
 
-TEST_CASE("loadTexture2D pixel layer: 2x2 half-alpha red PNG premultiplies correctly") {
+TEST_CASE("loadImage pixel layer: 2x2 half-alpha red PNG premultiplies correctly") {
     // Minimal 2×2 RGBA PNG where all pixels are red at 50% alpha
     // (R=255, G=0, B=0, A=128). Generated with Python (zlib + struct).
     // Each row: filter=0x00, then 2 RGBA pixels 0xff 0x00 0x00 0x80.
@@ -128,8 +128,7 @@ TEST_CASE("loadTexture2D pixel layer: 2x2 half-alpha red PNG premultiplies corre
 // crashing. No bgfx init required — the error exits before any bgfx call.
 // ─────────────────────────────────────────────────────────────────────
 
-TEST_CASE("loadTexture2D: non-existent file returns BGFX_INVALID_HANDLE") {
-    bgfx::TextureHandle h = ge::loadTexture2D("/tmp/ge-test-does-not-exist-xyzzy.png");
-    const bgfx::TextureHandle invalid = BGFX_INVALID_HANDLE;
-    CHECK(h.idx == invalid.idx);
+TEST_CASE("loadImage: non-existent file returns null Sprite") {
+    auto s = ge::loadImage("/tmp/ge-test-does-not-exist-xyzzy.png");
+    CHECK(s.isNull());
 }

@@ -3,7 +3,7 @@
 
 #include <doctest.h>
 #include <ge/FontLoader.h>
-#include <ge/RasterizeText.h>
+#include <ge/text.h>
 
 namespace {
 
