@@ -142,30 +142,10 @@ TEST_CASE("imageFromSurface: nullptr input returns null Sprite without crashing"
     CHECK(s.isNull());
 }
 
-// We can't fully exercise imageFromSurface without bgfx initialized
-// (it ends in createTexture2D). Cover the SDL/pixel layer the way the
-// loadImage tests do — synthesize a surface, hand it off, and observe
-// no crash. The Sprite returned has an INVALID_HANDLE because bgfx
-// isn't running, but the function shouldn't have segfaulted along the
-// way.
-
-TEST_CASE("imageFromSurface: synthetic 2x2 RGBA surface processes without crash") {
-    SDL_Surface* s = SDL_CreateSurface(2, 2, SDL_PIXELFORMAT_RGBA32);
-    REQUIRE(s != nullptr);
-    auto* px = static_cast<uint8_t*>(s->pixels);
-    // Fill with R=255, G=0, B=0, A=128 (50% alpha red).
-    for (int i = 0; i < 4; ++i) {
-        px[i * 4 + 0] = 255;
-        px[i * 4 + 1] = 0;
-        px[i * 4 + 2] = 0;
-        px[i * 4 + 3] = 128;
-    }
-    // imageFromSurface takes ownership — don't double-free.
-    auto sprite = ge::imageFromSurface(s);
-    // Without bgfx init the texture handle is invalid, but width/height
-    // should still match the input dimensions when a non-null Sprite is
-    // attempted. (In practice with no bgfx, the returned sprite has
-    // zero handle — we just check we got here.)
-    (void)sprite;  // not asserting validity since bgfx isn't up
-    CHECK(true);
-}
+// The conversion + premultiplication path inside `imageFromSurface`
+// ends in `bgfx::createTexture2D`, which would crash without bgfx
+// initialized. The premul formula is covered above by the
+// `loadImage premul:` cases; the SDL conversion via
+// `SDL_ConvertSurface` is exercised by the `loadImage pixel layer:`
+// case. Full integration is exercised in tests with a live bgfx
+// context.
