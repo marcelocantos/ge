@@ -31,7 +31,7 @@ namespace ge {
 // is recovered by the common case where local-space z = 0; the identity
 // z keeps the matrix invertible (det = w * h) so `la::inverse(frame(r))`
 // is well-defined for hit-testing.
-inline la::float4x4 frame(Rect r) {
+constexpr la::float4x4 frame(Rect r) {
     return {
         { r.w, 0.f, 0.f, 0.f },   // col 0: x basis
         { 0.f, r.h, 0.f, 0.f },   // col 1: y basis

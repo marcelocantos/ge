@@ -20,7 +20,7 @@ struct TextPixels {
     int width  = 0;
     int height = 0;
 
-    bool isNull() const { return rgba.empty(); }
+    constexpr bool isNull() const { return rgba.empty(); }
 };
 
 // Rasterize a UTF-8 string to RGBA8 premultiplied pixels using FreeType.

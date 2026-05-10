@@ -11,14 +11,14 @@ using namespace linalg::aliases;
 // Stores orientation as a quaternion and angular velocity as a 3D vector.
 class DampedRotation {
 public:
-    DampedRotation(float damping = 0.90f) : damping_(damping) {}
+    constexpr DampedRotation(float damping = 0.90f) : damping_(damping) {}
 
-    const float4& orientation() const { return orientation_; }
-    const float3& angularVelocity() const { return angularVelocity_; }
+    constexpr const float4& orientation() const { return orientation_; }
+    constexpr const float3& angularVelocity() const { return angularVelocity_; }
 
-    void setOrientation(const float4& q) { orientation_ = q; }
-    void setAngularVelocity(const float3& v) { angularVelocity_ = v; }
-    void setDamping(float d) { damping_ = d; }
+    constexpr void setOrientation(const float4& q) { orientation_ = q; }
+    constexpr void setAngularVelocity(const float3& v) { angularVelocity_ = v; }
+    constexpr void setDamping(float d) { damping_ = d; }
 
     // Apply incremental rotation (during drag)
     void rotate(const float3& axis, float angle) {
