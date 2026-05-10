@@ -15,6 +15,7 @@
 
 #include <unistd.h>
 #include <mutex>
+#include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -64,16 +65,16 @@ const std::vector<const char*>& candidatesFor(const std::string& name) {
 FontRef resolveSystemFont(const std::string& name) {
     const auto& candidates = candidatesFor(name);
     if (candidates.empty()) {
-        SPDLOG_WARN("Unknown system font name: {}", name);
-        return {};
+        throw std::runtime_error(
+            "ge::resolveFont: unknown system font name '" + name + "'");
     }
     for (const char* path : candidates) {
         if (access(path, R_OK) == 0) {
             return FontRef{path, 0};
         }
     }
-    SPDLOG_WARN("No readable candidate for system font '{}'", name);
-    return {};
+    throw std::runtime_error(
+        "ge::resolveFont: no readable candidate for system font '" + name + "'");
 }
 
 } // namespace
@@ -81,24 +82,38 @@ FontRef resolveSystemFont(const std::string& name) {
 FontRef resolveFont(const std::string& uri) {
     // Cache positive and negative results: each system-font resolve
     // probes multiple candidate paths via access(), and the answer
-    // never changes within a process.
+    // never changes within a process. Empty FontRef in the cache is
+    // the failure marker — on hit we re-throw without re-running the
+    // resolver.
     static std::unordered_map<std::string, FontRef> cache;
     static std::mutex cacheMutex;
     {
         std::lock_guard<std::mutex> lock(cacheMutex);
-        if (auto it = cache.find(uri); it != cache.end()) return it->second;
+        if (auto it = cache.find(uri); it != cache.end()) {
+            if (it->second.path.empty()) {
+                throw std::runtime_error(
+                    "ge::resolveFont: '" + uri + "' previously failed to resolve");
+            }
+            return it->second;
+        }
     }
 
     constexpr const char* kSystemPrefix = "system:";
     constexpr const char* kFilePrefix = "file:";
 
     FontRef result;
-    if (uri.starts_with(kSystemPrefix)) {
-        result = resolveSystemFont(uri.substr(strlen(kSystemPrefix)));
-    } else if (uri.starts_with(kFilePrefix)) {
-        result = FontRef{uri.substr(strlen(kFilePrefix)), 0};
-    } else {
-        result = FontRef{ge::resource(uri), 0};
+    try {
+        if (uri.starts_with(kSystemPrefix)) {
+            result = resolveSystemFont(uri.substr(strlen(kSystemPrefix)));
+        } else if (uri.starts_with(kFilePrefix)) {
+            result = FontRef{uri.substr(strlen(kFilePrefix)), 0};
+        } else {
+            result = FontRef{ge::resource(uri), 0};
+        }
+    } catch (...) {
+        std::lock_guard<std::mutex> lock(cacheMutex);
+        cache.emplace(uri, FontRef{});
+        throw;
     }
 
     std::lock_guard<std::mutex> lock(cacheMutex);

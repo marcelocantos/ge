@@ -12,6 +12,7 @@
 #include <spdlog/spdlog.h>
 
 #include <mutex>
+#include <stdexcept>
 #include <unordered_map>
 
 namespace ge {
@@ -83,13 +84,16 @@ FontRef resolveSystemFont(const std::string& name) {
 
     CFStringRef familyStr = CFStringCreateWithCString(
         kCFAllocatorDefault, lookupName, kCFStringEncodingUTF8);
-    if (!familyStr) return {};
+    if (!familyStr) {
+        throw std::runtime_error(
+            "ge::resolveFont: CFStringCreateWithCString failed for '" + name + "'");
+    }
 
     CTFontRef font = CTFontCreateWithName(familyStr, 12.0, nullptr);
     CFRelease(familyStr);
     if (!font) {
-        SPDLOG_WARN("Core Text could not resolve system font: {}", name);
-        return {};
+        throw std::runtime_error(
+            "ge::resolveFont: Core Text could not resolve system font '" + name + "'");
     }
 
     // Loud fallback detection: CTFontCreateWithName silently substitutes
@@ -131,12 +135,10 @@ FontRef resolveSystemFont(const std::string& name) {
             CFRelease(gotFamily);
         }
         if (!matched) {
-            SPDLOG_WARN(
-                "Requested system font '{}' is not installed — Core Text "
-                "substituted a default; treating as unresolved",
-                name);
             CFRelease(font);
-            return {};
+            throw std::runtime_error(
+                "ge::resolveFont: requested system font '" + name +
+                "' is not installed — Core Text substituted a default");
         }
     }
 
@@ -155,7 +157,8 @@ FontRef resolveSystemFont(const std::string& name) {
     if (!url || !psName) {
         if (url) CFRelease(url);
         if (psName) CFRelease(psName);
-        return {};
+        throw std::runtime_error(
+            "ge::resolveFont: Core Text returned no URL/PSName for '" + name + "'");
     }
 
     char pathBuf[1024];
@@ -164,7 +167,8 @@ FontRef resolveSystemFont(const std::string& name) {
                                           sizeof(pathBuf))) {
         CFRelease(url);
         CFRelease(psName);
-        return {};
+        throw std::runtime_error(
+            "ge::resolveFont: CFURLGetFileSystemRepresentation failed for '" + name + "'");
     }
     CFRelease(url);
 
@@ -181,24 +185,38 @@ FontRef resolveFont(const std::string& uri) {
     // Cache positive and negative results: Core Text resolution is
     // ~1 ms per call (CTFontCreateWithName + family/PS-name compare +
     // CTFontManagerCreateFontDescriptorsFromURL for the TTC face index)
-    // and the answer never changes within a process.
+    // and the answer never changes within a process. Empty FontRef in
+    // the cache is the failure marker — on hit we re-throw without
+    // re-running the resolver.
     static std::unordered_map<std::string, FontRef> cache;
     static std::mutex cacheMutex;
     {
         std::lock_guard<std::mutex> lock(cacheMutex);
-        if (auto it = cache.find(uri); it != cache.end()) return it->second;
+        if (auto it = cache.find(uri); it != cache.end()) {
+            if (it->second.path.empty()) {
+                throw std::runtime_error(
+                    "ge::resolveFont: '" + uri + "' previously failed to resolve");
+            }
+            return it->second;
+        }
     }
 
     constexpr const char* kSystemPrefix = "system:";
     constexpr const char* kFilePrefix = "file:";
 
     FontRef result;
-    if (uri.starts_with(kSystemPrefix)) {
-        result = resolveSystemFont(uri.substr(strlen(kSystemPrefix)));
-    } else if (uri.starts_with(kFilePrefix)) {
-        result = FontRef{uri.substr(strlen(kFilePrefix)), 0};
-    } else {
-        result = FontRef{ge::resource(uri), 0};
+    try {
+        if (uri.starts_with(kSystemPrefix)) {
+            result = resolveSystemFont(uri.substr(strlen(kSystemPrefix)));
+        } else if (uri.starts_with(kFilePrefix)) {
+            result = FontRef{uri.substr(strlen(kFilePrefix)), 0};
+        } else {
+            result = FontRef{ge::resource(uri), 0};
+        }
+    } catch (...) {
+        std::lock_guard<std::mutex> lock(cacheMutex);
+        cache.emplace(uri, FontRef{});
+        throw;
     }
 
     std::lock_guard<std::mutex> lock(cacheMutex);

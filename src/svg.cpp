@@ -17,12 +17,18 @@ namespace ge {
 namespace {
 
 // Register one of the platform's logical font URIs (e.g. "system:sans-serif")
-// with lunasvg's font cache as the named family. Best-effort.
+// with lunasvg's font cache as the named family. Best-effort: SVG text
+// missing a system default should render unstyled, not abort the rasterize.
+// Apps that want a hard failure when a specific family is missing should
+// call resolveFont + registerSvgFontFace explicitly and let the throw
+// propagate.
 void registerPlatformFont(const char* family, bool bold, bool italic, const char* uri) {
-    auto ref = resolveFont(uri);
-    if (ref.path.empty()) {
-        spdlog::warn("ge::rasterizeSvg: resolveFont(\"{}\") returned no path; "
-                     "SVG <text font-family=\"{}\"> may render unstyled", uri, family);
+    FontRef ref;
+    try {
+        ref = resolveFont(uri);
+    } catch (const std::exception& e) {
+        spdlog::warn("ge::rasterizeSvg: {} — SVG <text font-family=\"{}\"> "
+                     "may render unstyled", e.what(), family);
         return;
     }
     if (!lunasvg_add_font_face_from_file(family, bold, italic, ref.path.c_str())) {

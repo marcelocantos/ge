@@ -18,13 +18,22 @@ struct FontRef {
 // Resolve a font URI to a FontRef.
 //
 // Supported schemes:
-//   "system:<name>"   System-provided font by logical name. Standard
-//                     names: sans-serif, sans-serif-bold, serif,
-//                     serif-bold, monospace, monospace-bold.
+//   "system:<name>"   System-provided font by logical name (sans-serif,
+//                     sans-serif-bold, serif, serif-bold, monospace,
+//                     monospace-bold) or platform-native family / PS
+//                     name (e.g. "Helvetica Neue", "Krungthep" on
+//                     Apple).
 //   "file:<path>"     Explicit absolute file path.
 //   "<path>"          Relative path, resolved via ge::resource().
 //
-// Returns an empty FontRef (empty path) if the font can't be resolved.
+// Throws std::runtime_error if a `system:` URI cannot be resolved
+// (logical name unknown on this platform, or named family / PS name
+// not installed). `file:` and bundle-resource paths are pass-through —
+// no readability check; the caller's first read will surface a missing
+// file in its own loud way.
+//
+// Results are memoized for the lifetime of the process; a URI that
+// failed once will throw immediately on subsequent calls.
 FontRef resolveFont(const std::string& uri);
 
 } // namespace ge
