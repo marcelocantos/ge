@@ -1472,6 +1472,23 @@ targets:
     origin: discussed during T50 wrap-up; "would a new class add much value over lunasvg's API?" → "the whole concept bothers me — the matrix is the primitive" — 2026-05-10
     discovered: 2026-05-10
     achieved: 2026-05-10
+  T52:
+    name: All eligible ge API surface is constexpr, with regression tests preventing accidental loss
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - Every method, ctor, operator, and free function in ge's public API surface that can be constexpr is annotated constexpr.
+    - A regression test (Rect_constexpr_test.cpp + transform_constexpr_test.cpp or equivalent) exercises every constexpr API in a static_assert / consteval context, so removing constexpr from any of them breaks the build at the test TU.
+    - make unit-test passes (no runtime regressions).
+    - Sample app (sample/tiltbuggy) builds clean.
+    context: 'v0.19.0 reduced Rect to a small set of pure-arithmetic primitives — every Rect method is a candidate for constexpr. Same for ge::frame(Rect) in transform.h and any other math helpers. The regression test is the load-bearing piece: without it, future edits silently drop constexpr from individual methods and the property erodes.'
+    tags:
+    - api
+    - rect
+    - compile-time
+    origin: manual
+    discovered: 2026-05-10
   T6:
     name: Player can switch between active servers without QR
     status: identified

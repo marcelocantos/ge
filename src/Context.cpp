@@ -3,29 +3,10 @@
 
 #include <ge/SessionHost.h>
 
-#include <algorithm>
-
 namespace ge {
 
-Rect Rect::intersect(const Rect& other) const {
-    if (empty() || other.empty()) return {};
-    const float l = std::max(x, other.x);
-    const float t = std::max(y, other.y);
-    const float r = std::min(x + w, other.x + other.w);
-    const float b = std::min(y + h, other.y + other.h);
-    if (r <= l || b <= t) return {};
-    return Rect{l, t, r - l, b - t};
-}
-
-Rect Rect::bbox(const Rect& other) const {
-    if (empty()) return other;
-    if (other.empty()) return *this;
-    const float l = std::min(x, other.x);
-    const float t = std::min(y, other.y);
-    const float r = std::max(x + w, other.x + other.w);
-    const float b = std::max(y + h, other.y + other.h);
-    return Rect{l, t, r - l, b - t};
-}
+// Rect::intersect / bbox are now defined inline as constexpr in
+// SessionHost.h (T52). Out-of-line definitions removed.
 
 struct Context::M {
     int surfaceWidth;

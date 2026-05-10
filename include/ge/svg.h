@@ -23,7 +23,7 @@ struct SvgPixels {
     int width  = 0;
     int height = 0;
 
-    bool isNull() const { return rgba.empty(); }
+    constexpr bool isNull() const { return rgba.empty(); }
 };
 
 // Rasterize an SVG document string to RGBA8 premultiplied pixels at the

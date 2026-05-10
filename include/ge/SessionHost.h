@@ -71,13 +71,13 @@ struct Rect {
     struct Corners    { la::float2 a, b; };
     struct OriginSize { la::float2 origin, size; };
 
-    Rect() = default;
-    Rect(float x_, float y_, float w_, float h_)
+    constexpr Rect() = default;
+    constexpr Rect(float x_, float y_, float w_, float h_)
         : x(x_), y(y_), w(w_), h(h_) {}
-    Rect(Corners c)
+    constexpr Rect(Corners c)
         : x(c.a.x), y(c.a.y),
           w(c.b.x - c.a.x), h(c.b.y - c.a.y) {}
-    Rect(OriginSize os)
+    constexpr Rect(OriginSize os)
         : x(os.origin.x), y(os.origin.y),
           w(os.size.x),   h(os.size.y) {}
 
@@ -94,40 +94,40 @@ struct Rect {
     // a well-defined but non-conventional result that the caller may
     // or may not find useful. `normalized()` is a convenience for
     // callers who explicitly want positive-w/h form.
-    la::float2 x0y0() const { return {x,     y    }; }
-    la::float2 x1y0() const { return {x + w, y    }; }
-    la::float2 x0y1() const { return {x,     y + h}; }
-    la::float2 x1y1() const { return {x + w, y + h}; }
+    constexpr la::float2 x0y0() const { return {x,     y    }; }
+    constexpr la::float2 x1y0() const { return {x + w, y    }; }
+    constexpr la::float2 x0y1() const { return {x,     y + h}; }
+    constexpr la::float2 x1y1() const { return {x + w, y + h}; }
 
     // Size and center helpers.
-    la::float2 size()        const { return {w, h}; }
-    la::float2 halfExtents() const { return {w * 0.5f, h * 0.5f}; }
-    la::float2 center()      const { return {x + w * 0.5f, y + h * 0.5f}; }
+    constexpr la::float2 size()        const { return {w, h}; }
+    constexpr la::float2 halfExtents() const { return {w * 0.5f, h * 0.5f}; }
+    constexpr la::float2 center()      const { return {x + w * 0.5f, y + h * 0.5f}; }
 
     // Signed area: w * h. Sign reflects the winding implied by the field
     // signs (negative h or negative w produces negative area).
-    float area() const { return w * h; }
+    constexpr float area() const { return w * h; }
 
     // Aspect ratio (w / h). Caller's responsibility to handle h == 0.
-    float aspect() const { return w / h; }
+    constexpr float aspect() const { return w / h; }
 
     // True when w or h is exactly zero (`area() == 0`). Signed-area
     // rects (one negative dimension) are *not* empty — they cover a
     // region with negative winding, which `bbox`/`intersect` accept
     // and process via their min/max formulas without sign-judging.
-    bool empty() const { return w == 0 || h == 0; }
+    constexpr bool empty() const { return w == 0 || h == 0; }
 
     // Contextual-bool: true iff non-empty. Marked `explicit` so the
     // conversion only fires in boolean contexts (`if (r) ...`,
     // `while (r) ...`, `!r`) — no surprise int conversions.
-    explicit operator bool() const { return !empty(); }
-    bool operator!() const { return empty(); }
+    constexpr explicit operator bool() const { return !empty(); }
+    constexpr bool operator!() const { return empty(); }
 
     // Normalized form: positive w/h occupying the same region. Useful
     // when you've constructed a Rect via `Corners` from arbitrary-
     // order points and want the conventional form before passing to
     // `bbox`/`intersect`/`contains`.
-    Rect normalized() const {
+    constexpr Rect normalized() const {
         const float nx = w >= 0 ? x : x + w;
         const float ny = h >= 0 ? y : y + h;
         const float nw = w >= 0 ? w : -w;
@@ -137,11 +137,11 @@ struct Rect {
 
     // Half-open hit-test: includes [x, x+w) × [y, y+h). Matches SDL/bgfx
     // pixel coord convention so adjacent rects tile without overlap.
-    bool contains(la::float2 p) const {
+    constexpr bool contains(la::float2 p) const {
         return p.x >= x && p.x < x + w && p.y >= y && p.y < y + h;
     }
     // True when `other` is entirely inside this rect.
-    bool contains(const Rect& other) const {
+    constexpr bool contains(const Rect& other) const {
         return !other.empty() && !empty()
             && other.x >= x && other.y >= y
             && other.x + other.w <= x + w
@@ -149,27 +149,29 @@ struct Rect {
     }
     // True when this and `other` overlap on a positive-area region.
     // Boundary-touching does not count as overlap.
-    bool intersects(const Rect& other) const {
+    constexpr bool intersects(const Rect& other) const {
         return !empty() && !other.empty()
             && x < other.x + other.w && other.x < x + w
             && y < other.y + other.h && other.y < y + h;
     }
-    // Overlap rect, or an empty rect if there is no overlap.
-    Rect intersect(const Rect& other) const;
+    // Overlap rect, or an empty rect if there is no overlap. Defined
+    // out-of-class below so the impl can use ternary-min/max without
+    // pulling <algorithm> into this header's transitive closure.
+    constexpr Rect intersect(const Rect& other) const;
     // Bounding rect of the two. Treats empty rects as "nothing" — if
     // either is empty the other is returned unchanged.
-    Rect bbox(const Rect& other) const;
+    constexpr Rect bbox(const Rect& other) const;
 
     // Translated copy.
-    Rect translated(la::float2 d) const {
+    constexpr Rect translated(la::float2 d) const {
         return Rect{x + d.x, y + d.y, w, h};
     }
 
     // Copy-with-mutation accessors.
-    Rect withOrigin(la::float2 origin) const {
+    constexpr Rect withOrigin(la::float2 origin) const {
         return Rect{origin.x, origin.y, w, h};
     }
-    Rect withSize(la::float2 sz) const {
+    constexpr Rect withSize(la::float2 sz) const {
         return Rect{x, y, sz.x, sz.y};
     }
 
@@ -178,15 +180,15 @@ struct Rect {
     // Asymmetric edge-tweak: e.g. shrink top by 5 → `r.adjusted({0, 5, 0, -5})`.
     // Distinct from translated() / inset() / outset() because those bake
     // semantics in; adjusted() is the raw four-`+`s primitive.
-    Rect adjusted(Rect d) const {
+    constexpr Rect adjusted(Rect d) const {
         return Rect{x + d.x, y + d.y, w + d.w, h + d.h};
     }
 
     // Uniform scale of all four fields. Useful for converting between
     // coordinate systems related by a single scalar (e.g. pixel-rect to
     // normalized UV: `pixelRect / atlasSize`).
-    Rect operator*(float s) const { return Rect{x * s, y * s, w * s, h * s}; }
-    Rect operator/(float s) const { return *this * (1.0f / s); }
+    constexpr Rect operator*(float s) const { return Rect{x * s, y * s, w * s, h * s}; }
+    constexpr Rect operator/(float s) const { return *this * (1.0f / s); }
 
     // Parameters for `scaled`. `scale` is per-axis (or scalar — see the
     // companion overload below); `center` is the pivot expressed in
@@ -213,28 +215,48 @@ struct Rect {
         la::float2 center = {0.5f, 0.5f};
     };
 
-    Rect scaled(ScalingVec s) const {
+    constexpr Rect scaled(ScalingVec s) const {
         const float px = x + w * s.center.x;
         const float py = y + h * s.center.y;
         const float nw = w * s.scale.x;
         const float nh = h * s.scale.y;
         return Rect{px - s.center.x * nw, py - s.center.y * nh, nw, nh};
     }
-    Rect scaled(ScalingScalar s) const {
+    constexpr Rect scaled(ScalingScalar s) const {
         return scaled(ScalingVec{.scale = {s.scale, s.scale}, .center = s.center});
     }
 
     // Factory: rect of size `sz` whose center is at `c`. Kept as a
     // semantic factory — doesn't reduce cleanly to a ctor + transform.
-    static Rect centered(la::float2 c, la::float2 sz) {
+    static constexpr Rect centered(la::float2 c, la::float2 sz) {
         return Rect{c.x - sz.x * 0.5f, c.y - sz.y * 0.5f, sz.x, sz.y};
     }
 };
 
-inline bool operator==(const Rect& a, const Rect& b) {
+constexpr Rect Rect::intersect(const Rect& other) const {
+    if (empty() || other.empty()) return {};
+    const float l = (x          > other.x        ) ? x          : other.x;
+    const float t = (y          > other.y        ) ? y          : other.y;
+    const float r = (x + w      < other.x + other.w) ? x + w     : other.x + other.w;
+    const float b = (y + h      < other.y + other.h) ? y + h     : other.y + other.h;
+    if (r <= l || b <= t) return {};
+    return Rect{l, t, r - l, b - t};
+}
+
+constexpr Rect Rect::bbox(const Rect& other) const {
+    if (empty()) return other;
+    if (other.empty()) return *this;
+    const float l = (x          < other.x        ) ? x          : other.x;
+    const float t = (y          < other.y        ) ? y          : other.y;
+    const float r = (x + w      > other.x + other.w) ? x + w     : other.x + other.w;
+    const float b = (y + h      > other.y + other.h) ? y + h     : other.y + other.h;
+    return Rect{l, t, r - l, b - t};
+}
+
+constexpr bool operator==(const Rect& a, const Rect& b) {
     return a.x == b.x && a.y == b.y && a.w == b.w && a.h == b.h;
 }
-inline bool operator!=(const Rect& a, const Rect& b) { return !(a == b); }
+constexpr bool operator!=(const Rect& a, const Rect& b) { return !(a == b); }
 
 // Per-edge insets of a safe-area-style boundary within the render
 // surface. Direction-agnostic: `y0` is the inset on the smaller-y

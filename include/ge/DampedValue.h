@@ -8,16 +8,16 @@
 // Used for smooth inertial motion with friction.
 class DampedValue {
 public:
-    DampedValue(float damping = 0.95f) : damping_(damping) {}
+    constexpr DampedValue(float damping = 0.95f) : damping_(damping) {}
 
-    float value() const { return value_; }
-    float velocity() const { return velocity_; }
+    constexpr float value() const { return value_; }
+    constexpr float velocity() const { return velocity_; }
 
-    void setValue(float v) { value_ = v; }
-    void setVelocity(float v) { velocity_ = v; }
+    constexpr void setValue(float v) { value_ = v; }
+    constexpr void setVelocity(float v) { velocity_ = v; }
 
     // Add to value directly (during drag)
-    void add(float delta) { value_ += delta; }
+    constexpr void add(float delta) { value_ += delta; }
 
     // Advance simulation by dt seconds (assumed 60fps for damping calc)
     void update(float dt) {
@@ -30,7 +30,7 @@ public:
         }
     }
 
-    bool isMoving() const { return velocity_ != 0.0f; }
+    constexpr bool isMoving() const { return velocity_ != 0.0f; }
 
 private:
     float value_ = 0.0f;
