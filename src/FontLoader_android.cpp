@@ -14,7 +14,9 @@
 #include <spdlog/spdlog.h>
 
 #include <unistd.h>
+#include <mutex>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace ge {
@@ -77,16 +79,31 @@ FontRef resolveSystemFont(const std::string& name) {
 } // namespace
 
 FontRef resolveFont(const std::string& uri) {
+    // Cache positive and negative results: each system-font resolve
+    // probes multiple candidate paths via access(), and the answer
+    // never changes within a process.
+    static std::unordered_map<std::string, FontRef> cache;
+    static std::mutex cacheMutex;
+    {
+        std::lock_guard<std::mutex> lock(cacheMutex);
+        if (auto it = cache.find(uri); it != cache.end()) return it->second;
+    }
+
     constexpr const char* kSystemPrefix = "system:";
     constexpr const char* kFilePrefix = "file:";
 
+    FontRef result;
     if (uri.starts_with(kSystemPrefix)) {
-        return resolveSystemFont(uri.substr(strlen(kSystemPrefix)));
+        result = resolveSystemFont(uri.substr(strlen(kSystemPrefix)));
+    } else if (uri.starts_with(kFilePrefix)) {
+        result = FontRef{uri.substr(strlen(kFilePrefix)), 0};
+    } else {
+        result = FontRef{ge::resource(uri), 0};
     }
-    if (uri.starts_with(kFilePrefix)) {
-        return FontRef{uri.substr(strlen(kFilePrefix)), 0};
-    }
-    return FontRef{ge::resource(uri), 0};
+
+    std::lock_guard<std::mutex> lock(cacheMutex);
+    cache.emplace(uri, result);
+    return result;
 }
 
 } // namespace ge
