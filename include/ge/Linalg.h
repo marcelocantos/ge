@@ -33,4 +33,6 @@ using linalg::normalize;
 using linalg::distance;
 using linalg::lerp;
 using linalg::clamp;
+using linalg::minelem;
+using linalg::maxelem;
 }
