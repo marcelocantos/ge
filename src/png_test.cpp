@@ -132,3 +132,20 @@ TEST_CASE("loadImage: non-existent file returns null Sprite") {
     auto s = ge::loadImage("/tmp/ge-test-does-not-exist-xyzzy.png");
     CHECK(s.isNull());
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// imageFromSurface: takes ownership of an in-memory surface
+// ─────────────────────────────────────────────────────────────────────
+
+TEST_CASE("imageFromSurface: nullptr input returns null Sprite without crashing") {
+    auto s = ge::imageFromSurface(nullptr);
+    CHECK(s.isNull());
+}
+
+// The conversion + premultiplication path inside `imageFromSurface`
+// ends in `bgfx::createTexture2D`, which would crash without bgfx
+// initialized. The premul formula is covered above by the
+// `loadImage premul:` cases; the SDL conversion via
+// `SDL_ConvertSurface` is exercised by the `loadImage pixel layer:`
+// case. Full integration is exercised in tests with a live bgfx
+// context.

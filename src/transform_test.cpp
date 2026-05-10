@@ -100,3 +100,92 @@ TEST_CASE("frame: z passes through (identity z basis)") {
     auto v = la::mul(m, la::float4{0.5f, 0.5f, 99.f, 1.f});
     CHECK(v.z == doctest::Approx(99.f));
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// frameCentered + frameRotated
+// ─────────────────────────────────────────────────────────────────────
+
+TEST_CASE("frameCentered matches frame(Rect::centered)") {
+    const la::float2 c{100.f, 200.f};
+    const la::float2 sz{40.f, 60.f};
+    auto a = ge::frameCentered(c, sz);
+    auto b = ge::frame(Rect::centered(c, sz));
+    for (int col = 0; col < 4; ++col)
+        for (int row = 0; row < 4; ++row)
+            CHECK(a[col][row] == doctest::Approx(b[col][row]));
+}
+
+TEST_CASE("frameCentered: unit-square corners map to centered rect corners") {
+    const la::float2 c{50.f, 100.f};
+    const la::float2 sz{20.f, 40.f};
+    auto m = ge::frameCentered(c, sz);
+
+    // Center of unit square (0.5, 0.5) → (50, 100).
+    auto cp = applyXY(m, 0.5f, 0.5f);
+    CHECK(cp.x == doctest::Approx(50.f));
+    CHECK(cp.y == doctest::Approx(100.f));
+
+    // Top-left (0, 0) → (40, 80).
+    auto tl = applyXY(m, 0.f, 0.f);
+    CHECK(tl.x == doctest::Approx(40.f));
+    CHECK(tl.y == doctest::Approx(80.f));
+
+    // Bottom-right (1, 1) → (60, 120).
+    auto br = applyXY(m, 1.f, 1.f);
+    CHECK(br.x == doctest::Approx(60.f));
+    CHECK(br.y == doctest::Approx(120.f));
+}
+
+TEST_CASE("frameRotated: angle = 0 matches frameCentered") {
+    const la::float2 c{30.f, 40.f};
+    const la::float2 sz{10.f, 20.f};
+    auto rot0 = ge::frameRotated(c, sz, 0.f);
+    auto cen  = ge::frameCentered(c, sz);
+    for (int col = 0; col < 4; ++col)
+        for (int row = 0; row < 4; ++row)
+            CHECK(rot0[col][row] == doctest::Approx(cen[col][row]));
+}
+
+TEST_CASE("frameRotated: π/2 rotates 90° around center") {
+    const la::float2 c{0.f, 0.f};
+    const la::float2 sz{10.f, 4.f};
+    constexpr float kHalfPi = 1.57079632679f;
+    auto m = ge::frameRotated(c, sz, kHalfPi);
+
+    // Local (0, 0) is the (-w/2, -h/2) corner pre-rotation = (-5, -2).
+    // R(π/2) · (-5, -2) = (2, -5). Plus center (0, 0) → (2, -5).
+    auto p = applyXY(m, 0.f, 0.f);
+    CHECK(p.x == doctest::Approx( 2.f).epsilon(1e-5f));
+    CHECK(p.y == doctest::Approx(-5.f).epsilon(1e-5f));
+
+    // Center of unit square stays at center of world after rotation.
+    auto cp = applyXY(m, 0.5f, 0.5f);
+    CHECK(cp.x == doctest::Approx(0.f).epsilon(1e-5f));
+    CHECK(cp.y == doctest::Approx(0.f).epsilon(1e-5f));
+}
+
+TEST_CASE("frameRotated: inverse round-trips world points to unit-square") {
+    const la::float2 c{50.f, 80.f};
+    const la::float2 sz{40.f, 30.f};
+    constexpr float angle = 0.7f;   // arbitrary
+    auto m   = ge::frameRotated(c, sz, angle);
+    auto inv = la::inverse(m);
+
+    // World center → unit (0.5, 0.5).
+    auto unitCenter = applyXY(inv, c.x, c.y);
+    CHECK(unitCenter.x == doctest::Approx(0.5f).epsilon(1e-5f));
+    CHECK(unitCenter.y == doctest::Approx(0.5f).epsilon(1e-5f));
+
+    // Round-trip an arbitrary unit-square point through m * inv.
+    auto round = applyXY(la::mul(m, inv), 0.3f, 0.7f);
+    CHECK(round.x == doctest::Approx(0.3f).epsilon(1e-5f));
+    CHECK(round.y == doctest::Approx(0.7f).epsilon(1e-5f));
+}
+
+TEST_CASE("frameCentered is constexpr") {
+    constexpr auto m = ge::frameCentered({100.f, 50.f}, {40.f, 20.f});
+    static_assert(m[0][0] == 40.f);   // x basis = w
+    static_assert(m[1][1] == 20.f);   // y basis = h
+    static_assert(m[3][0] == 80.f);   // origin x = center.x - w/2
+    static_assert(m[3][1] == 40.f);   // origin y = center.y - h/2
+}

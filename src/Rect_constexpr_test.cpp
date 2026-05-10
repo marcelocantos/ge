@@ -113,6 +113,22 @@ static_assert(kScaledOrigin == Rect{10, 20, 60, 20});
 constexpr Rect kCentered = Rect::centered({100, 50}, {40, 20});
 static_assert(kCentered == Rect{80, 40, 40, 20});
 
+// ── fitInside / fillInside ───────────────────────────────────────────
+// Outer 200×100, content aspect 1:1 → fit yields 100×100 (height-bound),
+// fill yields 200×200 (width-bound, overflows top/bottom).
+constexpr Rect kOuter{0, 0, 200, 100};
+constexpr Rect kFit  = kOuter.fitInside({1, 1});
+constexpr Rect kFill = kOuter.fillInside({1, 1});
+static_assert(kFit  == Rect{50,   0, 100, 100});
+static_assert(kFill == Rect{ 0, -50, 200, 200});
+// Same content aspect (1:1) → fit and fill collapse to outer.
+constexpr Rect kSquare = Rect{0, 0, 100, 100};
+static_assert(kSquare.fitInside({4, 4}) == kSquare);
+static_assert(kSquare.fillInside({4, 4}) == kSquare);
+// Result aspect always matches content aspect (within fp).
+constexpr Rect kFit23 = kOuter.fitInside({2, 3});
+static_assert(kFit23.w * 3.f == kFit23.h * 2.f);
+
 // ── Equality ─────────────────────────────────────────────────────────
 static_assert(Rect{1, 2, 3, 4} == Rect{1, 2, 3, 4});
 static_assert(Rect{1, 2, 3, 4} != Rect{1, 2, 3, 5});

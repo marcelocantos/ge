@@ -279,3 +279,94 @@ TEST_CASE("Rect equality is field-wise") {
     CHECK(Rect{1, 2, 3, 4} == Rect{1, 2, 3, 4});
     CHECK(Rect{1, 2, 3, 4} != Rect{1, 2, 3, 5});
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// Aspect fit / fill (letterbox / cover)
+// ─────────────────────────────────────────────────────────────────────
+
+TEST_CASE("Rect::fitInside letterboxes content into a wider outer") {
+    // Outer is wider than content (200×100 vs 1:1) → fit binds on
+    // height. Result is 100×100 centered horizontally.
+    Rect outer{0, 0, 200, 100};
+    Rect r = outer.fitInside({1, 1});
+    CHECK(r == Rect{50, 0, 100, 100});
+}
+
+TEST_CASE("Rect::fitInside pillarboxes content into a taller outer") {
+    // Outer is taller than content (100×200 vs 1:1) → fit binds on
+    // width. Result is 100×100 centered vertically.
+    Rect outer{0, 0, 100, 200};
+    Rect r = outer.fitInside({1, 1});
+    CHECK(r == Rect{0, 50, 100, 100});
+}
+
+TEST_CASE("Rect::fitInside on the multimaze 320x480 case") {
+    // 320×480 maze fits inside an iPad-shaped landscape area; height
+    // is the binding axis. (1024 x 768 outer; 480 doesn't fit at full
+    // width, so the maze scales to fit by height.)
+    Rect outer{0, 0, 1024, 768};
+    Rect r = outer.fitInside({320, 480});
+    // Scale = min(1024/320, 768/480) = min(3.2, 1.6) = 1.6 → 512×768.
+    CHECK(r == Rect{256, 0, 512, 768});
+}
+
+TEST_CASE("Rect::fitInside preserves content's aspect exactly") {
+    Rect outer{0, 0, 200, 100};
+    Rect r = outer.fitInside({2, 3});
+    // 2:3 aspect → r.w / r.h == 2 / 3, so r.w * 3 == r.h * 2.
+    CHECK(r.w * 3.f == r.h * 2.f);
+}
+
+TEST_CASE("Rect::fitInside is non-translating when content already matches outer aspect") {
+    // 4:2 outer + 2:1 content → fit collapses to outer.
+    Rect outer{10, 20, 200, 100};
+    Rect r = outer.fitInside({2, 1});
+    CHECK(r == outer);
+}
+
+TEST_CASE("Rect::fitInside depends on content aspect, not magnitude") {
+    // Same aspect (1:1) at different magnitudes → identical fit.
+    // Magnitudes chosen so size()/content divides evenly and the
+    // multiplication round-trips without float roundoff.
+    Rect outer{0, 0, 200, 100};
+    CHECK(outer.fitInside({1, 1})  == outer.fitInside({2, 2}));
+    CHECK(outer.fitInside({1, 1})  == outer.fitInside({4, 4}));
+}
+
+TEST_CASE("Rect::fillInside covers a wider outer with overflow on width") {
+    // Outer is wider than content (200×100 vs 1:1) → fill binds on
+    // width. Result is 200×200 (overflows top/bottom by 50 each).
+    Rect outer{0, 0, 200, 100};
+    Rect r = outer.fillInside({1, 1});
+    CHECK(r == Rect{0, -50, 200, 200});
+}
+
+TEST_CASE("Rect::fillInside covers a taller outer with overflow on height") {
+    Rect outer{0, 0, 100, 200};
+    Rect r = outer.fillInside({1, 1});
+    CHECK(r == Rect{-50, 0, 200, 200});
+}
+
+TEST_CASE("fitInside and fillInside coincide when content matches outer aspect") {
+    Rect outer{10, 20, 300, 150};
+    CHECK(outer.fitInside({2, 1}) == outer.fillInside({2, 1}));
+    CHECK(outer.fitInside({2, 1}) == outer);
+}
+
+TEST_CASE("fillInside contains outer; fitInside is contained by outer") {
+    Rect outer{0, 0, 200, 100};
+    Rect fit  = outer.fitInside({1, 2});
+    Rect fill = outer.fillInside({1, 2});
+
+    // Fit is contained by outer (≤ outer in both dims).
+    CHECK(fit.w <= outer.w);
+    CHECK(fit.h <= outer.h);
+    // Fill contains outer (≥ outer in both dims).
+    CHECK(fill.w >= outer.w);
+    CHECK(fill.h >= outer.h);
+    // Both are centered on outer.
+    CHECK(fit.center().x == outer.center().x);
+    CHECK(fit.center().y == outer.center().y);
+    CHECK(fill.center().x == outer.center().x);
+    CHECK(fill.center().y == outer.center().y);
+}

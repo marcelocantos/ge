@@ -1490,6 +1490,186 @@ targets:
     origin: manual
     discovered: 2026-05-10
     achieved: 2026-05-10
+  T53:
+    name: Hit testing on lunasvg-rendered UI supports fingertip tolerance
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - A consumer that drives interactive UI through a lunasvg::Document can hit-test taps with a tolerance radius (in pt or px) and get back the closest tappable element within that radius — not just the pixel-precise hit
+    - The API integrates with lunasvg's existing element-selection semantics (clipPath, transforms, layered groups, z-order) — i.e. it doesn't reinvent the hit graph
+    - Multimaze (the canonical consumer for SVG-driven UI) drops its rect-based `hitExpandPt` workaround in TopBar.cpp:160-176 and equivalents; tap targets are author-agnostic of fingertip-tolerance concerns
+    - ge/CLAUDE.md documents the recommended approach (which of the implementation options below was taken) so consumers building SVG-driven UI know what to reach for
+    - If implementation requires patching the vendored lunasvg, the patch is documented under ge/vendor/patches/ with a clear description of what it changes and why the upstream API shape didn't suffice
+    context: |-
+      Background. Today multimaze and other ge consumers do UI hit testing the manual way: maintain ge::Rect bounds for each tappable element, expand by `hitExpandPt` (4–8 pt typical) before doing point-in-rect, route to the right handler. The expansion is needed because raw pixel-precise hit-test on a finger-sized tap is too tight on high-DPI displays. Multimaze does this in `TopBar.cpp:160-176` (and equivalent code paths exist in any consumer with chrome).
+
+      The plan. Multimaze is moving UI rendering to lunasvg::Document — buttons, bars, menus all become SVG elements with CSS-styled state. Hit testing should follow: instead of maintaining a parallel rect-bounds graph, ask lunasvg `elementFromPoint(x, y)` and use the returned element's id/class to route. This keeps the SVG as the single source of truth for layout and hit graph.
+
+      The catch. lunasvg's `elementFromPoint` is pixel-precise — the public API takes one point, returns the topmost element under that exact pixel. There is no tolerance parameter. So a naïve migration *loses* fingertip tolerance: small SVG elements become harder to tap on dense displays.
+
+      Implementation options (decided at execution time, not declared up-front):
+      - (a) Author-side: wrap each tap target in a transparent `rect`/`circle` of the desired tap-region size in the SVG itself. Pros: zero engine work, fully expressive (per-target tolerances). Cons: relies on every SVG author remembering to do it; duplicates geometry; can perturb visual layout via z-order accidents.
+      - (b) Caller-side N-point sampling: ge offers a free function that calls `elementFromPoint` at the centre + 4–8 surrounding points (a circle of `tolerancePx` radius), returns the most-frequently-hit interactive element, or the centre's hit if no consensus. Pros: lives entirely in ge, no upstream changes. Cons: O(N) cost per tap; tie-breaking is ad-hoc; "interactive" needs a marker convention (CSS class? data-attr?).
+      - (c) Vendored patch: extend lunasvg's hit-test to honor a tolerance radius natively — plutovg already walks the geometry tree, can be taught to test against a circle of radius r instead of a single point. Pros: cleanest API, fastest, integrates correctly with z-order. Cons: patches a vendored upstream; needs to be re-applied on lunasvg version bumps; option to upstream.
+
+      Discovered 2026-05-10 during a multimaze→ge audit conversation about lifting reusable logic. The user noted that hit testing is currently rect-based (the originally-feared lunasvg hit-test integration hasn't actually happened yet), but the migration plan stands and this concern will bite as soon as the first SVG-driven UI surface lands. File now so the implementation choice gets considered before someone reaches for the SVG-author workaround by reflex.
+    tags:
+    - api
+    - lunasvg
+    - hit-testing
+    - ui
+    - fingertip-tolerance
+    origin: manual
+    discovered: 2026-05-10
+  T54:
+    name: ge::ortho ships projection builders for letterbox + pixel-space 2D layouts
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - '`ge::ortho::letterbox(la::float2 contentSize, la::float2 screenSize) -> la::float4x4` returns a projection matrix that maps content-space coordinates onto the centered letterboxed/pillarboxed sub-rect of screen-space (top-left-origin, bgfx clip-space conventions)'
+    - '`ge::ortho::pixelOrtho(float w, float h) -> la::float4x4` returns the canonical top-left-origin pixel-space projection (no aspect adjustment)'
+    - '`ge::ortho::screenToContent(la::float2 screenPt, la::float2 contentSize, la::float2 screenSize) -> la::float2` is the inverse of `letterbox` for hit-testing under a letterboxed projection'
+    - All three are constexpr where the math allows (no `std::sin/cos` dependency); available via `#include <ge/ortho.h>`
+    - Tests cover the round-trip invariant — `screenToContent(p, c, s)` round-trips through `letterbox(c, s) * p` to within fp tolerance — and the multimaze 320×480-into-iPad case
+    - 'multimaze''s three duplicates are migrated: `Application.cpp:290-320` (main viewport), `MazeRenderer.cpp:138-147` (maze sub-rect), `TopBar.cpp:42-49` (top-bar layout) all reference `ge::ortho`; inline projection-builder math is gone'
+    - Documented in ge/CLAUDE.md under the rendering / layout API section
+    context: |-
+      Discovered 2026-05-10 by an audit of multimaze for general-purpose logic that belongs in ge. Multimaze has *three* separately-written orthographic projection builders solving the same problem: fit content of fixed aspect ratio (e.g. 320×480 maze, 1024×768 menu) into the available screen rect with letterbox/pillarbox borders, plus a pixel-space variant for chrome layout. Each builder also has a paired screen-to-content unprojection (multimaze's `screenToMenuCoords` at `Application.cpp:561-592`) for routing taps back into the content space, also reinvented per call site.
+
+      The math is the same every time: `M = T(content_origin_in_screen) * S(uniform_scale)` where `uniform_scale = min(screen.w / content.w, screen.h / content.h)` and `content_origin_in_screen = (screen - scaled_content) / 2`. Three call sites means three opportunities to get sign conventions wrong.
+
+      Pairing the forward + inverse in one header is important: hit testing under a letterboxed projection is the natural follow-up to rendering under one, and they need to agree on conventions byte-for-byte.
+
+      The wider context is the multimaze→ge audit (see also T54-T58 series and 🎯T53). The principle: multimaze keeps only logic that's specifically tied to its game (level parsing, physics tuning, color enum, etc.); everything reusable lives in ge.</context>
+      <tags>["api", "rendering", "ortho", "projection", "ge-lift", "multimaze-audit"]</tags>
+    tags:
+    - api
+    - rendering
+    - ortho
+    - projection
+    - ge-lift
+    - multimaze-audit
+    origin: manual
+    discovered: 2026-05-10
+  T55:
+    name: ge::gesture exposes swipe-direction predicates
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - '`ge::gesture::isHorizontalSwipe(float dx, float dy, float threshold, float dominanceRatio = 1.5f) -> bool` — true iff `|dx| > threshold` AND `|dx| > |dy| * dominanceRatio` (the swipe magnitude exceeds the threshold *and* the horizontal component dominates the vertical)'
+    - 'Vertical sibling: `ge::gesture::isVerticalSwipe(...)` with the same shape (axis-swapped)'
+    - Both `constexpr`, no SDL or platform dependency — pure delta math
+    - Available via `#include <ge/gesture.h>`
+    - Tests cover horizontal-clear, vertical-clear, ambiguous-diagonal, below-threshold, and below-dominance-ratio cases
+    - 'multimaze''s `Application.cpp:824-828` migrates: inline `abs(dx) > threshold && abs(dx) > abs(dy) * 1.5f` is gone; the `0.15f` width-fraction-as-threshold convention stays at the call site (it''s a UX choice, not engine logic)'
+    - Documented in ge/CLAUDE.md under the input / gesture API section
+    context: |-
+      Discovered 2026-05-10 by the multimaze→ge audit. Multimaze's swipe-detection logic at `Application.cpp:824-828` is a 5-line `abs(dx) > threshold && abs(dx) > abs(dy) * 1.5f` predicate that decides "this drag is a horizontal swipe, not a vertical scroll or a tap." Pure math, no platform deps, no integration with hit-testing.
+
+      Note (from earlier discussion 2026-05-10): there's a separate concern about swipe-vs-tap *arbitration* when the UI is lunasvg-rendered (when does the gesture detector run vs. when does `elementFromPoint` run?). That's tracked under 🎯T53 — not in scope here. This target is just the per-frame-delta predicate; the consumer decides when to call it and what to do with the result.
+
+      Part of the multimaze→ge audit lift series alongside 🎯T54, T56, T57, T58. Principle: multimaze keeps only game-specific logic (level parsing, physics tuning, color enum); reusable engine logic moves to ge.
+    tags:
+    - api
+    - gesture
+    - input
+    - ge-lift
+    - multimaze-audit
+    origin: manual
+    discovered: 2026-05-10
+  T56:
+    name: ge::transform offers matrix builders for centered + rotated 2D placements; SpriteBatch absorbs MeshBuilder's role
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - '`ge::frameCentered(la::float2 center, la::float2 size) -> la::float4x4` returns a model-to-world matrix mapping the unit square (0..1)² to a rect centered at `center` with `size`. Companion to existing `ge::frame(Rect)`.'
+    - '`ge::frameRotated(la::float2 center, la::float2 size, float angle) -> la::float4x4` — same, plus rotation by `angle` radians around `center` (positive = standard 2D math convention).'
+    - '`frameCentered` is `constexpr`; `frameRotated` follows ge''s existing convention (uses `std::sin/cos`, so non-constexpr until C++26 — mirrors `DampedRotation::matrix()`). Both available via existing `#include <ge/transform.h>`.'
+    - Tests verify (a) the unit-square corner positions match expected geometry, (b) `frameCentered` matches `frame(Rect::centered(c, s))` exactly, (c) `frameRotated(c, s, 0)` matches `frameCentered(c, s)`, (d) `frameRotated(c, s, π/2)` produces the expected 90° rotation, (e) round-trip via `la::inverse` recovers a unit-square point.
+    - multimaze's `MeshBuilder.h` is *deleted*. `addQuad(rect, uv, color)` migrates to `batch.addSprite(ge::frame(rect), sprite, uv, abgr(color))`. `addSprite(center, size, uv, color)` migrates to `batch.addSprite(ge::frameCentered(c, s), sprite, uv, abgr(color))`. `addRotatedSprite(center, size, angle, uv, color)` migrates to `batch.addSprite(ge::frameRotated(c, s, a), sprite, uv, abgr(color))`.
+    - All multimaze call sites that previously held a `MeshBuilder` + `submitMesh` pair use `ge::SpriteBatch` directly.
+    - Documented in ge/CLAUDE.md alongside `ge::frame(Rect)` in the existing 'Sprites, transforms, and SVG' section.
+    context: |-
+      Discovered 2026-05-10 by the multimaze→ge audit. Multimaze ships its own `MeshBuilder` class (`src/MeshBuilder.h`) for CPU-side quad accumulation: three convenience entry points (`addQuad`, `addSprite`, `addRotatedSprite`) writing into a `vector<SpriteVertex> + vector<uint32_t>` pair, flushed via `submitMesh(mb, view, prog, sampler, tex, state)`.
+
+      ge already has the same capability via `ge::SpriteBatch`: `addSprite(modelToWorld, sprite, [uvSubRect], color)` queues a quad transformed by an arbitrary 4×4 matrix, batches per (texture, view), submits via transient buffers. The functional gap is purely **ergonomic** — multimaze's three convenience overloads collapse to one matrix-based call in ge, but the rotated-sprite case requires composing translate * rotate * scale matrices manually (verbose).
+
+      Plan A from the design discussion (2026-05-10): close the gap via matrix-builder helpers in `ge::transform` rather than convenience overloads on `SpriteBatch`. Keeps `SpriteBatch` minimal and the rotation/centering math reusable for non-sprite contexts (lines, SVG transforms, etc.). Existing `ge::frame(Rect)` already covers the axis-aligned rect case; `frameCentered` and `frameRotated` complete the trio.
+
+      The user's principle (2026-05-10): keep multimaze game-specific logic small. After this target retires, multimaze deletes `MeshBuilder.h` + `MeshBuilder.cpp` (or whatever the impl file is) and migrates every call site to `SpriteBatch` + a `frameXXX` helper.
+
+      Part of the multimaze→ge audit lift series alongside 🎯T54, T55, T57, T58.
+    tags:
+    - api
+    - transform
+    - spritebatch
+    - rendering
+    - ge-lift
+    - multimaze-audit
+    origin: manual
+    discovered: 2026-05-10
+  T57:
+    name: ge offers an SDL_Surface to premultiplied-RGBA8 bgfx Sprite helper
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - '`ge::imageFromSurface(SDL_Surface*) -> Sprite` (or similarly-named API in `<ge/png.h>` next to existing `loadImage`) accepts an in-memory SDL_Surface, premultiplies alpha, uploads as a bgfx RGBA8 texture, and returns a `Sprite{tex, width, height}`'
+    - Behaviour matches the existing `ge::loadImage(path)` premultiplication contract — same RGBA8 byte order, same premul convention, same caller-owns-texture lifetime
+    - Handles non-RGBA input formats by converting via SDL_ConvertSurface to RGBA8 first; if conversion fails, returns a null Sprite with a `SPDLOG_ERROR` (matches `loadImage`'s failure mode — *not* a throw, since this isn't a system-resource lookup like `resolveFont`)
+    - Tests cover (a) RGBA8 input is uploaded as-is with premul applied, (b) non-RGBA input gets converted then premul'd, (c) null/empty surface returns null Sprite without crashing
+    - multimaze's `Application.cpp:134-165` inline conversion is gone; the call site uses `ge::imageFromSurface`
+    - Documented in ge/CLAUDE.md alongside `ge::loadImage`
+    context: |-
+      Discovered 2026-05-10 by the multimaze→ge audit. Multimaze has an inline `Application.cpp:134-165` block that takes an `SDL_Surface*` (typically obtained from somewhere other than a file path — e.g. an SVG rasterized in-process, an embedded asset decoded at runtime, a procedurally-generated bitmap), premultiplies its alpha channel, and uploads as a bgfx RGBA8 texture. The math is identical to what `ge::loadImage(path)` does after `IMG_Load_IO`, but `loadImage` only exposes the path-based entry point.
+
+      Lifting the post-load half of `loadImage` into a Surface-accepting helper (a) eliminates the multimaze duplicate, (b) opens up other future use cases (procedural textures, SVG-rasterizer output before it goes through `ge::renderSvgDocument`, image data fetched over the wire), and (c) lets `loadImage` itself reduce to "openFile + IMG_Load_IO + imageFromSurface" — a small refactor that improves layering.
+
+      Failure mode is `null Sprite + SPDLOG_ERROR`, matching `loadImage`'s convention rather than the new throwing contract from `resolveFont` (v0.21.0). Rationale: `imageFromSurface` failures are usually programmer errors with the surface object (null pointer, unsupported format), not user-visible "system asset is missing" failures; the throw contract is calibrated for the latter case.
+
+      Part of the multimaze→ge audit lift series alongside 🎯T54, T55, T56, T58.
+    tags:
+    - api
+    - image
+    - sdl
+    - texture
+    - ge-lift
+    - multimaze-audit
+    origin: manual
+    discovered: 2026-05-10
+  T58:
+    name: ge::layout exposes grid-row positioning helpers for menu/dialog layouts
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - '`ge::layout::gridY(int rowIdx, float rowH, float gap, float topMargin) -> float` returns the y-coordinate of row `rowIdx` in a fixed-height row stack: `topMargin + rowIdx * (rowH + gap)`. Constexpr.'
+    - Companion `ge::layout::gridX` for horizontal stacks (mirror impl).
+    - Both available via `#include <ge/layout.h>`. Header-only.
+    - Tests cover (a) zero-row at topMargin, (b) consecutive rows are `rowH + gap` apart, (c) negative rowIdx is honored (allows above-first-row positioning).
+    - multimaze's `Application.cpp:553-555` `menuRowY(i)` and any analogous TopBar grid math are migrated to `ge::layout::gridY`.
+    - Documented in ge/CLAUDE.md.
+    - 'Note: `chromeScale(ctx)` and `kBarHeightPt`-style pt constants stay in multimaze. Pt-to-px conversion is already covered by `Context::pixelsPerPt()` and `Context::deviceUiScale()` (CLAUDE.md "Sizing scalars on Context"); no new ge primitive is needed for that part.'
+    context: |-
+      Discovered 2026-05-10 by the multimaze→ge audit. Multimaze has small inline grid-positioning math at `Application.cpp:553-555` (`menuRowY(i)` for stacking menu rows) and equivalent patterns in TopBar layout. The math itself is one-line obvious — `topMargin + rowIdx * (rowH + gap)` — but it's reinvented per call site.
+
+      This is the *thinnest* of the audit-derived lift targets — the helper saves maybe 3–5 lines of inline math. Filed because the user's principle (2026-05-10) is to keep multimaze game-specific logic small *as a category* (not just where the engine work is large): a 5-line layout primitive that lives in ge instead of inline in multimaze still moves the line correctly.
+
+      The audit also flagged "DPI-pt scaling" as a candidate, but on inspection that's already covered by ge's existing `Context::pixelsPerPt()` / `Context::deviceUiScale()` (see CLAUDE.md "Sizing scalars on Context"). The remaining game-side state (multimaze's `kBarHeightPt`, `kBarPadPt` constants) is genuinely game-specific layout authoring — stays in multimaze.
+
+      Part of the multimaze→ge audit lift series alongside 🎯T54, T55, T56, T57.
+    tags:
+    - api
+    - layout
+    - ui
+    - ge-lift
+    - multimaze-audit
+    origin: manual
+    discovered: 2026-05-10
   T6:
     name: Player can switch between active servers without QR
     status: identified

@@ -231,6 +231,28 @@ struct Rect {
     static constexpr Rect centered(la::float2 c, la::float2 sz) {
         return Rect{c.x - sz.x * 0.5f, c.y - sz.y * 0.5f, sz.x, sz.y};
     }
+
+    // Aspect-fit: returns the largest rect with `content`'s aspect
+    // ratio that fits inside `*this`, centered. Letterboxes /
+    // pillarboxes as needed. Only `content`'s w/h aspect matters; its
+    // position is ignored. Equivalent to CSS `object-fit: contain`.
+    // Result is always a sub-rect of `*this` (assuming non-degenerate
+    // sizes). On degenerate `content` (zero w or h) the result has
+    // zero size at `center()` — propagates the divide cleanly without
+    // asserting, matching the rest of the sign-honest Rect API.
+    constexpr Rect fitInside(la::float2 content) const {
+        const la::float2 sz = content * la::minelem(size() / content);
+        return centered(center(), sz);
+    }
+
+    // Aspect-fill: returns the smallest rect with `content`'s aspect
+    // ratio that covers `*this`, centered. Overflows `*this` on the
+    // non-binding axis. Equivalent to CSS `object-fit: cover`. Same
+    // degenerate-content semantics as fitInside.
+    constexpr Rect fillInside(la::float2 content) const {
+        const la::float2 sz = content * la::maxelem(size() / content);
+        return centered(center(), sz);
+    }
 };
 
 constexpr Rect Rect::intersect(const Rect& other) const {
