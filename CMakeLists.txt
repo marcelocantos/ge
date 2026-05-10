@@ -334,6 +334,11 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Android")
         ${CMAKE_BINARY_DIR}/SDL3_ttf
     )
     target_link_libraries(ge PUBLIC SDL3_ttf::SDL3_ttf)
+    # SDL3_ttf::SDL3_ttf does not propagate FreeType headers, but ge/src/text.cpp
+    # uses the FreeType C API directly. Pull the bundled headers in by hand.
+    target_include_directories(ge PRIVATE
+        ${GE_VENDOR}/github.com/libsdl-org/SDL_ttf/external/freetype/include
+    )
 
     # Android system libs. GLESv3 (not GLESv2) for the OpenGL ES 3.1
     # backend bgfx uses on real Adreno/Mali devices.
@@ -349,6 +354,12 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "iOS")
         ${GE_VENDOR}/sdl3/xcframeworks/harfbuzz.xcframework
         ${GE_VENDOR}/sdl3/xcframeworks/plutosvg.xcframework
         ${GE_VENDOR}/sdl3/xcframeworks/plutovg.xcframework
+    )
+    # The freetype xcframework ships only the static lib — no headers. Take
+    # them from the bundled SDL_ttf vendored copy so ge/src/text.cpp can
+    # include <ft2build.h>.
+    target_include_directories(ge PRIVATE
+        ${GE_VENDOR}/github.com/libsdl-org/SDL_ttf/external/freetype/include
     )
 
     # System frameworks

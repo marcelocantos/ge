@@ -17,9 +17,9 @@ Px pixelAt(const ge::TextPixels& p, int x, int y) {
 } // namespace
 
 TEST_CASE("rasterizeTextToPixels: 'A' at 24pt produces valid dimensions and real ink") {
-    ge::FontRef font = ge::resolveFont("system:sans-serif");
-    // resolveFont may return empty on CI without fonts — skip gracefully.
-    if (font.path.empty()) return;
+    ge::FontRef font;
+    try { font = ge::resolveFont("system:sans-serif"); }
+    catch (const std::exception&) { return; }  // skip on CI without fonts
 
     ge::TextPixels px = ge::rasterizeTextToPixels("A", font, 24.0f, {1.0f, 1.0f, 1.0f, 1.0f});
 
@@ -43,8 +43,9 @@ TEST_CASE("rasterizeTextToPixels: 'A' at 24pt produces valid dimensions and real
 }
 
 TEST_CASE("rasterizeTextToPixels: premultiplied alpha invariant (R <= A)") {
-    ge::FontRef font = ge::resolveFont("system:sans-serif");
-    if (font.path.empty()) return;
+    ge::FontRef font;
+    try { font = ge::resolveFont("system:sans-serif"); }
+    catch (const std::exception&) { return; }
 
     // White text: R = G = B = A for any glyph alpha. Premul: r = alpha, a = alpha.
     ge::TextPixels px = ge::rasterizeTextToPixels("A", font, 24.0f, {1.0f, 1.0f, 1.0f, 1.0f});
@@ -68,8 +69,9 @@ TEST_CASE("rasterizeTextToPixels: empty font path returns null") {
 }
 
 TEST_CASE("rasterizeTextToPixels: empty string returns null") {
-    ge::FontRef font = ge::resolveFont("system:sans-serif");
-    if (font.path.empty()) return;
+    ge::FontRef font;
+    try { font = ge::resolveFont("system:sans-serif"); }
+    catch (const std::exception&) { return; }
 
     ge::TextPixels px = ge::rasterizeTextToPixels("", font, 24.0f, {1.0f, 1.0f, 1.0f, 1.0f});
     CHECK(px.isNull());

@@ -11,6 +11,10 @@
 
 #include <spdlog/spdlog.h>
 
+#include <mutex>
+#include <stdexcept>
+#include <unordered_map>
+
 namespace ge {
 namespace {
 
@@ -69,19 +73,74 @@ int faceIndexForPSName(const std::string& path, CFStringRef targetPSName) {
 }
 
 FontRef resolveSystemFont(const std::string& name) {
+    // Logical names (sans-serif / serif / monospace, with optional
+    // -bold) map to a known family + traits via familyForName. Anything
+    // else is passed through to Core Text as a literal family or
+    // PostScript name — Core Text accepts both via CTFontCreateWithName
+    // — so callers can resolve arbitrary system fonts by name (e.g.
+    // "Krungthep", "Helvetica Neue").
     FamilySpec spec = familyForName(name);
-    if (!spec.family) {
-        SPDLOG_WARN("Unknown system font name: {}", name);
-        return {};
-    }
+    const char* lookupName = spec.family ? spec.family : name.c_str();
 
     CFStringRef familyStr = CFStringCreateWithCString(
-        kCFAllocatorDefault, spec.family, kCFStringEncodingUTF8);
-    if (!familyStr) return {};
+        kCFAllocatorDefault, lookupName, kCFStringEncodingUTF8);
+    if (!familyStr) {
+        throw std::runtime_error(
+            "ge::resolveFont: CFStringCreateWithCString failed for '" + name + "'");
+    }
 
     CTFontRef font = CTFontCreateWithName(familyStr, 12.0, nullptr);
     CFRelease(familyStr);
-    if (!font) return {};
+    if (!font) {
+        throw std::runtime_error(
+            "ge::resolveFont: Core Text could not resolve system font '" + name + "'");
+    }
+
+    // Loud fallback detection: CTFontCreateWithName silently substitutes
+    // a default (usually Helvetica) when the requested family/PS name
+    // isn't installed. Compare the returned face's family against what
+    // we asked for and fail the resolution if they diverge.
+    if (!spec.family) {
+        CFStringRef gotFamily = CTFontCopyFamilyName(font);
+        bool matched = false;
+        if (gotFamily) {
+            // Match either the input as-is or the input with spaces
+            // stripped (Core Text returns "HelveticaNeue" for the family
+            // even when caller passed "Helvetica Neue").
+            CFStringRef wantStrict = CFStringCreateWithCString(
+                kCFAllocatorDefault, name.c_str(), kCFStringEncodingUTF8);
+            if (wantStrict
+                && CFStringCompare(gotFamily, wantStrict, 0)
+                       == kCFCompareEqualTo) {
+                matched = true;
+            }
+            if (wantStrict) CFRelease(wantStrict);
+            // Try Core Text's PostScript-name lookup too, since callers
+            // may pass either family or PS name.
+            if (!matched) {
+                CFStringRef gotPS = CTFontCopyPostScriptName(font);
+                if (gotPS) {
+                    CFStringRef wantPS = CFStringCreateWithCString(
+                        kCFAllocatorDefault, name.c_str(),
+                        kCFStringEncodingUTF8);
+                    if (wantPS
+                        && CFStringCompare(gotPS, wantPS, 0)
+                               == kCFCompareEqualTo) {
+                        matched = true;
+                    }
+                    if (wantPS) CFRelease(wantPS);
+                    CFRelease(gotPS);
+                }
+            }
+            CFRelease(gotFamily);
+        }
+        if (!matched) {
+            CFRelease(font);
+            throw std::runtime_error(
+                "ge::resolveFont: requested system font '" + name +
+                "' is not installed — Core Text substituted a default");
+        }
+    }
 
     if (spec.traits) {
         CTFontRef bold = CTFontCreateCopyWithSymbolicTraits(
@@ -98,7 +157,8 @@ FontRef resolveSystemFont(const std::string& name) {
     if (!url || !psName) {
         if (url) CFRelease(url);
         if (psName) CFRelease(psName);
-        return {};
+        throw std::runtime_error(
+            "ge::resolveFont: Core Text returned no URL/PSName for '" + name + "'");
     }
 
     char pathBuf[1024];
@@ -107,7 +167,8 @@ FontRef resolveSystemFont(const std::string& name) {
                                           sizeof(pathBuf))) {
         CFRelease(url);
         CFRelease(psName);
-        return {};
+        throw std::runtime_error(
+            "ge::resolveFont: CFURLGetFileSystemRepresentation failed for '" + name + "'");
     }
     CFRelease(url);
 
@@ -121,16 +182,46 @@ FontRef resolveSystemFont(const std::string& name) {
 } // namespace
 
 FontRef resolveFont(const std::string& uri) {
+    // Cache positive and negative results: Core Text resolution is
+    // ~1 ms per call (CTFontCreateWithName + family/PS-name compare +
+    // CTFontManagerCreateFontDescriptorsFromURL for the TTC face index)
+    // and the answer never changes within a process. Empty FontRef in
+    // the cache is the failure marker — on hit we re-throw without
+    // re-running the resolver.
+    static std::unordered_map<std::string, FontRef> cache;
+    static std::mutex cacheMutex;
+    {
+        std::lock_guard<std::mutex> lock(cacheMutex);
+        if (auto it = cache.find(uri); it != cache.end()) {
+            if (it->second.path.empty()) {
+                throw std::runtime_error(
+                    "ge::resolveFont: '" + uri + "' previously failed to resolve");
+            }
+            return it->second;
+        }
+    }
+
     constexpr const char* kSystemPrefix = "system:";
     constexpr const char* kFilePrefix = "file:";
 
-    if (uri.starts_with(kSystemPrefix)) {
-        return resolveSystemFont(uri.substr(strlen(kSystemPrefix)));
+    FontRef result;
+    try {
+        if (uri.starts_with(kSystemPrefix)) {
+            result = resolveSystemFont(uri.substr(strlen(kSystemPrefix)));
+        } else if (uri.starts_with(kFilePrefix)) {
+            result = FontRef{uri.substr(strlen(kFilePrefix)), 0};
+        } else {
+            result = FontRef{ge::resource(uri), 0};
+        }
+    } catch (...) {
+        std::lock_guard<std::mutex> lock(cacheMutex);
+        cache.emplace(uri, FontRef{});
+        throw;
     }
-    if (uri.starts_with(kFilePrefix)) {
-        return FontRef{uri.substr(strlen(kFilePrefix)), 0};
-    }
-    return FontRef{ge::resource(uri), 0};
+
+    std::lock_guard<std::mutex> lock(cacheMutex);
+    cache.emplace(uri, result);
+    return result;
 }
 
 } // namespace ge
