@@ -286,3 +286,48 @@ TEST_CASE("Rect::scaled scalar overload matches isotropic vec scaling") {
     CHECK(r.scaled({.scale = 0.5f, .center = {0.f, 0.f}}) ==
           r.scaled({.scale = {0.5f, 0.5f}, .center = {0.f, 0.f}}));
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// v0.18.0 — direction-agnostic corners, area, originSize, normalized.
+// ─────────────────────────────────────────────────────────────────────
+
+TEST_CASE("Rect corners x0y0/x1y0/x0y1/x1y1 are direction-agnostic") {
+    Rect r{10, 20, 30, 40};
+    CHECK(r.x0y0().x == 10.f); CHECK(r.x0y0().y == 20.f);
+    CHECK(r.x1y0().x == 40.f); CHECK(r.x1y0().y == 20.f);
+    CHECK(r.x0y1().x == 10.f); CHECK(r.x0y1().y == 60.f);
+    CHECK(r.x1y1().x == 40.f); CHECK(r.x1y1().y == 60.f);
+}
+
+TEST_CASE("Rect::area is signed w * h") {
+    CHECK(Rect{0, 0, 10, 5}.area() == 50.f);
+    CHECK(Rect{0, 0, -10, 5}.area() == -50.f);   // negative w
+    CHECK(Rect{0, 0, 10, -5}.area() == -50.f);   // negative h
+    CHECK(Rect{0, 0, -10, -5}.area() == 50.f);   // both negative
+    CHECK(Rect{}.area() == 0.f);
+}
+
+TEST_CASE("Rect::originSize is direction-neutral construction") {
+    Rect r = Rect::originSize({10, 20}, {30, 40});
+    CHECK(r == Rect{10, 20, 30, 40});
+}
+
+TEST_CASE("Rect::normalized produces positive w/h preserving region") {
+    // Already-positive: identity.
+    CHECK(Rect{1, 2, 3, 4}.normalized() == Rect{1, 2, 3, 4});
+
+    // Negative w: origin moves to opposite x-edge, w flips sign.
+    CHECK(Rect{10, 20, -30, 40}.normalized() == Rect{-20, 20, 30, 40});
+
+    // Negative h: origin moves to opposite y-edge, h flips sign.
+    CHECK(Rect{10, 20, 30, -40}.normalized() == Rect{10, -20, 30, 40});
+
+    // Both negative.
+    CHECK(Rect{10, 20, -30, -40}.normalized() == Rect{-20, -20, 30, 40});
+
+    // Region is preserved (the four corner positions are the same set).
+    Rect signed_{10, 20, -30, -40};
+    Rect norm = signed_.normalized();
+    CHECK(norm.x0y0() == signed_.x1y1());   // origin of normalized = far corner of signed
+    CHECK(norm.x1y1() == signed_.x0y0());
+}

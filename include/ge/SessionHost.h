@@ -58,17 +58,26 @@ struct Rect {
     float w = 0;
     float h = 0;
 
-    // Corner accessors. Surface coords: x grows right, y grows down,
-    // so tl is the inclusive origin and br is the exclusive far corner.
-    la::float2 tl() const { return {x,     y    }; }
-    la::float2 tr() const { return {x + w, y    }; }
-    la::float2 bl() const { return {x,     y + h}; }
-    la::float2 br() const { return {x + w, y + h}; }
+    // Corner accessors — direction-agnostic naming. The first index is
+    // the position along x (0 = origin, 1 = far edge); the second is the
+    // position along y. So x0y0() is always the origin corner, x1y1() is
+    // always the far corner, regardless of whether the surrounding
+    // coordinate system treats +y as down or up. Methods on Rect assume
+    // positive w/h — pre-normalize via `normalized()` if you might have
+    // signed input from a boundary (drag rects, two-corner construction).
+    la::float2 x0y0() const { return {x,     y    }; }
+    la::float2 x1y0() const { return {x + w, y    }; }
+    la::float2 x0y1() const { return {x,     y + h}; }
+    la::float2 x1y1() const { return {x + w, y + h}; }
 
     // Size and center helpers.
     la::float2 size()        const { return {w, h}; }
     la::float2 halfExtents() const { return {w * 0.5f, h * 0.5f}; }
     la::float2 center()      const { return {x + w * 0.5f, y + h * 0.5f}; }
+
+    // Signed area: w * h. Sign reflects the winding implied by the field
+    // signs (negative h or negative w produces negative area).
+    float area() const { return w * h; }
 
     // Aspect ratio (w / h). Caller's responsibility to handle h == 0.
     float aspect() const { return w / h; }
@@ -76,6 +85,17 @@ struct Rect {
     // Empty when w or h is non-positive. Empty rects are "no area" —
     // they intersect nothing and are absorbed by `bbox`.
     bool empty() const { return w <= 0 || h <= 0; }
+
+    // Normalize to positive w/h, preserving the rect's region. Use at
+    // input boundaries when w/h might be signed (e.g. two-corner
+    // construction with arbitrary order).
+    Rect normalized() const {
+        const float nx = w >= 0 ? x : x + w;
+        const float ny = h >= 0 ? y : y + h;
+        const float nw = w >= 0 ? w : -w;
+        const float nh = h >= 0 ? h : -h;
+        return Rect{nx, ny, nw, nh};
+    }
 
     // Half-open hit-test: includes [x, x+w) × [y, y+h). Matches SDL/bgfx
     // pixel coord convention so adjacent rects tile without overlap.
@@ -151,7 +171,7 @@ struct Rect {
     // coordinate systems related by a single scalar (e.g. pixel-rect to
     // normalized UV: `pixelRect / atlasSize`).
     Rect operator*(float s) const { return Rect{x * s, y * s, w * s, h * s}; }
-    Rect operator/(float s) const { return Rect{x / s, y / s, w / s, h / s}; }
+    Rect operator/(float s) const { return *this * (1.0f / s); }
 
     // Parameters for `scaled`. `scale` is per-axis (or scalar — see the
     // companion overload below); `center` is the pivot expressed in
@@ -189,6 +209,13 @@ struct Rect {
         return scaled(ScalingVec{.scale = {s.scale, s.scale}, .center = s.center});
     }
 
+    // Factory: rect with `origin` at the (x, y) corner, with given
+    // `size` extending along +x and +y. Direction-neutral — caller's
+    // coordinate system decides what "+y" means.
+    static Rect originSize(la::float2 origin, la::float2 size) {
+        return Rect{origin.x, origin.y, size.x, size.y};
+    }
+
     // Factory: rect of size `sz` whose center is at `c`.
     static Rect centered(la::float2 c, la::float2 sz) {
         return Rect{c.x - sz.x * 0.5f, c.y - sz.y * 0.5f, sz.x, sz.y};
@@ -202,12 +229,6 @@ struct Rect {
         const float ty = a.y < b.y ? a.y : b.y;
         const float by = a.y < b.y ? b.y : a.y;
         return Rect{lx, ty, rx - lx, by - ty};
-    }
-
-    // Factory: float-from-int conversion for sites with int{x, y, w, h}
-    // (e.g. integer pixel rects from third-party APIs).
-    static Rect fromInt(la::int4 r) {
-        return Rect{float(r.x), float(r.y), float(r.z), float(r.w)};
     }
 };
 
