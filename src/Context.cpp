@@ -49,8 +49,14 @@ Context::Context(int surfaceWidth, int surfaceHeight, DeviceClass deviceClass,
         .db = std::make_shared<sqlpipe::Database>(dbPath, schemaDdl),
     })) {}
 
-Rect Context::drawSafeRect() const { return fullRect().inset(m->drawInsets); }
-Rect Context::uiSafeRect()   const { return fullRect().inset(m->uiInsets);   }
+Rect Context::drawSafeRect() const {
+    const auto& s = m->drawInsets;
+    return fullRect().adjusted({{.a = {s.x0, s.y0}, .b = {-s.x1, -s.y1}}});
+}
+Rect Context::uiSafeRect() const {
+    const auto& s = m->uiInsets;
+    return fullRect().adjusted({{.a = {s.x0, s.y0}, .b = {-s.x1, -s.y1}}});
+}
 Rect Context::fullRect()     const {
     return Rect{0, 0, float(m->surfaceWidth), float(m->surfaceHeight)};
 }

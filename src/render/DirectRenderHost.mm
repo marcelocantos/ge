@@ -443,16 +443,18 @@ SafeAreaInsets DirectRenderHost::uiSafeInsets() const {
     if (winW <= 0 || winH <= 0) return out;
     // Convert window-coord (point) insets → pixel insets via the
     // surface's pixel-density ratio so they match the pixel-coord
-    // surface dims the engine reports.
+    // surface dims the engine reports. Screen is y-down (SDL/bgfx),
+    // so the OS-supplied "top" inset goes into the smaller-y edge
+    // field (y0), and "bottom" into the larger-y edge field (y1).
     const float xScale = float(i_->width)  / float(winW);
     const float yScale = float(i_->height) / float(winH);
     auto scale = [](int v, float s) {
-        return v <= 0 ? 0 : int(std::ceil(float(v) * s));
+        return v <= 0 ? 0.0f : std::ceil(float(v) * s);
     };
-    out.left   = scale(safe.x,                   xScale);
-    out.right  = scale(winW - safe.x - safe.w,   xScale);
-    out.top    = scale(safe.y,                   yScale);
-    out.bottom = scale(winH - safe.y - safe.h,   yScale);
+    out.x0 = scale(safe.x,                   xScale);  // left in y-down
+    out.x1 = scale(winW - safe.x - safe.w,   xScale);  // right
+    out.y0 = scale(safe.y,                   yScale);  // top in y-down
+    out.y1 = scale(winH - safe.y - safe.h,   yScale);  // bottom
     return out;
 }
 

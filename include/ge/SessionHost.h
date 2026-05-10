@@ -58,13 +58,42 @@ struct Rect {
     float w = 0;
     float h = 0;
 
+    // Constructors. The 4-arg form takes `{x, y, w, h}` directly.
+    // The two tagged forms disambiguate via designated init at the
+    // call site:
+    //   Rect r1{1, 2, 3, 4};                              // 4 floats
+    //   Rect r2{{.origin = {1, 2}, .size   = {3, 4}}};    // OriginSize
+    //   Rect r3{{.a      = {1, 2}, .b      = {5, 6}}};    // Corners (sign-preserving)
+    // Without designated names, `Rect{{1,2}, {3,4}}` is ambiguous —
+    // the compiler forces the user to name the field whose meaning
+    // matters. Brace-eliding the inner struct literal is fine when
+    // the field names are present.
+    struct Corners    { la::float2 a, b; };
+    struct OriginSize { la::float2 origin, size; };
+
+    Rect() = default;
+    Rect(float x_, float y_, float w_, float h_)
+        : x(x_), y(y_), w(w_), h(h_) {}
+    Rect(Corners c)
+        : x(c.a.x), y(c.a.y),
+          w(c.b.x - c.a.x), h(c.b.y - c.a.y) {}
+    Rect(OriginSize os)
+        : x(os.origin.x), y(os.origin.y),
+          w(os.size.x),   h(os.size.y) {}
+
     // Corner accessors — direction-agnostic naming. The first index is
     // the position along x (0 = origin, 1 = far edge); the second is the
     // position along y. So x0y0() is always the origin corner, x1y1() is
     // always the far corner, regardless of whether the surrounding
-    // coordinate system treats +y as down or up. Methods on Rect assume
-    // positive w/h — pre-normalize via `normalized()` if you might have
-    // signed input from a boundary (drag rects, two-corner construction).
+    // coordinate system treats +y as down or up.
+    //
+    // Methods on Rect compute their formulas as written — they don't
+    // sanity-check signs. For positive-w/h inputs (the conventional
+    // case), `bbox`, `intersect`, `contains`, etc. behave as their
+    // names suggest. For signed inputs, the same arithmetic produces
+    // a well-defined but non-conventional result that the caller may
+    // or may not find useful. `normalized()` is a convenience for
+    // callers who explicitly want positive-w/h form.
     la::float2 x0y0() const { return {x,     y    }; }
     la::float2 x1y0() const { return {x + w, y    }; }
     la::float2 x0y1() const { return {x,     y + h}; }
@@ -82,13 +111,22 @@ struct Rect {
     // Aspect ratio (w / h). Caller's responsibility to handle h == 0.
     float aspect() const { return w / h; }
 
-    // Empty when w or h is non-positive. Empty rects are "no area" —
-    // they intersect nothing and are absorbed by `bbox`.
-    bool empty() const { return w <= 0 || h <= 0; }
+    // True when w or h is exactly zero (`area() == 0`). Signed-area
+    // rects (one negative dimension) are *not* empty — they cover a
+    // region with negative winding, which `bbox`/`intersect` accept
+    // and process via their min/max formulas without sign-judging.
+    bool empty() const { return w == 0 || h == 0; }
 
-    // Normalize to positive w/h, preserving the rect's region. Use at
-    // input boundaries when w/h might be signed (e.g. two-corner
-    // construction with arbitrary order).
+    // Contextual-bool: true iff non-empty. Marked `explicit` so the
+    // conversion only fires in boolean contexts (`if (r) ...`,
+    // `while (r) ...`, `!r`) — no surprise int conversions.
+    explicit operator bool() const { return !empty(); }
+    bool operator!() const { return empty(); }
+
+    // Normalized form: positive w/h occupying the same region. Useful
+    // when you've constructed a Rect via `Corners` from arbitrary-
+    // order points and want the conventional form before passing to
+    // `bbox`/`intersect`/`contains`.
     Rect normalized() const {
         const float nx = w >= 0 ? x : x + w;
         const float ny = h >= 0 ? y : y + h;
@@ -121,29 +159,6 @@ struct Rect {
     // Bounding rect of the two. Treats empty rects as "nothing" — if
     // either is empty the other is returned unchanged.
     Rect bbox(const Rect& other) const;
-
-    // Shrink (or expand, when negative) by dx on left/right and dy on
-    // top/bottom. The result may be empty.
-    Rect inset(float dx, float dy) const {
-        return Rect{x + dx, y + dy, w - 2 * dx, h - 2 * dy};
-    }
-    // Symmetric inset — equivalent to inset(d, d). Reads cleaner at
-    // call sites where a single border thickness is shrunk on all sides.
-    Rect inset(float d) const { return inset(d, d); }
-    // Shrink by per-edge safe-area insets.
-    Rect inset(const SafeAreaInsets& s) const;
-    // Per-edge inset, CSS order: { top, right, bottom, left }. Negative
-    // values expand. The result may be empty.
-    Rect inset(la::float4 trbl) const {
-        return Rect{x + trbl.w, y + trbl.x,
-                    w - (trbl.w + trbl.y),
-                    h - (trbl.x + trbl.z)};
-    }
-
-    // Outset (grow). Equivalent to inset(-dx, -dy) / inset(-d) — sugar
-    // for the common case of expanding a rect by a border thickness.
-    Rect outset(float dx, float dy) const { return inset(-dx, -dy); }
-    Rect outset(float d)            const { return inset(-d); }
 
     // Translated copy.
     Rect translated(la::float2 d) const {
@@ -209,26 +224,10 @@ struct Rect {
         return scaled(ScalingVec{.scale = {s.scale, s.scale}, .center = s.center});
     }
 
-    // Factory: rect with `origin` at the (x, y) corner, with given
-    // `size` extending along +x and +y. Direction-neutral — caller's
-    // coordinate system decides what "+y" means.
-    static Rect originSize(la::float2 origin, la::float2 size) {
-        return Rect{origin.x, origin.y, size.x, size.y};
-    }
-
-    // Factory: rect of size `sz` whose center is at `c`.
+    // Factory: rect of size `sz` whose center is at `c`. Kept as a
+    // semantic factory — doesn't reduce cleanly to a ctor + transform.
     static Rect centered(la::float2 c, la::float2 sz) {
         return Rect{c.x - sz.x * 0.5f, c.y - sz.y * 0.5f, sz.x, sz.y};
-    }
-
-    // Factory: smallest axis-aligned rect containing both points. Order
-    // of `a`, `b` does not matter; w / h are always non-negative.
-    static Rect between(la::float2 a, la::float2 b) {
-        const float lx = a.x < b.x ? a.x : b.x;
-        const float rx = a.x < b.x ? b.x : a.x;
-        const float ty = a.y < b.y ? a.y : b.y;
-        const float by = a.y < b.y ? b.y : a.y;
-        return Rect{lx, ty, rx - lx, by - ty};
     }
 };
 
@@ -237,21 +236,22 @@ inline bool operator==(const Rect& a, const Rect& b) {
 }
 inline bool operator!=(const Rect& a, const Rect& b) { return !(a == b); }
 
-// Per-edge insets (pixels) of a safe-area-style boundary within the
-// render surface. Engine-internal struct — used to populate the rect
-// accessors below; apps consume the rects directly.
+// Per-edge insets of a safe-area-style boundary within the render
+// surface. Direction-agnostic: `y0` is the inset on the smaller-y
+// edge, `y1` on the larger-y edge, similarly for x. In the engine's
+// screen-coord (y-down per SDL/bgfx), `y0` is the top inset and `y1`
+// is the bottom inset; the rename is a deliberate move away from
+// y-axis-named field labels. Engine-internal struct — used to
+// populate the rect accessors below; apps consume the rects directly.
+// To apply to a Rect, callers compose `Rect::adjusted` with a
+// `Corners`-constructed delta, which is what `Context::drawSafeRect`
+// and `Context::uiSafeRect` do internally.
 struct SafeAreaInsets {
-    int top    = 0;
-    int bottom = 0;
-    int left   = 0;
-    int right  = 0;
+    float y0 = 0;
+    float y1 = 0;
+    float x0 = 0;
+    float x1 = 0;
 };
-
-inline Rect Rect::inset(const SafeAreaInsets& s) const {
-    return Rect{x + float(s.left), y + float(s.top),
-                w - float(s.left + s.right),
-                h - float(s.top + s.bottom)};
-}
 
 // Platform context provided to the game by ge::run() — once at session
 // start (passed to the factory) and once per frame (passed to onRender).

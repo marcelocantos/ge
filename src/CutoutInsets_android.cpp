@@ -41,10 +41,12 @@ SafeAreaInsets queryDisplayCutoutInsets() {
     if (arr && env->GetArrayLength(arr) == 4) {
         jint vals[4] = {0, 0, 0, 0};
         env->GetIntArrayRegion(arr, 0, 4, vals);
-        out.left   = vals[0];
-        out.right  = vals[1];
-        out.top    = vals[2];
-        out.bottom = vals[3];
+        // JNI returns left/right/top/bottom; screen is y-down (SDL/bgfx),
+        // so top → y0 (smaller-y edge), bottom → y1 (larger-y edge).
+        out.x0 = float(vals[0]);   // left
+        out.x1 = float(vals[1]);   // right
+        out.y0 = float(vals[2]);   // top in y-down
+        out.y1 = float(vals[3]);   // bottom
     }
     if (arr) env->DeleteLocalRef(arr);
     env->DeleteLocalRef(cls);
