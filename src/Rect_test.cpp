@@ -324,9 +324,13 @@ TEST_CASE("Rect::fitInside is non-translating when content already matches outer
     CHECK(r == outer);
 }
 
-TEST_CASE("Rect::fitInside ignores content's position — only aspect matters") {
+TEST_CASE("Rect::fitInside depends on content aspect, not magnitude") {
+    // Same aspect (1:1) at different magnitudes → identical fit.
+    // Magnitudes chosen so size()/content divides evenly and the
+    // multiplication round-trips without float roundoff.
     Rect outer{0, 0, 200, 100};
-    CHECK(outer.fitInside({1, 1}) == outer.fitInside({{.origin = {99, 99}, .size = {1, 1}}}.size()));
+    CHECK(outer.fitInside({1, 1})  == outer.fitInside({2, 2}));
+    CHECK(outer.fitInside({1, 1})  == outer.fitInside({4, 4}));
 }
 
 TEST_CASE("Rect::fillInside covers a wider outer with overflow on width") {
@@ -351,8 +355,6 @@ TEST_CASE("fitInside and fillInside coincide when content matches outer aspect")
 
 TEST_CASE("fillInside contains outer; fitInside is contained by outer") {
     Rect outer{0, 0, 200, 100};
-    Rect content{1, 2};  // arbitrary aspect
-
     Rect fit  = outer.fitInside({1, 2});
     Rect fill = outer.fillInside({1, 2});
 
