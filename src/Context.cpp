@@ -7,7 +7,7 @@
 
 namespace ge {
 
-Rect Rect::intersection(const Rect& other) const {
+Rect Rect::intersect(const Rect& other) const {
     if (empty() || other.empty()) return {};
     const float l = std::max(x, other.x);
     const float t = std::max(y, other.y);
@@ -17,7 +17,7 @@ Rect Rect::intersection(const Rect& other) const {
     return Rect{l, t, r - l, b - t};
 }
 
-Rect Rect::unioned(const Rect& other) const {
+Rect Rect::bbox(const Rect& other) const {
     if (empty()) return other;
     if (other.empty()) return *this;
     const float l = std::min(x, other.x);

@@ -70,8 +70,11 @@ struct Rect {
     la::float2 halfExtents() const { return {w * 0.5f, h * 0.5f}; }
     la::float2 center()      const { return {x + w * 0.5f, y + h * 0.5f}; }
 
+    // Aspect ratio (w / h). Caller's responsibility to handle h == 0.
+    float aspect() const { return w / h; }
+
     // Empty when w or h is non-positive. Empty rects are "no area" —
-    // they intersect nothing and are absorbed by `unioned`.
+    // they intersect nothing and are absorbed by `bbox`.
     bool empty() const { return w <= 0 || h <= 0; }
 
     // Half-open hit-test: includes [x, x+w) × [y, y+h). Matches SDL/bgfx
@@ -94,10 +97,10 @@ struct Rect {
             && y < other.y + other.h && other.y < y + h;
     }
     // Overlap rect, or an empty rect if there is no overlap.
-    Rect intersection(const Rect& other) const;
+    Rect intersect(const Rect& other) const;
     // Bounding rect of the two. Treats empty rects as "nothing" — if
     // either is empty the other is returned unchanged.
-    Rect unioned(const Rect& other) const;
+    Rect bbox(const Rect& other) const;
 
     // Shrink (or expand, when negative) by dx on left/right and dy on
     // top/bottom. The result may be empty.
@@ -109,6 +112,13 @@ struct Rect {
     Rect inset(float d) const { return inset(d, d); }
     // Shrink by per-edge safe-area insets.
     Rect inset(const SafeAreaInsets& s) const;
+    // Per-edge inset, CSS order: { top, right, bottom, left }. Negative
+    // values expand. The result may be empty.
+    Rect inset(la::float4 trbl) const {
+        return Rect{x + trbl.w, y + trbl.x,
+                    w - (trbl.w + trbl.y),
+                    h - (trbl.x + trbl.z)};
+    }
 
     // Outset (grow). Equivalent to inset(-dx, -dy) / inset(-d) — sugar
     // for the common case of expanding a rect by a border thickness.
@@ -120,11 +130,64 @@ struct Rect {
         return Rect{x + d.x, y + d.y, w, h};
     }
 
+    // Copy-with-mutation accessors.
+    Rect withOrigin(la::float2 origin) const {
+        return Rect{origin.x, origin.y, w, h};
+    }
+    Rect withSize(la::float2 sz) const {
+        return Rect{x, y, sz.x, sz.y};
+    }
+
+    // Component-wise add, no semantic interpretation. Caller decides
+    // what the four delta components mean. Translate: `r.adjusted({dx, dy, 0, 0})`.
+    // Asymmetric edge-tweak: e.g. shrink top by 5 → `r.adjusted({0, 5, 0, -5})`.
+    // Distinct from translated() / inset() / outset() because those bake
+    // semantics in; adjusted() is the raw four-`+`s primitive.
+    Rect adjusted(Rect d) const {
+        return Rect{x + d.x, y + d.y, w + d.w, h + d.h};
+    }
+
     // Uniform scale of all four fields. Useful for converting between
     // coordinate systems related by a single scalar (e.g. pixel-rect to
     // normalized UV: `pixelRect / atlasSize`).
     Rect operator*(float s) const { return Rect{x * s, y * s, w * s, h * s}; }
     Rect operator/(float s) const { return Rect{x / s, y / s, w / s, h / s}; }
+
+    // Parameters for `scaled`. `scale` is per-axis (or scalar — see the
+    // companion overload below); `center` is the pivot expressed in
+    // normalized rect-local coords:
+    //   {0, 0}    — top-left corner
+    //   {1, 1}    — bottom-right corner
+    //   {0.5, 0.5}— rect's own center (the default)
+    //
+    // The two-struct split exists so call sites can write
+    // `r.scaled({.scale = {2, 1}})` (non-uniform) and
+    // `r.scaled({.scale = 2.f})`   (uniform) without naming the type.
+    // Overload resolution picks the right struct because linalg's
+    // vec<T,2>(const T&) broadcast ctor is `explicit` (linalg.h:229),
+    // blocking float→float2 implicit conversion in copy-init. If a
+    // future linalg upgrade drops `explicit` on that ctor the call sites
+    // become ambiguous; collapse the two structs to one with a
+    // std::variant<float, la::float2> scale field as the migration.
+    struct ScalingVec {
+        la::float2 scale;
+        la::float2 center = {0.5f, 0.5f};
+    };
+    struct ScalingScalar {
+        float      scale;
+        la::float2 center = {0.5f, 0.5f};
+    };
+
+    Rect scaled(ScalingVec s) const {
+        const float px = x + w * s.center.x;
+        const float py = y + h * s.center.y;
+        const float nw = w * s.scale.x;
+        const float nh = h * s.scale.y;
+        return Rect{px - s.center.x * nw, py - s.center.y * nh, nw, nh};
+    }
+    Rect scaled(ScalingScalar s) const {
+        return scaled(ScalingVec{.scale = {s.scale, s.scale}, .center = s.center});
+    }
 
     // Factory: rect of size `sz` whose center is at `c`.
     static Rect centered(la::float2 c, la::float2 sz) {
@@ -139,6 +202,12 @@ struct Rect {
         const float ty = a.y < b.y ? a.y : b.y;
         const float by = a.y < b.y ? b.y : a.y;
         return Rect{lx, ty, rx - lx, by - ty};
+    }
+
+    // Factory: float-from-int conversion for sites with int{x, y, w, h}
+    // (e.g. integer pixel rects from third-party APIs).
+    static Rect fromInt(la::int4 r) {
+        return Rect{float(r.x), float(r.y), float(r.z), float(r.w)};
     }
 };
 
