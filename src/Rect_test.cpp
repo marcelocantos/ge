@@ -51,31 +51,31 @@ TEST_CASE("Rect intersects requires positive overlap") {
     CHECK_FALSE(a.intersects(Rect{}));    // empty intersects nothing
 }
 
-TEST_CASE("Rect intersection returns the overlap") {
+TEST_CASE("Rect intersect returns the overlap") {
     Rect a{0, 0, 100, 100};
     Rect b{50, 50, 100, 100};
-    Rect overlap = a.intersection(b);
+    Rect overlap = a.intersect(b);
     CHECK(overlap.x == 50.0f);
     CHECK(overlap.y == 50.0f);
     CHECK(overlap.w == 50.0f);
     CHECK(overlap.h == 50.0f);
 
-    Rect none = a.intersection(Rect{200, 200, 10, 10});
+    Rect none = a.intersect(Rect{200, 200, 10, 10});
     CHECK(none.empty());
 }
 
-TEST_CASE("Rect unioned bounds both") {
+TEST_CASE("Rect bbox bounds both") {
     Rect a{0, 0, 50, 50};
     Rect b{100, 100, 50, 50};
-    Rect u = a.unioned(b);
+    Rect u = a.bbox(b);
     CHECK(u.x == 0.0f);
     CHECK(u.y == 0.0f);
     CHECK(u.w == 150.0f);
     CHECK(u.h == 150.0f);
 
     // Empty inputs are absorbed.
-    CHECK(Rect{}.unioned(a) == a);
-    CHECK(a.unioned(Rect{}) == a);
+    CHECK(Rect{}.bbox(a) == a);
+    CHECK(a.bbox(Rect{}) == a);
 }
 
 TEST_CASE("Rect inset(dx, dy) shrinks symmetrically; negative expands") {
@@ -201,4 +201,88 @@ TEST_CASE("Rect::outset is the antonym of inset") {
     CHECK(bigger.y == 15.0f);
     CHECK(bigger.w == 110.0f);
     CHECK(bigger.h == 90.0f);
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// v0.17.0 helpers — aspect, withOrigin/withSize, inset(la::float4),
+// adjusted, scaled.
+// ─────────────────────────────────────────────────────────────────────
+
+TEST_CASE("Rect::aspect is w/h") {
+    CHECK(Rect{0, 0, 16, 9}.aspect() == doctest::Approx(16.0f / 9.0f));
+    CHECK(Rect{10, 20, 100, 100}.aspect() == 1.0f);
+}
+
+TEST_CASE("Rect::withOrigin replaces origin only") {
+    Rect r{10, 20, 100, 80};
+    Rect moved = r.withOrigin({99, 88});
+    CHECK(moved == Rect{99, 88, 100, 80});
+}
+
+TEST_CASE("Rect::withSize replaces size only") {
+    Rect r{10, 20, 100, 80};
+    Rect resized = r.withSize({5, 6});
+    CHECK(resized == Rect{10, 20, 5, 6});
+}
+
+TEST_CASE("Rect::inset(la::float4) treats components as {top, right, bottom, left}") {
+    // CSS order matches la::float4 = {x, y, z, w} = {top, right, bottom, left}.
+    Rect r{0, 0, 100, 100};
+    Rect inner = r.inset(ge::la::float4{5, 10, 15, 20});
+    CHECK(inner.x == 20.0f);                 // x + left
+    CHECK(inner.y == 5.0f);                  // y + top
+    CHECK(inner.w == 100.0f - 20.0f - 10.0f); // w - left - right
+    CHECK(inner.h == 100.0f - 5.0f - 15.0f);  // h - top - bottom
+
+    // Negative values expand.
+    Rect bigger = r.inset(ge::la::float4{-1, -2, -3, -4});
+    CHECK(bigger.x == -4.0f);
+    CHECK(bigger.y == -1.0f);
+    CHECK(bigger.w == 100.0f + 4.0f + 2.0f);
+    CHECK(bigger.h == 100.0f + 1.0f + 3.0f);
+}
+
+TEST_CASE("Rect::adjusted is component-wise add") {
+    Rect r{10, 20, 30, 40};
+    Rect d = r.adjusted({1, 2, 3, 4});
+    CHECK(d == Rect{11, 22, 33, 44});
+
+    // Translation idiom.
+    CHECK(r.adjusted({5, -5, 0, 0}) == r.translated({5, -5}));
+}
+
+TEST_CASE("Rect::scaled with default center scales around the rect's center") {
+    Rect r{10, 20, 100, 80};
+    Rect doubled = r.scaled({.scale = {2.f, 2.f}});
+    // Center stays put.
+    CHECK(doubled.center().x == doctest::Approx(r.center().x));
+    CHECK(doubled.center().y == doctest::Approx(r.center().y));
+    CHECK(doubled.w == 200.0f);
+    CHECK(doubled.h == 160.0f);
+}
+
+TEST_CASE("Rect::scaled with center {0,0} scales around the top-left") {
+    Rect r{10, 20, 100, 80};
+    Rect s = r.scaled({.scale = {2.f, 0.5f}, .center = {0.f, 0.f}});
+    CHECK(s.x == 10.0f);  // top-left fixed
+    CHECK(s.y == 20.0f);
+    CHECK(s.w == 200.0f);
+    CHECK(s.h == 40.0f);
+}
+
+TEST_CASE("Rect::scaled with center {1,1} scales around the bottom-right") {
+    Rect r{10, 20, 100, 80};
+    Rect s = r.scaled({.scale = {2.f, 2.f}, .center = {1.f, 1.f}});
+    // Bottom-right stays put: (110, 100).
+    CHECK(s.x + s.w == doctest::Approx(110.0f));
+    CHECK(s.y + s.h == doctest::Approx(100.0f));
+    CHECK(s.w == 200.0f);
+    CHECK(s.h == 160.0f);
+}
+
+TEST_CASE("Rect::scaled scalar overload matches isotropic vec scaling") {
+    Rect r{10, 20, 100, 80};
+    CHECK(r.scaled({.scale = 2.f}) == r.scaled({.scale = {2.f, 2.f}}));
+    CHECK(r.scaled({.scale = 0.5f, .center = {0.f, 0.f}}) ==
+          r.scaled({.scale = {0.5f, 0.5f}, .center = {0.f, 0.f}}));
 }
