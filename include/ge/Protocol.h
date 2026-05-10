@@ -80,7 +80,7 @@ constexpr uint8_t kSensorAccelerometer = 1;
 //
 // CAVEAT (v0.3.0): playerForceOrientation() treats this field as a
 // boolean — any non-zero value enables the iPad orientation lock; the
-// SPECIFIC constant is not honoured at runtime. The orientation that
+// SPECIFIC constant is not honored at runtime. The orientation that
 // gets locked is whichever one iOS picked at launch, constrained by
 // the app bundle's UISupportedInterfaceOrientations in Info.plist.
 //
@@ -92,7 +92,7 @@ constexpr uint8_t kSensorAccelerometer = 1;
 // Setting kOrientationLandscape vs kOrientationLandscapeFlipped today
 // is a no-op difference; both are simply "non-zero, lock please."
 //
-// 🎯T36 tracks aligning the API with its behaviour (either collapse to
+// 🎯T36 tracks aligning the API with its behavior (either collapse to
 // a boolean field, or make these constants authoritative by having the
 // engine narrow supportedInterfaceOrientations at runtime).
 constexpr uint8_t kOrientationLandscape        = SDL_ORIENTATION_LANDSCAPE;

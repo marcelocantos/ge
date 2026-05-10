@@ -55,7 +55,7 @@ build_sdl() {
     local DEST="$VENDOR/sdl3/lib/ios-arm64${SUFFIX}"
 
     if [ ! -e "$SDL_SRC/.git" ]; then
-        echo "ERROR: SDL submodule not initialised. Run:"
+        echo "ERROR: SDL submodule not initialized. Run:"
         echo "  cd ge && git submodule update --init vendor/github.com/libsdl-org/SDL"
         exit 1
     fi

@@ -45,7 +45,7 @@ android {
     // never copy the SDLActivity boilerplate) and the vendored SDL3
     // android-project. Drop 'src/main/java' from the list — the
     // template no longer scaffolds a per-app Activity.java; apps that
-    // genuinely need to customise behaviour subclass ge.GeActivity in
+    // genuinely need to customize behavior subclass ge.GeActivity in
     // their own java tree and add it back here.
     sourceSets {
         main {

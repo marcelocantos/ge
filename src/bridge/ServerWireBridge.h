@@ -40,19 +40,19 @@ public:
     ServerWireBridge& operator=(const ServerWireBridge&) = delete;
 
     // Drain wire messages. On DeviceInfo arrival, dimensions become valid
-    // (caller should then call initialise()). On later SDL events, invokes
+    // (caller should then call initialize()). On later SDL events, invokes
     // the registered handler. Returns false if the wire is closed.
     bool pumpWire();
 
     // True after DeviceInfo arrives — width()/height() are valid; capture
-    // can be initialised. False before that.
+    // can be initialized. False before that.
     bool hasDimensions() const;
 
-    // Initialise capture framebuffer + encoder. Caller must have inited
+    // Initialize capture framebuffer + encoder. Caller must have inited
     // bgfx first. After this call, isReady() returns true.
-    void initialise();
+    void initialize();
 
-    // True after initialise() — ready to render.
+    // True after initialize() — ready to render.
     bool isReady() const;
 
     const std::string& id() const;

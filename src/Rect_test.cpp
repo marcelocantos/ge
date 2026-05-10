@@ -117,3 +117,88 @@ TEST_CASE("Rect equality is field-wise") {
     CHECK(a == b);
     CHECK(a != c);
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// Enrichments — operator*/operator/, centered/between factories,
+// halfExtents, single-arg inset, outset.
+// ─────────────────────────────────────────────────────────────────────
+
+TEST_CASE("Rect halfExtents is half of size") {
+    Rect r{10, 20, 30, 40};
+    CHECK(r.halfExtents().x == 15.0f);
+    CHECK(r.halfExtents().y == 20.0f);
+}
+
+TEST_CASE("Rect operator*(float) scales all four fields uniformly") {
+    Rect r{2, 4, 6, 8};
+    Rect s = r * 0.5f;
+    CHECK(s.x == 1.0f);
+    CHECK(s.y == 2.0f);
+    CHECK(s.w == 3.0f);
+    CHECK(s.h == 4.0f);
+}
+
+TEST_CASE("Rect operator/(float) is the reciprocal of operator*") {
+    Rect r{16, 32, 64, 128};
+    Rect s = r / 16.0f;
+    CHECK(s.x == 1.0f);
+    CHECK(s.y == 2.0f);
+    CHECK(s.w == 4.0f);
+    CHECK(s.h == 8.0f);
+}
+
+TEST_CASE("Rect operator* and operator/ round-trip") {
+    Rect r{3, 7, 11, 13};
+    Rect roundtrip = (r * 4.5f) / 4.5f;
+    CHECK(roundtrip == r);
+}
+
+TEST_CASE("Rect::centered builds a rect of given size at given center") {
+    Rect r = Rect::centered({100, 50}, {40, 20});
+    CHECK(r.x == 80.0f);
+    CHECK(r.y == 40.0f);
+    CHECK(r.w == 40.0f);
+    CHECK(r.h == 20.0f);
+    // Round-trip: center() returns the original center.
+    CHECK(r.center().x == 100.0f);
+    CHECK(r.center().y == 50.0f);
+}
+
+TEST_CASE("Rect::between is order-independent and produces non-negative size") {
+    Rect r1 = Rect::between({10, 20}, {30, 50});
+    Rect r2 = Rect::between({30, 50}, {10, 20});
+    CHECK(r1 == r2);
+    CHECK(r1.x == 10.0f);
+    CHECK(r1.y == 20.0f);
+    CHECK(r1.w == 20.0f);
+    CHECK(r1.h == 30.0f);
+}
+
+TEST_CASE("Rect::between with diagonal points still yields positive w/h") {
+    Rect r = Rect::between({50, 10}, {10, 50});
+    CHECK(r.x == 10.0f);
+    CHECK(r.y == 10.0f);
+    CHECK(r.w == 40.0f);
+    CHECK(r.h == 40.0f);
+}
+
+TEST_CASE("Rect::inset(d) is symmetric inset(d, d)") {
+    Rect r{10, 20, 100, 80};
+    CHECK(r.inset(5.0f) == r.inset(5.0f, 5.0f));
+    Rect inner = r.inset(5.0f);
+    CHECK(inner.x == 15.0f);
+    CHECK(inner.y == 25.0f);
+    CHECK(inner.w == 90.0f);
+    CHECK(inner.h == 70.0f);
+}
+
+TEST_CASE("Rect::outset is the antonym of inset") {
+    Rect r{10, 20, 100, 80};
+    CHECK(r.outset(5.0f)        == r.inset(-5.0f));
+    CHECK(r.outset(3.0f, 7.0f)  == r.inset(-3.0f, -7.0f));
+    Rect bigger = r.outset(5.0f);
+    CHECK(bigger.x == 5.0f);
+    CHECK(bigger.y == 15.0f);
+    CHECK(bigger.w == 110.0f);
+    CHECK(bigger.h == 90.0f);
+}

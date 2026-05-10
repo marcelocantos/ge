@@ -19,9 +19,9 @@
 //   mipmap-{m,h,xh,xxh,xxxh}dpi/ic_launcher.png   legacy launcher (48..192 px)
 //   mipmap-{...}dpi/ic_launcher_round.png         round legacy variant (same content)
 //   drawable/ic_launcher_foreground.png           432×432 adaptive foreground
-//                                                  with master SVG centred in
+//                                                  with master SVG centered in
 //                                                  the 72dp safe zone (288 px)
-//   drawable/ic_launcher_background.xml           solid colour (--bg-color) or white
+//   drawable/ic_launcher_background.xml           solid color (--bg-color) or white
 //   mipmap-anydpi-v26/ic_launcher.xml             adaptive manifest
 //   mipmap-anydpi-v26/ic_launcher_round.xml       same, round variant
 //
@@ -130,7 +130,7 @@ bool rasterToPng(const std::string& svg, int size, const std::string& outPath) {
     return true;
 }
 
-// Render the master SVG centred in the 72dp safe zone of a 108dp canvas
+// Render the master SVG centered in the 72dp safe zone of a 108dp canvas
 // (canvasPx). Visible content occupies (72/108) × canvasPx ≈ 0.667 × canvasPx.
 bool rasterToAdaptiveForeground(const std::string& svg,
                                 int canvasPx,
@@ -145,7 +145,7 @@ bool rasterToAdaptiveForeground(const std::string& svg,
     unpremultiply(pixels.rgba);
 
     // Compose into a transparent canvasPx × canvasPx buffer with the inner
-    // image centred. Padding is fully transparent (rgba = 0,0,0,0).
+    // image centered. Padding is fully transparent (rgba = 0,0,0,0).
     std::vector<uint8_t> canvas(static_cast<size_t>(canvasPx) * canvasPx * 4, 0);
     const int offset = (canvasPx - innerPx) / 2;
     for (int y = 0; y < innerPx; ++y) {
@@ -180,7 +180,7 @@ const char* kAdaptiveIconXml = R"XML(<?xml version="1.0" encoding="utf-8"?>
 </adaptive-icon>
 )XML";
 
-// Normalise a colour string to '#RRGGBB' / '#AARRGGBB'. Empty input → white;
+// Normalize a color string to '#RRGGBB' / '#AARRGGBB'. Empty input → white;
 // missing leading '#' is added (Module.mk defaults strip it because Make
 // treats '#' as a comment).
 std::string normaliseColour(std::string in) {
@@ -238,7 +238,7 @@ bool generateAndroid(const std::string& svg,
         return false;
     }
 
-    // Adaptive background — solid colour drawable.
+    // Adaptive background — solid color drawable.
     if (!writeFile(resDir + "/drawable/ic_launcher_background.xml",
                    solidColourDrawableXml(bgHex))) {
         std::fprintf(stderr, "icon-gen: failed to write %s/drawable/ic_launcher_background.xml\n",

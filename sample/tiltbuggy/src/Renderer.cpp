@@ -215,7 +215,7 @@ void Renderer::init(const char* shaderDir) {
 
 void Renderer::drawFrame(const Scene& scene, const ge::Context& c,
                          float /*tiltX*/, float /*tiltY*/) {
-    // The host's composite pass applies viewport tilt (when synthesised
+    // The host's composite pass applies viewport tilt (when synthesized
     // tilt is non-zero). The game just renders a flat top-down view.
     auto surf = c.fullRect();
     bgfx::setViewRect(0, 0, 0, static_cast<uint16_t>(surf.w),
@@ -305,7 +305,7 @@ void Renderer::drawFrame(const Scene& scene, const ge::Context& c,
     bgfx::setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A);
     bgfx::submit(0, i_->program);
 
-    // Ice-sprite pass — drawn after the colour batch so the pond sits on top
+    // Ice-sprite pass — drawn after the color batch so the pond sits on top
     // of the dirt/background. Each ice surface gets a copy of the same
     // SVG-rasterized texture, inflated 25% past the collision rect so the
     // irregular bezier border has visible overhang past where the friction

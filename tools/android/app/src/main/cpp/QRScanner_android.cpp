@@ -68,7 +68,7 @@ ScanResult scanQRCode() {
         env->ReleaseStringUTFChars(url, urlStr);
         SPDLOG_INFO("Scanned: {}:{}", result.host, result.port);
     } else {
-        SPDLOG_WARN("QR scan cancelled or failed");
+        SPDLOG_WARN("QR scan canceled or failed");
     }
 
     env->DeleteLocalRef(bridgeClass);

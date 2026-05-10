@@ -65,9 +65,10 @@ struct Rect {
     la::float2 bl() const { return {x,     y + h}; }
     la::float2 br() const { return {x + w, y + h}; }
 
-    // Size and centre helpers.
-    la::float2 size()   const { return {w, h}; }
-    la::float2 center() const { return {x + w * 0.5f, y + h * 0.5f}; }
+    // Size and center helpers.
+    la::float2 size()        const { return {w, h}; }
+    la::float2 halfExtents() const { return {w * 0.5f, h * 0.5f}; }
+    la::float2 center()      const { return {x + w * 0.5f, y + h * 0.5f}; }
 
     // Empty when w or h is non-positive. Empty rects are "no area" —
     // they intersect nothing and are absorbed by `unioned`.
@@ -103,11 +104,41 @@ struct Rect {
     Rect inset(float dx, float dy) const {
         return Rect{x + dx, y + dy, w - 2 * dx, h - 2 * dy};
     }
+    // Symmetric inset — equivalent to inset(d, d). Reads cleaner at
+    // call sites where a single border thickness is shrunk on all sides.
+    Rect inset(float d) const { return inset(d, d); }
     // Shrink by per-edge safe-area insets.
     Rect inset(const SafeAreaInsets& s) const;
+
+    // Outset (grow). Equivalent to inset(-dx, -dy) / inset(-d) — sugar
+    // for the common case of expanding a rect by a border thickness.
+    Rect outset(float dx, float dy) const { return inset(-dx, -dy); }
+    Rect outset(float d)            const { return inset(-d); }
+
     // Translated copy.
     Rect translated(la::float2 d) const {
         return Rect{x + d.x, y + d.y, w, h};
+    }
+
+    // Uniform scale of all four fields. Useful for converting between
+    // coordinate systems related by a single scalar (e.g. pixel-rect to
+    // normalized UV: `pixelRect / atlasSize`).
+    Rect operator*(float s) const { return Rect{x * s, y * s, w * s, h * s}; }
+    Rect operator/(float s) const { return Rect{x / s, y / s, w / s, h / s}; }
+
+    // Factory: rect of size `sz` whose center is at `c`.
+    static Rect centered(la::float2 c, la::float2 sz) {
+        return Rect{c.x - sz.x * 0.5f, c.y - sz.y * 0.5f, sz.x, sz.y};
+    }
+
+    // Factory: smallest axis-aligned rect containing both points. Order
+    // of `a`, `b` does not matter; w / h are always non-negative.
+    static Rect between(la::float2 a, la::float2 b) {
+        const float lx = a.x < b.x ? a.x : b.x;
+        const float rx = a.x < b.x ? b.x : a.x;
+        const float ty = a.y < b.y ? a.y : b.y;
+        const float by = a.y < b.y ? b.y : a.y;
+        return Rect{lx, ty, rx - lx, by - ty};
     }
 };
 

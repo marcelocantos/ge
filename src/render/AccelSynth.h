@@ -1,7 +1,7 @@
 // Copyright 2026 Marcelo Cantos
 // SPDX-License-Identifier: Apache-2.0
 //
-// AccelSynth — synthesise SDL_EVENT_SENSOR_UPDATE events from Shift-gated
+// AccelSynth — synthesize SDL_EVENT_SENSOR_UPDATE events from Shift-gated
 // mouse motion when no real accelerometer is available (desktop, iOS
 // simulator, Android emulator).
 //
@@ -123,7 +123,7 @@ public:
     //
     // On TARGET_OS_SIMULATOR with GE_ACCELSYNTH_AUTODRIVE=1: drives a
     // synthetic 100-pixel X tilt for 2 s then triggers easing. The autodrive
-    // state is initialised on the first update() call (checked once via
+    // state is initialized on the first update() call (checked once via
     // autodriveChecked_).
     void update() {
 #if defined(__APPLE__) && TARGET_OS_SIMULATOR

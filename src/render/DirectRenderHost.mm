@@ -140,7 +140,7 @@ bgfx::VertexLayout composeLayout() {
 // The rotation is keyed on the LIVE display orientation reported by SDL
 // (SDL_GetCurrentDisplayOrientation) — not on SessionConfig.orientation,
 // which only records what the app *requested*. The live value reflects
-// what the OS actually rotated to (post-lock-if-honoured, or the live
+// what the OS actually rotated to (post-lock-if-honored, or the live
 // rotation when no lock was requested), so this stays correct in both
 // locked and free-orientation modes and across the brief window between
 // a lock request and the OS settling.
@@ -668,7 +668,7 @@ la::float2 DirectRenderHost::updateParallax() {
     }
     // Quaternion EMA: with α small the result stays close to a unit
     // quaternion, so plain componentwise lerp is fine — no slerp, no
-    // renormalisation needed (drift is self-correcting under
+    // renormalization needed (drift is self-correcting under
     // repeated blends toward unit-length samples).
     constexpr float kBaselineTau = 1.0f;  // seconds
     constexpr float kAssumedDt   = 1.0f / 60.0f;

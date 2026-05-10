@@ -19,7 +19,7 @@ namespace ge {
 //
 // On failure (file missing, unsupported format, OOM), returns a null
 // `Sprite` and logs the error via `spdlog::error`. `bgfx` must be
-// initialised before calling.
+// initialized before calling.
 Sprite loadImage(const std::string& path);
 
 } // namespace ge

@@ -169,7 +169,7 @@ void runBrokered(Factory factory, const SessionHostConfig& config) {
                     SPDLOG_INFO("bgfx initialized at {}x{}",
                                 bs.bridge->width(), bs.bridge->height());
                 }
-                bs.bridge->initialise();
+                bs.bridge->initialize();
                 bs.config = factory(bs.bridge->context());
                 bs.bridge->setEventHandler(bs.config.onEvent);
             }

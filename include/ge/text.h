@@ -31,7 +31,7 @@ struct TextPixels {
 //             premultiplied: `out_rgb = color.rgb * alpha * glyph_alpha`,
 //             `out_a       = color.a * glyph_alpha`.
 //
-// Single line; no wrapping or kerning. Basic ASCII Latin; behaviour for
+// Single line; no wrapping or kerning. Basic ASCII Latin; behavior for
 // codepoints > 127 depends on the font's glyph coverage.
 //
 // Empty TextPixels on failure with a logged error.
