@@ -68,7 +68,7 @@ public:
     virtual void beginFrame() = 0;
     virtual void endFrame(uint32_t bgfxFrameNumber) = 0;
 
-    // True when the render subsystem has signalled shutdown (window close,
+    // True when the render subsystem has signaled shutdown (window close,
     // wire closed, SIGINT, etc.).
     virtual bool shouldQuit() const = 0;
 
@@ -94,7 +94,7 @@ public:
     // stay out of Context construction.
     //
     // Valid once the host is ready — DirectRenderHost from
-    // construction; ServerWireBridge after initialise() (which the
+    // construction; ServerWireBridge after initialize() (which the
     // run loop calls when DeviceInfo arrives).
     virtual const Context& context() const = 0;
 };

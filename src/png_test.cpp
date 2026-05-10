@@ -66,7 +66,7 @@ TEST_CASE("loadImage premul: premultiplied invariant R <= A holds") {
 // ─────────────────────────────────────────────────────────────────────
 // SDL pixel round-trip: load a minimal in-memory PNG and verify that
 // SDL_ConvertSurface + premultiplication produces the expected bytes.
-// bgfx is NOT initialised in this test binary, so we test only the
+// bgfx is NOT initialized in this test binary, so we test only the
 // SDL/pixel layer — not the bgfx::createTexture2D call.
 // ─────────────────────────────────────────────────────────────────────
 

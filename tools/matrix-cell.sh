@@ -10,7 +10,7 @@
 # automatically acquires a spyder reservation before doing any device work
 # and releases it on exit. This makes concurrent cell execution safe: two
 # cells targeting different devices run in parallel; two cells racing for
-# the same device serialise via spyder's reservation queue.
+# the same device serialize via spyder's reservation queue.
 #
 # Usage:
 #   ge/tools/matrix-cell.sh <cell-name> [options]
@@ -50,7 +50,7 @@
 # Parallelism story (🎯T33.2):
 #   Cells that need a device are wrapped in `spyder run --device <alias>`.
 #   Two cells targeting different devices run concurrently. Two cells
-#   targeting the same device serialise — the second one retries up to 3×
+#   targeting the same device serialize — the second one retries up to 3×
 #   (10 s backoff) before failing (exit code 13 surfaced as a setup error).
 #   Desktop cells never need a reservation and always run concurrently.
 #
@@ -511,7 +511,7 @@ check_device_awake() {
             return "$DEVICE_ASLEEP_EXIT"
             ;;
         *)
-            warn_check "$subcheck" "unrecognised state='$state' — treating as no signal"
+            warn_check "$subcheck" "unrecognized state='$state' — treating as no signal"
             return 0
             ;;
     esac

@@ -274,7 +274,7 @@ std::shared_ptr<WsConnection> connectWebSocket(
                 });
 
             timer.async_wait([&](const asio::error_code& ec) {
-                if (!ec) {  // timer expired (not cancelled)
+                if (!ec) {  // timer expired (not canceled)
                     timedOut = true;
                     socket.close();
                 }

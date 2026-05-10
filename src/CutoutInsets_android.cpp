@@ -5,7 +5,7 @@
 // Activity exposes `int[] getDisplayCutoutInsets()` returning
 // {left, right, top, bottom} populated from
 // WindowInsets.Type.displayCutout() in an OnApplyWindowInsetsListener.
-// If the activity doesn't define the method (apps that customise their
+// If the activity doesn't define the method (apps that customize their
 // activity from the ge template), we return zeros.
 
 #include "CutoutInsets.h"

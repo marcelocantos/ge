@@ -300,7 +300,7 @@ APP_OBJ     ?= $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(APP_SRC))
 APP_DISPLAY_NAME ?= $(APP_NAME)
 
 # Extra static libs/objects the app needs beyond the ge engine (e.g. ship a
-# specialised third-party library). Defaults to Box2D since many ge apps use
+# specialized third-party library). Defaults to Box2D since many ge apps use
 # it and its link cost is negligible for those that don't.
 APP_LIBS    ?= $(ge/BOX2D_OBJ)
 
@@ -565,7 +565,7 @@ $(ge/ICON_GEN): $(ge)/tools/icon-gen.cpp $(ge/LIB) $(ge/BGFX_LIBS)
 # Override knobs: ge/APP_ICON_SVG, ge/APP_ICON_BG_COLOR, ge/APP_ICON_IOS_OUT,
 # ge/APP_ICON_ANDROID_RES_OUT.
 ge/APP_ICON_SVG            ?= icons/icon.svg
-# Hex fill colour for the Android adaptive-icon background. NO '#' here —
+# Hex fill color for the Android adaptive-icon background. NO '#' here —
 # Make treats '#' as the start of a comment and would set this to empty.
 # icon-gen prepends '#' itself.
 ge/APP_ICON_BG_COLOR       ?= FFFFFF
@@ -587,7 +587,7 @@ ge/app-icons: $(ge/ICON_GEN) $(ge/APP_ICON_SVG)
 # Tests link against libge.a, so they have access to all engine headers
 # and engine-defined classes. The runner reaches into bgfx/SDL only at
 # link time (libge.a's references resolve through them); the tests
-# themselves don't initialise bgfx, so they're side-effect free.
+# themselves don't initialize bgfx, so they're side-effect free.
 # ────────────────────────────────────────────────
 
 ge/TEST_BIN = bin/ge-test
@@ -790,7 +790,7 @@ ged-test:
 # Debug build
 #
 # `make ge/debug` builds bin/$(APP_NAME)-debug with assertions enabled,
-# debug symbols, and no optimisation.  The debug matrix cells exercise
+# debug symbols, and no optimization.  The debug matrix cells exercise
 # this binary rather than the default release binary.
 # ────────────────────────────────────────────────
 
@@ -903,7 +903,7 @@ ge/android-release: $(ge/APP_SHADERS_SPIRV) $(ge/RENDER_SHADERS_SPIRV) $(ge/APP_
 #
 # Parallelism:
 #   `make -j check` runs all cells concurrently. Cells targeting different
-#   devices run in parallel. Cells racing for the same device serialise via
+#   devices run in parallel. Cells racing for the same device serialize via
 #   spyder's reservation queue. Desktop cells are always concurrent.
 #   Same-platform cells (e.g. ios-sim-tablet-dist + ios-sim-tablet-player)
 #   resolve to distinct sims when two are available in the spyder pool.
@@ -962,7 +962,7 @@ ge/CHECK_CELLS := $(filter-out $(ge/CHECK_EXCLUDE_PATTERNS),$(ge/CELLS))
 # spyder resolve via selector predicates (--on platform=ios-sim,...).
 #
 # Cells targeting different devices run concurrently under parallel make.
-# Cells racing for the same device serialise via spyder's reservation queue.
+# Cells racing for the same device serialize via spyder's reservation queue.
 .PHONY: $(addprefix cell.,$(ge/CELLS))
 cell.desktop-dist:               ; $(ge)/tools/matrix-cell.sh desktop-dist --soak-timeout $(SOAK_TIMEOUT)
 cell.desktop-player:             ; $(ge)/tools/matrix-cell.sh desktop-player --soak-timeout $(SOAK_TIMEOUT)

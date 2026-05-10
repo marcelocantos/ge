@@ -26,11 +26,11 @@ struct FrameLog {
     bool running = true;
     std::thread dumper;
 
-    FrameLog(AnalyseFn analyse, int reserveSize = 4096)
+    FrameLog(AnalyseFn analyze, int reserveSize = 4096)
         : freq(SDL_GetPerformanceFrequency()) {
         buffers[0].reserve(reserveSize);
         buffers[1].reserve(reserveSize);
-        dumper = std::thread([this, analyse] {
+        dumper = std::thread([this, analyze] {
             while (running) {
                 SDL_Delay(2000);
                 std::vector<Entry>* readBuf;
@@ -40,7 +40,7 @@ struct FrameLog {
                     writeIdx = 1 - writeIdx;
                 }
                 if (!readBuf->empty()) {
-                    analyse(*readBuf, freq);
+                    analyze(*readBuf, freq);
                     readBuf->clear();
                 }
             }

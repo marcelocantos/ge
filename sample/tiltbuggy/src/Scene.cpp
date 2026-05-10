@@ -32,8 +32,9 @@ struct Scene::Impl {
     b2ShapeId dirtShapeId;
 
     // Remembered surface bounds for surfaces()
-    float iceL, iceT, iceR, iceB;
-    float dirtL, dirtT, dirtR, dirtB;
+    // y-up world rects: x = left, y = bottom (smaller y), w/h positive.
+    ge::Rect iceRect;
+    ge::Rect dirtRect;
 
     explicit Impl(float halfExtent_) : halfExtent(halfExtent_) {
         // ------------------------------------------------------------------
@@ -101,27 +102,24 @@ struct Scene::Impl {
         // ------------------------------------------------------------------
 
         // Ice patch: upper-centre — sized at 1/16 of the original layout.
-        iceL = -0.1875f; iceB = 0.125f; iceR = 0.1875f; iceT = 0.375f;
+        iceRect = ge::Rect{-0.1875f, 0.125f, 0.375f, 0.25f};
         {
-            float hw = (iceR - iceL) * 0.5f;
-            float hh = (iceT - iceB) * 0.5f;
-            b2Vec2 centre = {(iceL + iceR) * 0.5f, (iceB + iceT) * 0.5f};
-            b2Polygon box = b2MakeOffsetBox(hw, hh, centre, b2Rot_identity);
+            const float hw = iceRect.w * 0.5f;
+            const float hh = iceRect.h * 0.5f;
+            const auto centre = iceRect.center();
+            b2Polygon box = b2MakeOffsetBox(hw, hh, b2Vec2{centre.x, centre.y}, b2Rot_identity);
             b2ShapeDef sdef = b2DefaultShapeDef();
             sdef.isSensor = true;
             iceShapeId = b2CreatePolygonShape(groundId, &sdef, &box);
         }
 
-        // Dirt patch: left strip, x∈[-halfExtent, -halfExtent/2], y∈[-halfExtent, halfExtent]
-        dirtL = -halfExtent;
-        dirtB = -halfExtent;
-        dirtR = -halfExtent * 0.5f;
-        dirtT =  halfExtent;
+        // Dirt patch: left strip, x ∈ [-halfExtent, -halfExtent/2], y ∈ [-halfExtent, halfExtent]
+        dirtRect = ge::Rect{-halfExtent, -halfExtent, halfExtent * 0.5f, 2.f * halfExtent};
         {
-            float hw = (dirtR - dirtL) * 0.5f;
-            float hh = (dirtT - dirtB) * 0.5f;
-            b2Vec2 centre = {(dirtL + dirtR) * 0.5f, (dirtB + dirtT) * 0.5f};
-            b2Polygon box = b2MakeOffsetBox(hw, hh, centre, b2Rot_identity);
+            const float hw = dirtRect.w * 0.5f;
+            const float hh = dirtRect.h * 0.5f;
+            const auto centre = dirtRect.center();
+            b2Polygon box = b2MakeOffsetBox(hw, hh, b2Vec2{centre.x, centre.y}, b2Rot_identity);
             b2ShapeDef sdef = b2DefaultShapeDef();
             sdef.isSensor = true;
             dirtShapeId = b2CreatePolygonShape(groundId, &sdef, &box);
@@ -145,7 +143,7 @@ void Scene::step(float dt, b2Vec2 gravity) {
     b2World_Step(i_->worldId, dt, 4);
     // Arcade vehicle dynamics + surface effects temporarily disabled
     // so the buggy moves as a free-floating body — easier to diagnose
-    // tilt-input behaviour. Re-enable after viewport tilt is dialled in.
+    // tilt-input behavior. Re-enable after viewport tilt is dialled in.
 }
 
 Pose Scene::buggyPose() const {
@@ -160,8 +158,8 @@ float Scene::halfExtent() const {
 
 std::vector<Surface> Scene::surfaces() const {
     return {
-        { i_->iceL,  i_->iceT,  i_->iceR,  i_->iceB,  SurfaceType::Ice  },
-        { i_->dirtL, i_->dirtT, i_->dirtR, i_->dirtB, SurfaceType::Dirt },
+        { i_->iceRect,  SurfaceType::Ice  },
+        { i_->dirtRect, SurfaceType::Dirt },
     };
 }
 

@@ -46,7 +46,7 @@ struct ServerWireBridge::Impl {
     bool dimensionsKnown = false;
     bool ready = false;
 
-    // Session Context: built once dimensions arrive (in initialise),
+    // Session Context: built once dimensions arrive (in initialize),
     // refreshed each beginFrame. Brokered db is in-memory — persistence
     // is owned by the player and synced via sqlpipe.
     std::optional<Context> ctx;
@@ -193,7 +193,7 @@ void ServerWireBridge::pumpEvents() {
     pumpWire();
 }
 
-void ServerWireBridge::initialise() {
+void ServerWireBridge::initialize() {
     if (!i_->dimensionsKnown) return;
 
     i_->renderTex = bgfx::createTexture2D(

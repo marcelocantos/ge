@@ -1,7 +1,7 @@
 # TiltCal — accelerometer calibration sample.
 #
 # Quick & dirty: single-source app that reads SDL3's accelerometer and
-# logs each pose's reading. Used to characterise the SDL3 sensor
+# logs each pose's reading. Used to characterize the SDL3 sensor
 # contract on iOS / iPadOS / Android.
 
 ge := ../..

@@ -31,7 +31,7 @@ CMAKE_PROJECT="$STRIPPED"
 # AndroidManifest.xml hardcodes android:name="ge.GeActivity" and
 # Gradle source-includes it from $GE_ROOT/android-shared. Apps no
 # longer scaffold a per-app Activity.java. Apps that need custom
-# behaviour subclass ge.GeActivity in their own java tree.
+# behavior subclass ge.GeActivity in their own java tree.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TEMPLATE_DIR="$SCRIPT_DIR/android-template"

@@ -61,7 +61,7 @@
 
   <!-- Yellow buggy, tilted — sits over the pond at a jaunty angle.
        Chassis is rotated 12°; the rotation pivot is (510, 540) to keep
-       the buggy body roughly centred on the pond. -->
+       the buggy body roughly centered on the pond. -->
   <g transform="rotate(-12 510 540)">
     <!-- shadow -->
     <ellipse cx="510" cy="610" rx="180" ry="22" fill="#000000" fill-opacity="0.25"/>

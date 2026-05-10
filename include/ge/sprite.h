@@ -56,8 +56,8 @@ struct Sprite {
 // `src/render/shaders/ge_sprite_{vs,fs}.sc`).
 struct SpriteVertex {
     float    x, y, z;   // position in whatever space the caller is in
-    float    u, v;      // texcoord (normalised 0..1)
-    uint32_t abgr;      // tint colour (ABGR byte order; 0xFFFFFFFF for none)
+    float    u, v;      // texcoord (normalized 0..1)
+    uint32_t abgr;      // tint color (ABGR byte order; 0xFFFFFFFF for none)
 };
 
 // Batched sprite renderer. Each `addSprite` queues a quad transformed
@@ -94,7 +94,7 @@ public:
                    uint32_t color = 0xFFFFFFFFu);
 
     // As above, but with a UV sub-rect for atlasing. `uvSubRect` is in
-    // normalised UV space (0..1)²; the unit-square model corners then
+    // normalized UV space (0..1)²; the unit-square model corners then
     // sample from that sub-window of the source texture.
     void addSprite(const la::float4x4& modelToWorld,
                    const Sprite& sprite,
@@ -106,7 +106,7 @@ public:
     void submit(bgfx::ViewId view);
 
     // Internal quad record — public so test helpers can inspect geometry
-    // without bgfx initialisation.
+    // without bgfx initialization.
     struct Quad {
         bgfx::TextureHandle tex;
         SpriteVertex        verts[6];  // two triangles
@@ -118,7 +118,7 @@ private:
     std::vector<Quad> quads_;
     uint64_t          blendState_;
 
-    // Lazy-initialised bgfx resources (program + sampler + layout).
+    // Lazy-initialized bgfx resources (program + sampler + layout).
     bool ensureState();
 };
 

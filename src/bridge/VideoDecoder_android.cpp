@@ -221,7 +221,7 @@ void VideoDecoder::M::deliverFrame(uint8_t* buf, size_t bufSize,
     // We always request NV12 at configure time. Some devices nonetheless
     // return BGRA; detect by buffer size and forward in either format
     // without conversion — the renderer (SDL_PIXELFORMAT_NV12 /
-    // SDL_PIXELFORMAT_BGRA32) handles colour-space conversion on the GPU.
+    // SDL_PIXELFORMAT_BGRA32) handles color-space conversion on the GPU.
     const size_t expectedBgra = static_cast<size_t>(width) * height * 4;
     const size_t expectedNv12 = static_cast<size_t>(width) * height * 3 / 2;
     const size_t frameBytes   = static_cast<size_t>(info.size);

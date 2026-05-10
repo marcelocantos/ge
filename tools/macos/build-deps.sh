@@ -89,7 +89,7 @@ SDL_PREFIX="$BUILD/sdl3-prefix"
 SDL_DEST="$VENDOR/sdl3/lib/macos-arm64"
 
 if [ ! -e "$SDL_SRC/.git" ]; then
-    echo "ERROR: SDL submodule not initialised. Run:"
+    echo "ERROR: SDL submodule not initialized. Run:"
     echo "  cd sq && git submodule update --init vendor/github.com/libsdl-org/SDL"
     exit 1
 fi

@@ -32,7 +32,7 @@ constexpr float kComposeCameraD = 2.0f;
 
 struct Mat3 { float m[9]; };  // row-major 3x3
 
-// Rodrigues' formula specialised for a rotation axis in the XY plane
+// Rodrigues' formula specialized for a rotation axis in the XY plane
 // (axZ = 0). Returns the 3x3 rotation matrix.
 Mat3 rotationXY(float axX, float axY, float angle) {
     const float c = std::cos(angle);

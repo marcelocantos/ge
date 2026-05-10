@@ -148,7 +148,7 @@ Engine-internal variables use the `ge/` prefix. These are read-only — the pare
 | `ge/BGFX_LIBS` | bgfx static libraries (`libbgfx.a`, `libbimg.a`, `libbx.a`) |
 | `ge/SDL_LIBS` | SDL3 static libraries (SDL3, SDL3_image, SDL3_ttf, freetype, harfbuzz, etc.) |
 | `ge/TEST_SRC`, `ge/TEST_OBJ` | Unit test sources and objects |
-| `ge/TRIANGLE_OBJ` | Triangle library object — **opt-in; not linked into `libge.a`**. Commercial builds should not reference this without first reading NOTICES.md's Triangle section (restrictive licence; commercial distribution requires arrangement with the author). |
+| `ge/TRIANGLE_OBJ` | Triangle library object — **opt-in; not linked into `libge.a`**. Commercial builds should not reference this without first reading NOTICES.md's Triangle section (restrictive license; commercial distribution requires arrangement with the author). |
 | `ge/PLAYER` | ge player binary path (`bin/player`) |
 
 ### Shared Variables
@@ -197,7 +197,7 @@ ge ships a build-time tool, `bin/ge-icon-gen`, that takes one source SVG and wri
 
 - iOS: `Assets.xcassets/AppIcon.appiconset/icon.png` (1024×1024) + `Contents.json`. Single-source mode (Xcode 15+) — Xcode generates the smaller per-size icons automatically at build time.
 - Android legacy: `mipmap-{m,h,xh,xxh,xxxh}dpi/ic_launcher.png` and matching `_round.png` at 48 / 72 / 96 / 144 / 192 px.
-- Android adaptive: `drawable/ic_launcher_foreground.png` (432×432, full-bleed master SVG) + `drawable/ic_launcher_background.xml` (solid colour from `ge/APP_ICON_BG_COLOR`, default white) + `mipmap-anydpi-v26/ic_launcher.xml` and `_round.xml` adaptive manifests.
+- Android adaptive: `drawable/ic_launcher_foreground.png` (432×432, full-bleed master SVG) + `drawable/ic_launcher_background.xml` (solid color from `ge/APP_ICON_BG_COLOR`, default white) + `mipmap-anydpi-v26/ic_launcher.xml` and `_round.xml` adaptive manifests.
 
 **Override knobs in `Module.mk`:**
 
@@ -210,7 +210,7 @@ ge ships a build-time tool, `bin/ge-icon-gen`, that takes one source SVG and wri
 
 **Constraints:** SVG-only input. PNG / JPEG sources are rejected with a clear error pointing at SVG. Multi-size resampling of raster sources is not supported — author the icon as SVG.
 
-**Limitations not covered yet:** explicit `icons/icon-foreground.svg` + `icons/icon-background.svg` for split adaptive-icon control on Android (today: full-bleed master goes into the foreground, background is a solid colour). iOS 18 light/dark/tinted variants. iOS animated app icons. All deferable to future targets when a real consumer needs them.
+**Limitations not covered yet:** explicit `icons/icon-foreground.svg` + `icons/icon-background.svg` for split adaptive-icon control on Android (today: full-bleed master goes into the foreground, background is a solid color). iOS 18 light/dark/tinted variants. iOS animated app icons. All deferable to future targets when a real consumer needs them.
 
 ### Android Activity (🎯T41)
 
@@ -229,9 +229,9 @@ sourceSets {
 
 `tools/init-android.sh` (`make ge/android-init`) writes the manifest and gradle config above and **does not** scaffold an `app/src/main/java/.../Activity.java` — the per-app Activity tree is gone.
 
-`GeActivity` contains all the SDLActivity boilerplate the engine relies on: `getLibraries()` (returns `{"SDL3", "main"}`), display-cutout listener + `getDisplayCutoutInsets()`, sensor-fused attitude listener + `getAttitude()`, and `applyImmersive()`. Adding new engine-side hooks (more JNI helpers, new lifecycle behaviour) only requires bumping the engine submodule pointer in the consumer; consumer apps inherit the change without editing Java.
+`GeActivity` contains all the SDLActivity boilerplate the engine relies on: `getLibraries()` (returns `{"SDL3", "main"}`), display-cutout listener + `getDisplayCutoutInsets()`, sensor-fused attitude listener + `getAttitude()`, and `applyImmersive()`. Adding new engine-side hooks (more JNI helpers, new lifecycle behavior) only requires bumping the engine submodule pointer in the consumer; consumer apps inherit the change without editing Java.
 
-**Apps that need custom Activity behaviour** can subclass `ge.GeActivity` in their own `app/src/main/java/<package>/` tree, add `'src/main/java'` back to `java.srcDirs`, and point the manifest at the subclass. Zero-customisation is the supported default — reach for a subclass only when the engine surface genuinely doesn't suffice.
+**Apps that need custom Activity behavior** can subclass `ge.GeActivity` in their own `app/src/main/java/<package>/` tree, add `'src/main/java'` back to `java.srcDirs`, and point the manifest at the subclass. Zero-customization is the supported default — reach for a subclass only when the engine surface genuinely doesn't suffice.
 
 ### Developer Setup
 
@@ -398,7 +398,7 @@ This was the takeaway of a long debugging session in v0.1.0 (see commit `e0da016
 - **Direct-render apps** (`DirectRenderHost`-mode, e.g. TiltBuggy): set `SessionHostConfig.orientation = wire::kOrientationLandscape` (or any non-zero `wire::kOrientation*` constant). The engine calls `playerForceOrientation` from `DirectRenderHost::send` automatically. The orientation stub/swizzle is now linked into `libge` (v0.3.0+), so apps don't need to add anything to their build.
 - **Player apps** get this for free — `wire::SessionConfig.orientation` from the server triggers `playerForceOrientation()` over the wire.
 
-**API caveat (v0.3.0):** the `wire::kOrientation*` enum has four constants (Landscape, LandscapeFlipped, Portrait, PortraitFlipped) but `playerForceOrientation` currently treats the field as a **boolean** — any non-zero value enables the lock; the *specific* value is not honoured. The orientation that gets locked is whichever one iOS picked at launch, bounded by your `UISupportedInterfaceOrientations`. To force "specifically LandscapeLeft only," narrow the plist to `LandscapeLeft` only — don't rely on passing `kOrientationLandscape` vs `kOrientationLandscapeFlipped` to differentiate, because today they don't. 🎯T36 tracks aligning the API with its behaviour (either collapse to a boolean or make the constants authoritative).
+**API caveat (v0.3.0):** the `wire::kOrientation*` enum has four constants (Landscape, LandscapeFlipped, Portrait, PortraitFlipped) but `playerForceOrientation` currently treats the field as a **boolean** — any non-zero value enables the lock; the *specific* value is not honored. The orientation that gets locked is whichever one iOS picked at launch, bounded by your `UISupportedInterfaceOrientations`. To force "specifically LandscapeLeft only," narrow the plist to `LandscapeLeft` only — don't rely on passing `kOrientationLandscape` vs `kOrientationLandscapeFlipped` to differentiate, because today they don't. 🎯T36 tracks aligning the API with its behavior (either collapse to a boolean or make the constants authoritative).
 
 If you find yourself editing `UISupportedInterfaceOrientations` to fix an orientation problem, you're in the right place — but make sure you've also set `SessionHostConfig.orientation` non-zero, or the lock won't survive the iPad's swivel gesture.
 
@@ -464,7 +464,7 @@ ge has a small, unified surface for "rasterize/load → texture → draw". One `
 - **`ge::loadImage(path)`** (`<ge/png.h>`) — load PNG / JPEG / BMP / etc. via SDL3_image. Path resolved via `ge::resource` (iOS bundle / Android APK / desktop fs). Premultiplies alpha before upload.
 - **`ge::rasterizeText(text, font, sizePt, color)`** (`<ge/text.h>`) — single-line text via FreeType. `font` is a `FontRef` from `ge::resolveFont`. Premul output. Single line / no wrapping today.
 
-ge ships [lunasvg](https://github.com/sammycage/lunasvg) (with its bundled plutovg) as the canonical SVG rasterizer. SDL_image's built-in nanosvg path can't render text or `clipPath`; ge bypasses it. See [NOTICES.md](NOTICES.md) for the licence chain (lunasvg + plutovg + FreeType-derived raster code + stb_*).
+ge ships [lunasvg](https://github.com/sammycage/lunasvg) (with its bundled plutovg) as the canonical SVG rasterizer. SDL_image's built-in nanosvg path can't render text or `clipPath`; ge bypasses it. See [NOTICES.md](NOTICES.md) for the license chain (lunasvg + plutovg + FreeType-derived raster code + stb_*).
 
 **Lunasvg features supported:** path, rect, circle, ellipse, polygon, polyline; fills (solid, linearGradient, radialGradient, pattern); strokes; clipPath; mask; gradients; opacity; nested groups; transforms; `<text>` (basic); CSS via `applyStyleSheet`; CSS selectors via `querySelectorAll`; hit testing via `elementFromPoint`. **Not** a SVG 2 / animation engine — no SMIL, no scripting.
 

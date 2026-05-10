@@ -15,7 +15,7 @@ std::string resource(const std::string& relativePath);
 //   * Apple platforms (Metal)             → "build/shaders"
 //   * Android (Vulkan, on emulator)       → "build/shaders-spirv"
 //   * Android (OpenGL ES, real devices)   → "build/shaders-gles"
-// Must be called AFTER bgfx is initialised (BgfxContext constructed).
+// Must be called AFTER bgfx is initialized (BgfxContext constructed).
 std::string shaderDir();
 
 // Same as shaderDir() but for ge's internal compose-pass shaders, which
