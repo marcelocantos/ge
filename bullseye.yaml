@@ -1524,7 +1524,7 @@ targets:
     discovered: 2026-05-10
   T54:
     name: ge::ortho ships projection builders for letterbox + pixel-space 2D layouts
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -1553,9 +1553,10 @@ targets:
     - multimaze-audit
     origin: manual
     discovered: 2026-05-10
+    achieved: 2026-05-10
   T55:
     name: ge::gesture exposes swipe-direction predicates
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -1580,9 +1581,10 @@ targets:
     - multimaze-audit
     origin: manual
     discovered: 2026-05-10
+    achieved: 2026-05-10
   T56:
     name: ge::transform offers matrix builders for centered + rotated 2D placements; SpriteBatch absorbs MeshBuilder's role
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -1612,9 +1614,10 @@ targets:
     - multimaze-audit
     origin: manual
     discovered: 2026-05-10
+    achieved: 2026-05-10
   T57:
     name: ge offers an SDL_Surface to premultiplied-RGBA8 bgfx Sprite helper
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -1641,9 +1644,10 @@ targets:
     - multimaze-audit
     origin: manual
     discovered: 2026-05-10
+    achieved: 2026-05-10
   T58:
     name: ge::layout exposes grid-row positioning helpers for menu/dialog layouts
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -1670,6 +1674,7 @@ targets:
     - multimaze-audit
     origin: manual
     discovered: 2026-05-10
+    achieved: 2026-05-10
   T6:
     name: Player can switch between active servers without QR
     status: identified
