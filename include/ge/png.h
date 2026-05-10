@@ -7,6 +7,8 @@
 
 #include <string>
 
+struct SDL_Surface;
+
 namespace ge {
 
 // Load a PNG / JPEG / BMP / etc. image from a path and upload it as a
@@ -21,5 +23,19 @@ namespace ge {
 // `Sprite` and logs the error via `spdlog::error`. `bgfx` must be
 // initialized before calling.
 Sprite loadImage(const std::string& path);
+
+// Same as `loadImage` but starts from an in-memory SDL_Surface — useful
+// when the surface comes from a non-file source (an SDL_Surface
+// produced by SDL_image's IO helpers, an SVG rasterizer's output, an
+// embedded asset decoded at runtime, image data fetched over the wire).
+//
+// Converts to RGBA8 if needed, premultiplies alpha in-place, and
+// uploads as a bgfx texture. *Takes ownership* of `surface` —
+// destroys it before returning, regardless of success.
+//
+// `nullptr` input returns a null `Sprite` without crashing. Other
+// failure modes log via `spdlog::error` and return null. `bgfx` must
+// be initialized before calling.
+Sprite imageFromSurface(SDL_Surface* surface);
 
 } // namespace ge
