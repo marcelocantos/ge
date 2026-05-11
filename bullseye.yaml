@@ -1675,6 +1675,23 @@ targets:
     origin: manual
     discovered: 2026-05-10
     achieved: 2026-05-10
+  T59:
+    name: ge::Button::handleEvent takes SDL_Event directly
+    status: identified
+    value: 0.0
+    cost: 0.0
+    showcase: true
+    acceptance:
+    - ge::Button::handleEvent and ge::ButtonGroup::handleEvent take const SDL_Event& — no intermediate ge::PointerEvent in the consumer's call site
+    - Touch fingerID and the mouse-as-single-finger collapse are handled inside ge so consumers do not spell ev.tfinger.fingerID or ge::kMouseId themselves
+    - Mouse coordinates use SDL-window to back-buffer scaling and finger coordinates are normalised against the render-surface size — internally, not by the caller
+    - The SDL_TOUCH_MOUSEID dedup (skipping synthetic mouse events generated from touches) lives inside the handler so consumers do not have to filter at the top of their event handler
+    - Non-pointer SDL events are a no-op on Button::handleEvent (return false, do not transition state)
+    - Multimaze2 and any other consumer wiring ge::Button press semantics passes SDL events straight from their onEvent callback into Button/ButtonGroup with no glue code
+    - ge::PointerEvent may continue to exist as an internal type, but is not part of the public consumer-facing surface
+    context: 'Discovered during multimaze2 TopBar refactor. ge::Button currently takes ge::PointerEvent, requiring the consumer to write the SDL→PointerEvent conversion themselves (event-type dispatch, touch-vs-mouse coord scaling, fingerID normalisation, SDL_TOUCH_MOUSEID dedup). That glue belongs in ge. Cleaner shape than a converter helper: Button just takes SDL events directly — consumer hands off, ge handles the conversion internally.'
+    origin: manual
+    discovered: 2026-05-11
   T6:
     name: Player can switch between active servers without QR
     status: identified
