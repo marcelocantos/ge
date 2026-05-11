@@ -1741,6 +1741,19 @@ targets:
     - ergonomics
     origin: manual
     discovered: 2026-05-11
+  T61:
+    name: ge CMake build includes button.cpp and sdl_input.cpp
+    status: identified
+    value: 0.0
+    cost: 0.0
+    showcase: true
+    acceptance:
+    - GE_CORE_SOURCES (or equivalent) in ge/CMakeLists.txt lists src/button.cpp and src/sdl_input.cpp alongside the other core sources (sprite.cpp, svg.cpp, png.cpp, text.cpp)
+    - iOS / Android CMake-built consumers link libge.a and successfully resolve ge::Button::handleEvent, ge::ButtonGroup::handleEvent, ge::Button::cancel, ge::input::fromSdl, and ge::input::sdlPointerEventConverter without 'Undefined symbols' errors
+    - ge's own ge/ios-init / ge/android-init scaffolding picks up the new sources automatically — no per-app patch required
+    context: Discovered while bumping multimaze2 to ge v0.24 to consume the new button + sdl_input APIs. The Makefile (ge/Module.mk) lists src/button.cpp and src/sdl_input.cpp under the engine sources, but ge/CMakeLists.txt does not — so the desktop / Module.mk build succeeds while every CMake-based consumer (iOS, Android) fails to link with Undefined symbols for ge::Button::handleEvent / ge::input::fromSdl. The two build systems should be source-equivalent; this is a missed addition when the new sources landed.
+    origin: manual
+    discovered: 2026-05-11
   T7:
     name: Audio pauses when the app is backgrounded
     status: identified
