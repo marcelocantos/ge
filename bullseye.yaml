@@ -1677,10 +1677,11 @@ targets:
     achieved: 2026-05-10
   T59:
     name: ge::Button::handleEvent takes SDL_Event directly
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     showcase: true
+    demonstration: ge::input::fromSdl(const SDL_Event&, la::float2 surfaceSize) implemented in include/ge/sdl_input.h + src/sdl_input.cpp (sdl-input branch). Handles SDL_EVENT_MOUSE_BUTTON_DOWN/UP, SDL_EVENT_MOUSE_MOTION, SDL_EVENT_FINGER_DOWN/UP/MOTION; mouse coords scaled via SDL_GetWindowSize/SDL_GetWindowSizeInPixels; SDL_TOUCH_MOUSEID dedup inside the helper; non-pointer events return nullopt. Multimaze2 will consume it directly — no consumer-side conversion glue.
     acceptance:
     - ge::Button::handleEvent and ge::ButtonGroup::handleEvent take const SDL_Event& — no intermediate ge::PointerEvent in the consumer's call site
     - Touch fingerID and the mouse-as-single-finger collapse are handled inside ge so consumers do not spell ev.tfinger.fingerID or ge::kMouseId themselves
@@ -1692,6 +1693,7 @@ targets:
     context: 'Discovered during multimaze2 TopBar refactor. ge::Button currently takes ge::PointerEvent, requiring the consumer to write the SDL→PointerEvent conversion themselves (event-type dispatch, touch-vs-mouse coord scaling, fingerID normalisation, SDL_TOUCH_MOUSEID dedup). That glue belongs in ge. Cleaner shape than a converter helper: Button just takes SDL events directly — consumer hands off, ge handles the conversion internally.'
     origin: manual
     discovered: 2026-05-11
+    achieved: 2026-05-11
   T6:
     name: Player can switch between active servers without QR
     status: identified
@@ -1702,6 +1704,43 @@ targets:
     context: With persistent address, player auto-connects to saved server. If two servers are on the same network, player has no reason to fall back to QR. Dashboard is the natural control plane.
     origin: migrated from docs/targets.md
     discovered: 2026-04-12
+  T60:
+    name: ge's layout stack is point-native (44pt-sized touch targets work directly without per-call pixelsPerPt multiplication)
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - '`ge::Context::fullRect()` / `drawSafeRect()` / `uiSafeRect()` / `safeArea()` return point-space rects (or grow `*InPts()` siblings) so layout code can author touch targets in pt without the consumer multiplying by `pixelsPerPt()` at every layout boundary'
+    - '`ge::PointerEvent.pos` is in the same space as the layout rects (currently pixels; would become pt as part of this target, or stay pixels with a documented conversion convention)'
+    - ge's draw-side primitives (`SpriteBatch::addSprite`, `Sprite::draw` via `frame(rect)`, ortho projections) document whether their input rects are pt or px, and provide conversion helpers where needed
+    - Multimaze and tiltbuggy migrations done; chrome code (`TopBar`, menu rows, top-bar buttons) authored in pt with no per-site `* ctx.pixelsPerPt()` arithmetic
+    - ge/CLAUDE.md documents the canonical unit and the conversion conventions for code that needs the other unit
+    context: |-
+      Discovered 2026-05-11 while choosing the unit for `ge::PointerEvent.pos`. Today ge's convention is render-surface pixels everywhere — `Context::fullRect()`, `drawSafeRect()`, `safeArea()`, bgfx draw rects, and existing consumer layout code (multimaze's `TopBar`, menu rows) all live in pixels. That made pixels the natural pick for `PointerEvent.pos` in v0.24.0.
+
+      The case for switching the whole stack to points is real:
+
+      - Touch targets are physical-size constraints ("44pt minimum, 60pt comfortable"). In a pixel-native world the consumer writes `barH = 44 * ctx.pixelsPerPt()` at every site that authors a touch target — verbose, easy to forget, and noise.
+      - Designers and platform guidelines (UIKit, Material, even CSS at 1px ≈ 1/96") all think in pt, not pixels. Pixel-native APIs force a mental translation at every boundary.
+      - Cross-device behaviour is more obviously correct when the unit doesn't change between iPhone @3x and iPad @2x — same pt count = same physical size = same touch target.
+
+      The case for staying with pixels:
+
+      - bgfx and SDL both operate in pixels; some translation always happens at the GPU boundary.
+      - Consumers that draw at sub-pt detail (1px lines, etc.) have a natural representation.
+      - Mixed-unit ge today won't bite anyone hard; the conversion is one multiplication.
+
+      This target is the structural change: convert `Context::fullRect()` and friends to pt (or add `*InPts()` siblings), then either flip `PointerEvent.pos` to pt or leave it documented in pixels with a conversion convention. Multimaze and tiltbuggy need to follow.
+
+      Deferred behind v0.24.0 — too big to slip in alongside the SDL→PointerEvent converter work. File now so the question doesn't get re-litigated next time someone authors a touch target.
+    tags:
+    - api
+    - layout
+    - units
+    - pt-vs-px
+    - ergonomics
+    origin: manual
+    discovered: 2026-05-11
   T7:
     name: Audio pauses when the app is backgrounded
     status: identified
