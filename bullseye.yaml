@@ -1743,15 +1743,48 @@ targets:
     discovered: 2026-05-11
   T61:
     name: ge CMake build includes button.cpp and sdl_input.cpp
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     showcase: true
+    demonstration: 'v0.25.0 release (commit dd55622, PR #80) adds src/button.cpp and src/sdl_input.cpp to GE_CORE_SOURCES in ge/CMakeLists.txt. Module.mk and CMakeLists are now back in sync. User confirmed the multimaze mobile build links after bumping the submodule.'
     acceptance:
     - GE_CORE_SOURCES (or equivalent) in ge/CMakeLists.txt lists src/button.cpp and src/sdl_input.cpp alongside the other core sources (sprite.cpp, svg.cpp, png.cpp, text.cpp)
     - iOS / Android CMake-built consumers link libge.a and successfully resolve ge::Button::handleEvent, ge::ButtonGroup::handleEvent, ge::Button::cancel, ge::input::fromSdl, and ge::input::sdlPointerEventConverter without 'Undefined symbols' errors
     - ge's own ge/ios-init / ge/android-init scaffolding picks up the new sources automatically — no per-app patch required
     context: Discovered while bumping multimaze2 to ge v0.24 to consume the new button + sdl_input APIs. The Makefile (ge/Module.mk) lists src/button.cpp and src/sdl_input.cpp under the engine sources, but ge/CMakeLists.txt does not — so the desktop / Module.mk build succeeds while every CMake-based consumer (iOS, Android) fails to link with Undefined symbols for ge::Button::handleEvent / ge::input::fromSdl. The two build systems should be source-equivalent; this is a missed addition when the new sources landed.
+    origin: manual
+    discovered: 2026-05-11
+    achieved: 2026-05-11
+  T62:
+    name: ge::Button captures a press on the first inside-Move (UIButton-style drift-in)
+    status: identified
+    value: 0.0
+    cost: 0.0
+    showcase: true
+    acceptance:
+    - A PointerEvent::Move arriving with phase == Idle and inside == true captures the touch — sets phase = PressedInside, activeId = ev.id, fires onHighlightChange(true), and returns true (the same effect a Down inside would have had)
+    - A subsequent Up on that captured touch fires onFire (release-inside semantics, same as the normal Down-then-Up path)
+    - Drift-in capture is gated on the Move event being from the same touch identity that we'd see in subsequent events — i.e. once an Idle button captures on Move, it locks to that fingerID and ignores other fingers for the remainder of the press (same single-touch invariant as the Down path)
+    - Down on an Idle button continues to capture immediately (no behavioural regression for buttons large enough to be hit on the initial centroid)
+    - Existing button_test.cpp suite still passes; a new test case covers drift-in (Down outside → Move inside → Up inside → onFire) and rejection of multi-finger drift (Down outside finger A → Move inside finger A → Down inside finger B → A captures, B is rejected)
+    - 'ButtonGroup correctly observes drift-in capture: once a button transitions Idle → PressedInside via Move, the group sets it as the active locked button (so other buttons stop receiving events for the remainder of the press)'
+    context: 'Discovered while testing the multimaze2 TopBar refactor on iPad. The chrome buttons highlight only after the user moves their finger slightly after tapping — not on initial Down. Diagnosis: iOS reports the first touch position as the centroid of the contact patch, which is 3–5mm offset from where the user intends to tap (the centroid stabilises over the next ~30–50ms as the finger flattens). For buttons near screen edges or tight to other UI, the initial Down lands just outside the hit rect — the strict-Down-only state machine ignores it. Subsequent Move events with phase == Idle are no-ops, so the button never captures. UIKit''s UIButton solves this by capturing on the first inside touch-tracking event, not just Down: the user feels like the button responded to "wherever my finger ended up", not "wherever the centroid happened to land at the millisecond of first contact". Mirroring that behaviour in ge::Button is the right fix; widening the recommended hitExpand default would only mask the issue.'
+    origin: manual
+    discovered: 2026-05-11
+  T63:
+    name: ge maintains a high refresh rate on adaptive-refresh displays so press feedback shows up instantly
+    status: identified
+    value: 0.0
+    cost: 0.0
+    showcase: true
+    acceptance:
+    - On an active touch / mouse-button press, the engine renders at the device's max refresh rate (or close to it) until the press ends — not the idle-display rate iOS / Android drop to under VRR
+    - Specifically on iPad ProMotion displays (iPad mini A17 Pro and similar), a button press registered by the ge::Button state machine becomes visible in the rendered frame within ≤1 vsync of the Down event — not after the user wiggles their finger to nudge the display back into a high-refresh state
+    - 'Implementation considers the iOS-side knobs: CADisplayLink''s preferredFrameRateRange (or SDL''s wrapper) requesting at least 60Hz, or a wider 60–120Hz preference with `preferred` set high. Whichever path SDL exposes, ge configures it'
+    - No regression on desktop / non-ProMotion devices that already render at a fixed cadence
+    - While there's no input in flight, ge may optionally drop to a lower refresh rate for battery (T46-ish), but only after a quiet period — the latency-after-tap UX bug is fixed first
+    context: 'Discovered while testing the multimaze2 TopBar refactor on iPad mini A17 Pro (Jevons). Symptom: tapping a chrome button inside its hit rect does NOT visibly darken the button; only after the user moves their finger slightly does the darkened state appear. Investigation: the ge::Button state machine is correctly transitioning Idle → PressedInside on Down (verified because onFire fires on release without movement, which only happens when phase == PressedInside on Up). So highlighted() is true the instant Down is processed, but the rendered frame doesn''t reflect it until the user wiggles. The only credible explanation is that iOS''s adaptive-refresh display has dropped the refresh rate very low (10–24Hz, the typical idle floor for ProMotion) and the loop is gated on bgfx::frame()''s vsync wait. The user''s finger movement is what''s kicking the display back up to a higher rate so a new frame actually renders. Affects any ge consumer that uses ge::Button or similar press-feedback affordance on a ProMotion device.'
     origin: manual
     discovered: 2026-05-11
   T7:
