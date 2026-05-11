@@ -7,7 +7,8 @@
 
 #pragma once
 
-#include <ge/button.h>     // ge::PointerEvent, ge::kMouseId
+#include <ge/button.h>        // ge::PointerEvent, ge::kMouseId
+#include <ge/SessionHost.h>   // ge::Context
 
 #include <SDL3/SDL_events.h>
 
@@ -36,5 +37,22 @@ namespace ge::input {
 // virtual finger with `ge::kMouseId`.
 std::optional<PointerEvent> fromSdl(const SDL_Event& ev,
                                     la::float2 surfaceSize);
+
+// Returns a callable bound to `ctx`. The lambda reads
+// `ctx.fullRect().size()` per call so surface-size changes (window
+// resize, orientation flip) are picked up automatically — no resize
+// listener required on the consumer side.
+//
+//     auto toPointerEvent = ge::input::sdlPointerEventConverter(ctx);
+//     // in the event pump:
+//     if (auto pe = toPointerEvent(ev)) buttonGroup.handleEvent(*pe);
+//
+// `fromSdl` remains the lower-level free function for tests and other
+// callers that don't have a Context handy.
+inline auto sdlPointerEventConverter(const Context& ctx) {
+    return [&ctx](const SDL_Event& ev) -> std::optional<PointerEvent> {
+        return fromSdl(ev, ctx.fullRect().size());
+    };
+}
 
 } // namespace ge::input
