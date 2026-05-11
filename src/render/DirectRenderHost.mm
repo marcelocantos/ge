@@ -14,6 +14,7 @@
 
 #include "../../tools/player_orientation.h"
 
+#include <algorithm>
 #include <iterator>
 #include <vector>
 
@@ -455,6 +456,30 @@ SafeAreaInsets DirectRenderHost::uiSafeInsets() const {
     out.x1 = scale(winW - safe.x - safe.w,   xScale);  // right
     out.y0 = scale(safe.y,                   yScale);  // top in y-down
     out.y1 = scale(winH - safe.y - safe.h,   yScale);  // bottom
+
+#if defined(__APPLE__) && TARGET_OS_IOS
+    // iOS's SDL_GetWindowSafeArea reports only the static-chrome insets
+    // (notch / status bar / home indicator). It does NOT include the
+    // ~20pt top edge where Control / Notification Center swipe-down
+    // captures touches, nor the ~34pt bottom edge around the home
+    // indicator where edge-swipe gestures defer the first touch.
+    //
+    // Apple doesn't expose those zones via any public API. The honest
+    // approximation is to enforce HIG-documented minimum clearances on
+    // top and bottom: if the OS-reported safe area already covers them
+    // (e.g. an iPhone notch leaves ~47pt at the top), keep the larger
+    // value; otherwise floor at the gesture-zone constant. max() per
+    // edge — not addition — so notched devices aren't double-inset.
+    //
+    // Constants from Apple's HIG / WWDC guidance; no runtime query
+    // exists. Re-tune if Apple changes the deferral region in a future
+    // iOS version.
+    constexpr float kIosTopGesturePt    = 20.0f;
+    constexpr float kIosBottomGesturePt = 34.0f;
+    out.y0 = std::max(out.y0, kIosTopGesturePt    * yScale);
+    out.y1 = std::max(out.y1, kIosBottomGesturePt * yScale);
+#endif
+
     return out;
 }
 
