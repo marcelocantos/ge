@@ -579,6 +579,11 @@ ge/APP_ICON_SVG            ?= icons/icon.svg
 ge/APP_ICON_BG_COLOR       ?= FFFFFF
 ge/APP_ICON_IOS_OUT        ?= ios/Assets.xcassets/AppIcon.appiconset
 ge/APP_ICON_ANDROID_RES_OUT?= android/app/src/main/res
+# Project files that the wire-icons step patches idempotently so the
+# generated icon resources are actually picked up by the native build.
+ge/APP_ICON_IOS_INFOPLIST  ?= ios/Info.plist
+ge/APP_ICON_IOS_CMAKELISTS ?= ios/CMakeLists.txt
+ge/APP_ICON_ANDROID_MANIFEST ?= android/app/src/main/AndroidManifest.xml
 
 .PHONY: ge/app-icons
 ge/app-icons: $(ge/ICON_GEN) $(ge/APP_ICON_SVG)
@@ -587,6 +592,10 @@ ge/app-icons: $(ge/ICON_GEN) $(ge/APP_ICON_SVG)
 	    --ios-out "$(ge/APP_ICON_IOS_OUT)" \
 	    --android-res-out "$(ge/APP_ICON_ANDROID_RES_OUT)" \
 	    --bg-color "$(ge/APP_ICON_BG_COLOR)"
+	$(ge)/tools/wire-icons.py \
+	    --ios-info-plist "$(ge/APP_ICON_IOS_INFOPLIST)" \
+	    --ios-cmakelists "$(ge/APP_ICON_IOS_CMAKELISTS)" \
+	    --android-manifest "$(ge/APP_ICON_ANDROID_MANIFEST)"
 
 # ────────────────────────────────────────────────
 # Unit tests (doctest)

@@ -230,11 +230,13 @@ bool generateAndroid(const std::string& svg,
         if (!rasterToPng(svg, d.px, mipDir + "/ic_launcher_round.png")) return false;
     }
 
-    // Adaptive foreground at xxxhdpi (432px = 108dp × 4). Full-bleed; the
-    // launcher masks edges, and centre-weighted designs survive whatever
-    // mask shape the launcher applies. Apps that want strict safe-zone
-    // padding can supply icon-foreground.svg pre-padded.
-    if (!rasterToPng(svg, 432, resDir + "/drawable/ic_launcher_foreground.png")) {
+    // Adaptive foreground at xxxhdpi (432px = 108dp × 4). The visible
+    // content is the inner 72dp safe zone (288 px); the surrounding
+    // 18dp ring is transparent padding so the launcher's mask shape
+    // crops the padding, not the icon. Without this the squircle /
+    // round mask bites into corner content.
+    if (!rasterToAdaptiveForeground(
+            svg, 432, resDir + "/drawable/ic_launcher_foreground.png")) {
         return false;
     }
 

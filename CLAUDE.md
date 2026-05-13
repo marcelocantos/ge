@@ -189,9 +189,11 @@ ge ships a build-time tool, `bin/ge-icon-gen`, that takes one source SVG and wri
 **Consumer workflow:**
 
 1. Author `icons/icon.svg` in your project root. Square aspect, full-bleed (no transparent margins — iOS expects opaque content; Android launcher applies its own mask).
-2. Run `make ge/app-icons`. Outputs land in `ios/Assets.xcassets/AppIcon.appiconset/` and `android/app/src/main/res/{mipmap-*,drawable,mipmap-anydpi-v26}/`.
-3. **iOS**: the template's `Info.plist.in` already has `CFBundleIconName=AppIcon` and the `CMakeLists.txt.in` bundles `Assets.xcassets` when present. Re-run `make ge/ios-init` if your `ios/` is older than the template change.
-4. **Android**: add `android:icon="@mipmap/ic_launcher"` and `android:roundIcon="@mipmap/ic_launcher_round"` to your `AndroidManifest.xml`'s `<application>` element. The template doesn't ship the reference by default because Android requires the resources to exist before the build, and `make ge/app-icons` is the step that creates them.
+2. Run `make ge/app-icons`. This does two things in one shot:
+   - Runs `bin/ge-icon-gen` to write `ios/Assets.xcassets/AppIcon.appiconset/` and `android/app/src/main/res/{mipmap-*,drawable,mipmap-anydpi-v26}/`.
+   - Runs `tools/wire-icons.py` to idempotently patch the consuming project's `ios/Info.plist` (adds `CFBundleIconName=AppIcon`), `ios/CMakeLists.txt` (appends the `Assets.xcassets` block, target auto-detected from `add_executable`), and `android/app/src/main/AndroidManifest.xml` (adds `android:icon` and `android:roundIcon` on `<application>`). All three patches are no-ops if the wiring is already present, so re-running the target is safe.
+
+   That's it — no separate `ge/ios-init` re-run or manual manifest edit required. Targets built afterwards pick up the icon automatically.
 
 **What gets generated:**
 
@@ -207,6 +209,9 @@ ge ships a build-time tool, `bin/ge-icon-gen`, that takes one source SVG and wri
 | `ge/APP_ICON_IOS_OUT` | `ios/Assets.xcassets/AppIcon.appiconset` | iOS output dir |
 | `ge/APP_ICON_ANDROID_RES_OUT` | `android/app/src/main/res` | Android `res/` dir |
 | `ge/APP_ICON_BG_COLOR` | `FFFFFF` | Adaptive-icon background hex (no leading `#` — Make eats it as a comment; the tool prepends `#` itself) |
+| `ge/APP_ICON_IOS_INFOPLIST` | `ios/Info.plist` | Info.plist patched by `wire-icons.py` |
+| `ge/APP_ICON_IOS_CMAKELISTS` | `ios/CMakeLists.txt` | CMakeLists patched by `wire-icons.py` |
+| `ge/APP_ICON_ANDROID_MANIFEST` | `android/app/src/main/AndroidManifest.xml` | AndroidManifest patched by `wire-icons.py` |
 
 **Constraints:** SVG-only input. PNG / JPEG sources are rejected with a clear error pointing at SVG. Multi-size resampling of raster sources is not supported — author the icon as SVG.
 
