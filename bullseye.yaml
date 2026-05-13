@@ -1,4 +1,4 @@
-schema_version: 3
+schema_version: 4
 targets:
   T1:
     name: Game servers can run inside the player via WebAssembly
@@ -355,7 +355,6 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    showcase: true
     actual_cost: 2.0
     acceptance:
     - 'All 6 automated matrix-test cells pass on current hardware: desktop-dist, desktop-player, ios-sim-dist, ios-sim-player, android-emu-dist, android-emu-player'
@@ -400,7 +399,6 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    showcase: true
     actual_cost: 1.0
     acceptance:
     - rotation-stability-test.sh --platform ios-sim --app-id com.squz.tiltbuggy --cycles 10 reports PASS end-to-end against the iPad Air M4 simulator
@@ -415,7 +413,6 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    showcase: true
     actual_cost: 5.0
     acceptance:
     - 'iPhone: dist + player smoke pass (cold launch, 60s soak, no crashes)'
@@ -433,7 +430,6 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    showcase: true
     actual_cost: 5.0
     acceptance:
     - make ge/<platform>-debug (or equivalent) produces a debug binary / .app / APK distinct from the release build — assertions enabled, debug symbols retained
@@ -449,7 +445,6 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    showcase: true
     actual_cost: 5.0
     acceptance:
     - Android player reads a `ged_addr` intent extra (e.g. `adb shell am start -n com.squz.player/.GeActivity --es ged_addr host:port`) and connects directly, skipping QR onboarding
@@ -476,7 +471,6 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    showcase: true
     acceptance:
     - '`make cell.android-emu-phone-dist` and `make cell.android-debug-dist` both pass end-to-end on the current canonical phone AVD'
     - Failure mode (GL-context error) either fixed at the bgfx config layer or worked around with a documented AVD requirement in Module.mk
@@ -500,8 +494,6 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    showcase: true
-    demonstration: 'Merged in PR #55; visual verification deferred to game projects.'
     acceptance:
     - '`make cell.ios-sim-tablet-player` passes the reconnect sub-check end-to-end'
     - '`make cell.android-emu-phone-player` passes the reconnect sub-check end-to-end'
@@ -515,7 +507,6 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    showcase: true
     actual_cost: 3.0
     acceptance:
     - '`make cell.android-emu-phone-player` passes the startup-flash sub-check end-to-end with no false positive and no genuine flash'
@@ -537,8 +528,6 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    showcase: true
-    demonstration: 'Merged in PR #55; real-environment timing deferred to game projects.'
     acceptance:
     - Per-cell soak sub-check runs for ~10s by default
     - A single dedicated long-soak cell runs the 60s sweep
@@ -553,7 +542,6 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    demonstration: 'TiltBuggy distribution build on iOS Simulator (T28.3) demonstrated Shift-drag mouse tilt driving the buggy via screen recording. macOS desktop distribution (T28.1, T28.2 family) verified earlier in the same lineage. T28.4 (Android emu) was deliberately set aside on 2026-05-02: the AVD''s built-in virtual sensors (Extended Controls → Virtual sensors) supersede AccelSynth''s Shift+drag path on emu, so Android-emu tilt input flows through the regular real-sensor pipeline rather than the synth. With three of four sub-targets achieved and the fourth covered by an alternative mechanism, T28''s user-visible outcome — "tilt-driven gameplay works in every host context lacking a real accelerometer" — is satisfied.'
     acceptance:
     - In a tilt-driven sample app (e.g. tiltbuggy) built as distribution (in-process DirectRenderHost, no ged/player), Shift-drag of the mouse tilts the viewport and drives gameplay identically to the player binary's behaviour
     - 'Works on: macOS desktop distribution build, iOS simulator distribution build, Android emulator distribution build'
@@ -568,7 +556,6 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    showcase: true
     acceptance:
     - DirectRenderHost::pumpEvents routes each SDL event through synth->handle() (when synth is active) before forwarding to the user event handler; consumed events are NOT forwarded
     - DirectRenderHost drives synth->update() once per frame (beginFrame or endFrame) so the ease-back after Shift-release animates
@@ -583,7 +570,6 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    showcase: true
     acceptance:
     - In a distribution build using DirectRenderHost, Shift-dragging produces a visible viewport tilt matching the player binary's visual behaviour on the same app
     - The tilt compose shader in DirectRenderHost is fed the current AccelSynth tilt each frame (same convention as PlayerRender.cpp ~line 346)
@@ -599,8 +585,6 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    showcase: true
-    demonstration: 'Merged in PR #55; interactive verification deferred to game projects.'
     acceptance:
     - On an iOS simulator running a distribution build of a tilt-driven sample app, SDL reports zero real sensors and AccelSynth activates
     - Shift+mouse-drag inside the simulator window tilts the viewport and drives sensor-driven gameplay
@@ -619,7 +603,6 @@ targets:
     status: identified
     value: 0.0
     cost: 0.0
-    showcase: true
     acceptance:
     - On an Android emulator running a distribution build of a tilt-driven sample app, SDL reports zero real sensors (or emulator's virtual sensors pass a simulator-detection check) and AccelSynth activates
     - Shift+mouse-drag inside the emulator window tilts the viewport and drives sensor-driven gameplay
@@ -670,7 +653,6 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    showcase: true
     acceptance:
     - SDL_ttf is vendored under ge/vendor/github.com/libsdl-org/SDL_ttf — added as a git submodule (matching the existing SDL submodule at the same parent path) pinned to release-3.2.2 (requires SDL ≥ 3.2.6; ge's SDL is 3.4.0 so compatible)
     - ge/CMakeLists.txt's Android branch (currently lines 217-234) does add_subdirectory for SDL_ttf and links SDL3_ttf::SDL3_ttf into the ge target via PUBLIC
@@ -686,7 +668,6 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    showcase: true
     acceptance:
     - A FontLoader implementation exists that works on Android (and is portable to desktop Linux/Windows if/when those are added) — likely FontLoader_sdl.cpp using SDL_IOStream + SDL_ttf directly, or FontLoader_android.cpp using AAssetManager. Name and approach at author's discretion.
     - 'ge/CMakeLists.txt selects the right FontLoader source per platform (FontLoader_apple.mm on Apple, the new one everywhere else) — no #ifdef sprawl inside a single file'
@@ -703,8 +684,6 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    showcase: true
-    demonstration: 'Merged in PR #55; tiltbuggy APK built and launched on Tab A9 during the agent run; visual confirm deferred to game projects.'
     acceptance:
     - sample/tiltbuggy/android/app/src/main/cpp/CMakeLists.txt calls add_subdirectory(${GE_ROOT}) and target_link_libraries(main PRIVATE ge)
     - The inline GE_SOURCES block (currently lines 79-96) and its accompanying Apple-only comment (lines 76-78) are deleted
@@ -721,7 +700,6 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    showcase: true
     acceptance:
     - 'Confirmed where Triangle code actually lands. Inventory: vendor/src/triangle.c + vendor/include/triangle.h are vendored in ge''s repo; Module.mk exposes ge/TRIANGLE_OBJ as an opt-in object (built with -DTRILIBRARY -DREAL=double -DANSI_DECLARATORS -DNO_TIMER); no ge/src/ file #includes triangle.h or calls triangulate(); ge/CMakeLists.txt does not compile triangle.c into libge; the only known consumer is yourworld/yourworld2/tools/precompute.cpp (build-time tool, not a runtime artifact)'
     - 'Confirmed exactly what the licence permits and forbids. The text in vendor/src/triangle.c grants free use for private, research, and institutional use; permits redistribution if (a) copyright notices are kept, (b) no compensation is received for redistribution, (c) modifications keep original copyright + free source/object availability; **explicitly forbids distribution as part of a commercial system without direct arrangement with Shewchuk (jrs@cs.berkeley.edu)**, with one carve-out: if you don''t supply the code directly to the customer but instead point them at a free download, no arrangement needed'
@@ -737,7 +715,6 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    showcase: true
     acceptance:
     - VideoDecoder's frame callback on Android delivers NV12 planar data (Y plane + interleaved UV plane with their respective strides), not pre-converted BGRA. The hand-rolled nv12ToBgra() function and reusable frameBuffer member in src/bridge/VideoDecoder_android.cpp (and the equivalent libswscale conversion in src/bridge/VideoDecoder_ffmpeg.cpp) are deleted
     - PlayerRender uploads Y as a bgfx R8 texture (w×h) and UV as a bgfx RG8 texture (w/2 × h/2) with proper pitch handling for MediaCodec's row stride
@@ -1006,7 +983,6 @@ targets:
     status: identified
     value: 0.0
     cost: 0.0
-    showcase: true
     acceptance:
     - ge::Context exposes a safe-area accessor (e.g. SafeAreaInsets safeArea() const) returning per-edge pixel insets in the current orientation; on desktop all four insets are 0
     - DirectRenderHost (headless=false path) keeps the Context's safe-area in sync by querying the platform (UIWindow.safeAreaInsets on iOS, WindowInsets/SDL3 accessor on Android) at the same trigger points where width()/height() update — initial layout, resize, rotation
@@ -1453,6 +1429,28 @@ targets:
     origin: discussed during T47-T49 wrap-up; "where did we get to with app icons?" - 2026-05-10
     discovered: 2026-05-10
     achieved: 2026-05-10
+  T50.1:
+    name: ge/app-icons supports explicit foreground/background SVGs for Android adaptive icons
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - '`icons/icon-foreground.svg` and `icons/icon-background.svg` are optional inputs picked up by `make ge/app-icons` when present'
+    - 'When both are present: foreground rasterises into `drawable/ic_launcher_foreground.png` (432×432), background rasterises into `drawable/ic_launcher_background.png` (432×432), and the adaptive XML references both PNGs'
+    - 'When only `icons/icon.svg` is present: current behaviour preserved (full-bleed master into foreground, solid colour from `APP_ICON_BG_COLOR` into background XML) — no consumer break'
+    - iOS still consumes `icons/icon.svg` as the single source (Android adaptive split has no iOS analogue today)
+    - tiltbuggy's `icons/` shows both single-source and split-source modes in its check-in (or a comment documents the unused branch)
+    - CLAUDE.md's `### App icons (🎯T50)` section is updated to describe the three input modes
+    context: 'T50 shipped in v0.14.0 with the full-bleed master going into the Android adaptive-icon foreground and the background reduced to a solid colour (ge/APP_ICON_BG_COLOR). Real adaptive-icon design separates the two layers: the foreground holds the logo (subject to parallax + masking by the launcher''s chosen shape — circle, squircle, rounded square), the background fills the safe zone behind it (could be a gradient, a pattern, a colour wash). Today''s "solid colour" background is the minimum viable; a designer who wants real depth has to bake it into the foreground SVG, which then gets cropped unpredictably by the launcher mask. Lift the constraint by accepting two optional input SVGs alongside `icons/icon.svg`.'
+    depends_on:
+    - T50
+    tags:
+    - app-icons
+    - android
+    - adaptive-icon
+    - svg
+    origin: manual
+    discovered: 2026-05-13
   T51:
     name: ge ships an interactive lunasvg surface, a unit-square Sprite, ge::frame(Rect), and a header reorg
     status: achieved
@@ -1680,8 +1678,6 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    showcase: true
-    demonstration: ge::input::fromSdl(const SDL_Event&, la::float2 surfaceSize) implemented in include/ge/sdl_input.h + src/sdl_input.cpp (sdl-input branch). Handles SDL_EVENT_MOUSE_BUTTON_DOWN/UP, SDL_EVENT_MOUSE_MOTION, SDL_EVENT_FINGER_DOWN/UP/MOTION; mouse coords scaled via SDL_GetWindowSize/SDL_GetWindowSizeInPixels; SDL_TOUCH_MOUSEID dedup inside the helper; non-pointer events return nullopt. Multimaze2 will consume it directly — no consumer-side conversion glue.
     acceptance:
     - ge::Button::handleEvent and ge::ButtonGroup::handleEvent take const SDL_Event& — no intermediate ge::PointerEvent in the consumer's call site
     - Touch fingerID and the mouse-as-single-finger collapse are handled inside ge so consumers do not spell ev.tfinger.fingerID or ge::kMouseId themselves
@@ -1746,8 +1742,6 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    showcase: true
-    demonstration: 'v0.25.0 release (commit dd55622, PR #80) adds src/button.cpp and src/sdl_input.cpp to GE_CORE_SOURCES in ge/CMakeLists.txt. Module.mk and CMakeLists are now back in sync. User confirmed the multimaze mobile build links after bumping the submodule.'
     acceptance:
     - GE_CORE_SOURCES (or equivalent) in ge/CMakeLists.txt lists src/button.cpp and src/sdl_input.cpp alongside the other core sources (sprite.cpp, svg.cpp, png.cpp, text.cpp)
     - iOS / Android CMake-built consumers link libge.a and successfully resolve ge::Button::handleEvent, ge::ButtonGroup::handleEvent, ge::Button::cancel, ge::input::fromSdl, and ge::input::sdlPointerEventConverter without 'Undefined symbols' errors
@@ -1761,7 +1755,6 @@ targets:
     status: identified
     value: 0.0
     cost: 0.0
-    showcase: true
     acceptance:
     - A PointerEvent::Move arriving with phase == Idle and inside == true captures the touch — sets phase = PressedInside, activeId = ev.id, fires onHighlightChange(true), and returns true (the same effect a Down inside would have had)
     - A subsequent Up on that captured touch fires onFire (release-inside semantics, same as the normal Down-then-Up path)
@@ -1777,7 +1770,6 @@ targets:
     status: identified
     value: 0.0
     cost: 0.0
-    showcase: true
     acceptance:
     - On an active touch / mouse-button press, the engine renders at the device's max refresh rate (or close to it) until the press ends — not the idle-display rate iOS / Android drop to under VRR
     - Specifically on iPad ProMotion displays (iPad mini A17 Pro and similar), a button press registered by the ge::Button state machine becomes visible in the rendered frame within ≤1 vsync of the Down event — not after the user wiggles their finger to nudge the display back into a high-refresh state
@@ -1787,6 +1779,223 @@ targets:
     context: 'Discovered while testing the multimaze2 TopBar refactor on iPad mini A17 Pro (Jevons). Symptom: tapping a chrome button inside its hit rect does NOT visibly darken the button; only after the user moves their finger slightly does the darkened state appear. Investigation: the ge::Button state machine is correctly transitioning Idle → PressedInside on Down (verified because onFire fires on release without movement, which only happens when phase == PressedInside on Up). So highlighted() is true the instant Down is processed, but the rendered frame doesn''t reflect it until the user wiggles. The only credible explanation is that iOS''s adaptive-refresh display has dropped the refresh rate very low (10–24Hz, the typical idle floor for ProMotion) and the loop is gated on bgfx::frame()''s vsync wait. The user''s finger movement is what''s kicking the display back up to a higher rate so a new frame actually renders. Affects any ge consumer that uses ge::Button or similar press-feedback affordance on a ProMotion device.'
     origin: manual
     discovered: 2026-05-11
+  T64:
+    name: Unified studio-wide deployment architecture across squz + minicadesmobile
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - Either engineer can ship any squz or minicadesmobile game by typing one command (/ge:ship or make ship-release VERSION=x)
+    - Match-managed signing works from both laptops and CI for both portfolios via a single shared certs repo
+    - New-game onboarding from `git init` to first TestFlight Internal build takes under one hour for someone who has done it before
+    - WIP in the working tree cannot pollute a release build (enforced structurally via git worktree)
+    - What shipped is answerable from git log for any production build (tag = version = binary)
+    - Both ge and MinicadesKit Module.mk surfaces converge on the same ship-* target names and semantics
+    context: 'Both portfolios (squz games on ge, minicadesmobile games on MinicadesKit) currently have separate deployment stories. squz/ge has none yet; minicadesmobile has mature laptop-driven Unity → TestFlight automation but no fastlane, no match, no tag-triggered CI, and signing is per-game automatic with frequent friction. The opportunity is cross-pollination: ge imports MinicadesKit''s hard-won patterns (preflight, build-log-append, heredoc-not-make, double-colon hooks, keychain-with-env-override) and contributes net-new architectural moves (studio-wide match repo, git worktree isolation, Claude Code plugin, build manifest, tag-triggered CI, MAX-of-two-sources fallback for bump-build). The studio-wide match repo is the highest-leverage piece since both portfolios share Apple Team ID SWA3H3N7TW and are controlled by the same engineer.'
+    tags:
+    - deployment
+    - fastlane
+    - match
+    - ci
+    - cross-portfolio
+    - minicadesmobile
+    origin: manual
+    discovered: 2026-05-13
+  T64.1:
+    name: A single studio-wide match repo serves squz + minicadesmobile signing from one encrypted store
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - A private repo (e.g. marcelocantos/certs) holds appstore + adhoc + development cert types for the studio
+    - Both engineers' laptops resolve signing via `bundle exec fastlane match appstore --readonly` without prompting
+    - Adding a new app identifier (e.g. com.squz.newgame) is one `match appstore --app_identifier ...` call
+    - Matchfile template lives in ge with the repo URL and team ID; consuming games copy it via ge/fastlane-init
+    - Match passphrase + ASC API key documented in ge/docs/release-setup.md with exact env-var names
+    context: Highest-leverage piece of T64 — must land before any deployment automation grows further in either portfolio, otherwise migration cost grows. Both portfolios already share Apple Team ID SWA3H3N7TW so the cert prefix space doesn't conflict. mnemo records ~30 min per game lost to "Apple Development" vs "Apple Distribution" signing confusion in stock-car-racing — this is the recurring tax match eliminates.
+    depends_on:
+    - T64
+    tags:
+    - match
+    - signing
+    - fastlane
+    - ios
+    - studio-wide
+    origin: manual
+    discovered: 2026-05-13
+  T64.2:
+    name: ge ships a deterministic make-rule deployment substrate that wraps fastlane lanes and worktree orchestration
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - '`make ship-alpha`, `make ship-beta VERSION=x`, `make ship-release VERSION=x` cover the full lifecycle'
+    - Each top-level rule is a thin dispatcher; logic lives in tools/ship/*.sh
+    - Subrules `ship-preflight`, `ship-bump`, `ship-worktree`, `ship-build`, `ship-upload`, `ship-publish`, `ship-clean`, `ship-status`, `ship-init` are independently invokable for debugging
+    - '`ship-preflight` enforces: clean tree, ge submodule clean and on master, required env vars present, tag format matches lane, CHANGELOG entry exists for VERSION, Xcode version matches pin, match keychain works without prompt'
+    - '`ship-release` refuses without CONFIRM=1 (matches the global gate convention for store uploads)'
+    - Build number derived from `git rev-list --count HEAD` with MAX-of-two-sources fallback (Transporter SQLite OR rev-list, whichever is higher) — closes the bug mnemo flags in minicadesmobile's bump-build
+    - Tiltbuggy can ship a TestFlight Internal build via `make ship-alpha` end-to-end as the proving ground
+    context: 'The make rules are the deterministic floor that always works without Claude. They''re invocable by humans, by the Claude plugin (T64.3), and by GHA workflows (T64.6). Logic lives in tools/ship/*.sh scripts (set -euo pipefail, testable in isolation), with make as the dispatcher. Lift the proven patterns from MinicadesKit verbatim: heredoc-not-make for any prompt or quoted string >5 lines (lesson from minicadesmobile commit 56228f0); preflight target structure with git-clean + version-dump; build-log auto-append from `git log $LAST_TAG..HEAD` parsed by awk; keychain + env-var fallback for secrets; double-colon `podfile-fixup::` hook pattern for per-game extensions; PATH prefix on xcodebuild to dodge Homebrew rsync 3.x; explicit `adb -s` device resolution.'
+    depends_on:
+    - T64.1
+    tags:
+    - make
+    - substrate
+    - fastlane
+    - preflight
+    - shell-scripts
+    origin: manual
+    discovered: 2026-05-13
+  T64.3:
+    name: ge ships a Claude Code plugin exposing /ge:ship, /ge:release-notes, /ge:ship-status, /ge:onboard
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - ge/.claude-plugin/plugin.json declares the plugin with version pinned to ge's release
+    - Skills under ge/skills/{ship,release-notes,ship-status,onboard}/SKILL.md, namespaced as /ge:* when installed
+    - Plugin installs via `ln -s $(pwd)/ge ~/.claude/plugins/ge` (one-time per checkout, performed by `make ship-init`)
+    - /ge:ship dispatches to `make ship-alpha|ship-beta|ship-release` based on conversational input; never bypasses the make substrate
+    - /ge:ship-status reads build/ship/*/manifest.json files across game repos and emits a portfolio table
+    - Other engineer can run /ge:onboard on a fresh machine and reach a shippable state without referring to docs
+    context: The conversational layer on top of T64.2's make substrate. Plugin lives at ge/.claude-plugin/plugin.json with skills under ge/skills/. Consuming games install via `ln -s $(pwd)/ge ~/.claude/plugins/ge` (done as part of make ship-init), so submodule bumps propagate skill updates automatically. Skills wrap the make rules; they don't replace them — if Claude is unavailable, `make ship-release VERSION=x CONFIRM=1` still works. /ge:ship is the orchestrator (asks alpha/beta/release, picks next minor, runs preflight, handles conversational error recovery). /ge:release-notes drafts CHANGELOG from git log. /ge:ship-status reads build manifests across the portfolio (T64.5). /ge:onboard walks a new engineer / new game through ASC API key creation, match clone, env-var setup, plugin symlink.
+    depends_on:
+    - T64.2
+    tags:
+    - claude-plugin
+    - skills
+    - agentic-ux
+    origin: manual
+    discovered: 2026-05-13
+  T64.4:
+    name: All ship pipelines build from a temporary git worktree so WIP cannot leak into a release
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - '`make ship-worktree TAG=v0.4.0` creates build/ship/v0.4.0/ via `git worktree add`'
+    - Submodule init runs inside the worktree (recursive init not implicit) before any build step
+    - Successful ship removes the worktree; failed ship leaves it for inspection
+    - '`make ship-clean` prunes worktrees older than N days (default 14)'
+    - Same physical command works for both engineers from their respective laptops, producing byte-equivalent outputs given match-installed signing
+    context: Structural enforcement of build hygiene — replaces "remember to commit before shipping" with "the worktree is at a specific tag, period". Worktree gets fresh submodule init (ge must be initialised inside the worktree explicitly — `git worktree add` does not recurse). On success, worktree is removed; on failure, leave for inspection (`make ship-clean` prunes older than N days). Defense-in-depth with the preflight checks from T64.2 — worktree guarantees clean state, preflight asserts it. The .claude/worktrees/{port,port-bgfx} convention already exists ad-hoc in stock-car-racing, so this formalises an existing pattern rather than introducing a foreign one.
+    depends_on:
+    - T64.2
+    tags:
+    - worktree
+    - build-hygiene
+    - isolation
+    origin: manual
+    discovered: 2026-05-13
+  T64.5:
+    name: Every shipped binary embeds a build manifest accessible at runtime
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - build/ship/<tag>/manifest.json written by ship-build step with all provenance fields
+    - Manifest embedded as an asset in the IPA / AAB
+    - Tiltbuggy exposes manifest via debug screen or startup log (proving-ground)
+    - /ge:ship-status (T64.3) reads manifests across a directory of game checkouts to produce a portfolio table
+    context: 'Captures: game git SHA, ge submodule SHA, build number, version, lane, builder hostname, timestamp. Embedded as an asset (iOS) / raw resource (Android). Surfaced via a debug screen, startup log, or a long-press gesture. Removes the "which build is this?" detective work when a tester reports a bug — one command shows exact provenance. Mnemo evidence: both ge and minicadesmobile lose time reconciling IPAs to commits; this is a 20-line fix that eliminates the class. Also enables /ge:ship-status to enumerate portfolio state by reading manifests across game checkouts.'
+    depends_on:
+    - T64.2
+    tags:
+    - build-manifest
+    - provenance
+    - debugging
+    origin: manual
+    discovered: 2026-05-13
+  T64.6:
+    name: Android releases trigger from git tag via GitHub Actions; iOS releases run from laptop using the same fastlane lanes
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - '`.github/workflows/release.yml` template lives in ge, copied into game repos by ge/ci-init'
+    - Tag `v*` on a game repo triggers Android build → Play Internal (or Production for stable tags)
+    - Tag `beta-*` triggers Android build → Play Beta/Closed track
+    - iOS Fastfile is identical for laptop and CI use; env vars sourced from GHA secrets in CI and ~/.zshenv on laptop
+    - Org-level GHA secrets (ASC_API_KEY_ID, ASC_API_ISSUER_ID, ASC_API_KEY, PLAY_SERVICE_ACCOUNT_JSON, MATCH_PASSWORD) configured at the squz / minicadesmobile org scope so new game repos inherit
+    - 'Migration path documented: flipping iOS to CI is a ~30 min job (add job to workflow, no Fastfile change)'
+    context: 'Hybrid model to avoid macOS runner costs initially while keeping the migration path to full-CI iOS trivially cheap. The Fastfile is written as if CI were always going to run it: `match(readonly: true)`, env-var-driven secrets, `setup_ci` (no-op locally), no references to interactive Xcode UI. Same `bundle exec fastlane ios beta` works on laptop and CI. Flipping iOS to GHA later = add a `build-ios` job + plumb the same secrets, ~30 min. Android in CI from day 1 because Linux runners are 10x cheaper than macOS and Android tooling runs identically.'
+    depends_on:
+    - T64.1
+    - T64.2
+    tags:
+    - github-actions
+    - ci
+    - hybrid-deployment
+    - tag-triggered
+    origin: manual
+    discovered: 2026-05-13
+  T64.7:
+    name: MinicadesKit back-ports ge's new pieces; both portfolios converge on shared signing + plugin UX
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - MinicadesKit's Modules.mk gains the MAX-of-two-sources fallback in bump-build (Transporter SQLite OR rev-list, whichever is higher)
+    - MinicadesKit games use the studio-wide match repo from T64.1 (one Matchfile per game, same repo URL)
+    - MinicadesKit's `make testflight` flow wraps in a git worktree (lifting the .claude/worktrees/* convention into the official surface)
+    - MinicadesKit binaries embed a build manifest (T64.5 pattern)
+    - Tag-triggered Android workflow lands in at least one MinicadesKit game
+    - '`/mk:ship` Claude Code plugin generalises the /ge:ship pattern for Unity-based games'
+    context: Reverse direction of the bidirectional flow. Once ge has proven the new architectural moves on a real game (tiltbuggy as the proving ground), port them back to MinicadesKit so the existing Unity-game portfolio gets the same benefits. Most urgent back-port is the MAX-of-two-sources fallback in bump-build — mnemo records this as an open bug in stock-car-racing where Transporter UI clearing the SQLite cache caused MAX to return 0. The studio-wide match repo (T64.1) lands first regardless, since both portfolios benefit immediately. Plugin UX comes last — `/mk:ship` etc. once `/ge:ship` is proven.
+    depends_on:
+    - T64.1
+    - T64.3
+    - T64.4
+    - T64.5
+    - T64.6
+    tags:
+    - minicadesmobile
+    - back-port
+    - cross-portfolio
+    - convergence
+    origin: manual
+    discovered: 2026-05-13
+  T65:
+    name: Cross-platform IAP via ge::iap — games introduce paid unlocks in under ten lines
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - 'A consuming game adds a non-consumable unlock with under ten lines of code: register_, owned(), buy() with callback, restore() trigger'
+    - 'Same code compiles and runs on macOS desktop (stub), iOS device (real StoreKit), and Android device (real Play Billing) without #ifdef in the game'
+    - Tiltbuggy ships a `pro` non-consumable that unlocks visible content as the proving ground
+    - Studio-wide sandbox tester / license tester pool is documented in ge/docs/iap-testing.md with credentials in the shared password manager
+    context: 'Engine-level abstraction over StoreKit 2 (iOS) and Play Billing 7+ (Android). Consumer game registers products by local ID, queries owned() at O(1) against a cache, calls buy() with a result callback. ge prepends bundle ID to form platform SKUs so the same string registered in App Store Connect / Play Console is also what the game writes. Three backends select at init from env var: Stub (CI), Local (.storekit / android.test.* for fast iteration), Platform (real stores). Modern frameworks return signature-verified transactions; ge writes only verified entitlements to a platform-native cache (Keychain / EncryptedSharedPreferences). Server-side receipt validation is intentionally not in scope at v1 — for paid one-shot unlocks against casual game audiences, the JWS verification floor is enough, and the threat model doesn''t justify running a validation server. Subscriptions, server validation, and pending-purchase handling are explicitly deferred until a real game needs them.'
+    tags:
+    - iap
+    - storekit
+    - play-billing
+    - cross-platform
+    origin: manual
+    discovered: 2026-05-14
+  T65.1:
+    name: ge::iap public C++ surface plus StubStore backend — pure C++, unit-testable, no platform dependencies
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - include/ge/iap.h defines the public surface (Product, LocalisedProduct, Result, Type, register_, owned, products, buy, restore) and compiles standalone
+    - src/iap.cpp dispatcher selects backend at init based on GE_IAP_MODE env var; default = stub on desktop, platform on mobile (platform path may be unimplemented until T65.2/T65.3)
+    - src/iap_stub.cpp implements StubStore with in-memory ownership, setOwned/clearAll for tests, callback delivery
+    - src/iap_test.cpp has doctest coverage of register/owned/buy/restore plus duplicate-registration and missing-ID error paths
+    - Module.mk and CMakeLists include iap sources in ge/SRC; `make unit-test` passes on macOS
+    - CLAUDE.md gains an `### IAP (🎯T65)` section describing the public API and StubStore backend
+    context: 'The floor that unblocks everything else. Public header at include/ge/iap.h with Product, LocalisedProduct, Result, Type, register_, owned, products, buy, restore. StubStore at src/iap_stub.cpp keeps an in-memory set of owned IDs; exposes setOwned(id, bool) for tests. Dispatcher at src/iap.cpp picks backend at first call to register_ based on GE_IAP_MODE env var (default: stub on desktop, platform on iOS/Android — Local will land in T65.4). Doctest coverage at src/iap_test.cpp exercising the full surface including callback delivery, restore semantics, and product registration with duplicate IDs.'
+    depends_on:
+    - T65
+    tags:
+    - iap
+    - api
+    - stub
+    - unit-test
+    origin: manual
+    discovered: 2026-05-17
   T7:
     name: Audio pauses when the app is backgrounded
     status: identified
