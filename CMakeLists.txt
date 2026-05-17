@@ -193,6 +193,7 @@ if(APPLE)
         ${CMAKE_CURRENT_SOURCE_DIR}/src/SdlContext.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/Immersive_stub.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/CutoutInsets_stub.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/iap_apple.mm
         ${CMAKE_CURRENT_SOURCE_DIR}/src/Attitude_apple.mm)
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Android")
     list(APPEND GE_CORE_SOURCES
