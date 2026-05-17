@@ -1,4 +1,4 @@
-schema_version: 4
+schema_version: 5
 targets:
   T1:
     name: Game servers can run inside the player via WebAssembly
@@ -351,7 +351,6 @@ targets:
     achieved: 2026-04-19
   T19:
     name: 'render-engine-bridge-split branch can be merged: the full mobile matrix of automated + device smokes runs clean'
-    kind: verify
     status: achieved
     value: 0.0
     cost: 0.0
@@ -379,8 +378,6 @@ targets:
       Plus a debug-build smoke cycle of 6 cells (platform × mode, one runtime).
 
       matrix-test.sh currently covers 6 automatable cells (sim/emu, no form-factor split). Extending to the full matrix is follow-on work (form-factor split, device cells, debug cycle — each a sub-target). The minimum gate for THIS round is: all currently-implemented cells pass, physical devices hand-verified via ge/tools/smoke-test.sh, rotation-stability-test green on iOS.
-    verifies:
-    - T18
     origin: manual
     discovered: 2026-04-19
     achieved: 2026-04-19
@@ -1976,7 +1973,7 @@ targets:
     discovered: 2026-05-14
   T65.1:
     name: ge::iap public C++ surface plus StubStore backend — pure C++, unit-testable, no platform dependencies
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -1994,6 +1991,136 @@ targets:
     - api
     - stub
     - unit-test
+    origin: manual
+    discovered: 2026-05-17
+    achieved: 2026-05-17
+  T65.2:
+    name: StoreKit 2 backend (iap_apple.mm) — verified transactions, entitlement cache, product fetch
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - src/iap_apple.mm implements the Store interface for iOS / macOS
+    - Only verificationResult == .verified transactions populate the entitlement cache; unverified ones are logged and dropped
+    - Transaction.updates observer runs for the process lifetime; cache reflects refunds and subscription expiry without app restart
+    - Tiltbuggy ships a non-consumable on iOS and the entitlement survives uninstall + reinstall via Apple's account-bound state (manual verification)
+    - CMakeLists.txt + Module.mk include iap_apple.mm in Apple builds; src/iap.cpp (StubStore) remains the cross-platform fallback
+    context: iOS implementation of the internal Store interface defined in src/iap.cpp. Uses StoreKit 2's async/await API bridged through Objective-C++ to ge::iap's callback surface. Reads catalogue, calls Product.products(for:) for localised metadata, observes Transaction.updates and Transaction.currentEntitlements. Writes only signature-verified transactions (Transaction.verificationResult == .verified) into the entitlement cache. Listens on a long-lived task for refunds, subscription expiry, and Ask-to-Buy resolution. Bundle ID prepended to local product IDs to form platform SKUs.
+    depends_on:
+    - T65.1
+    tags:
+    - iap
+    - storekit
+    - ios
+    - apple
+    origin: manual
+    discovered: 2026-05-17
+  T65.3:
+    name: Play Billing 7+ backend (iap_android.cpp + JNI to BillingClient) — signed purchases, async product fetch
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - src/iap_android.cpp + Kotlin side in android-shared implements the Store interface for Android
+    - Only signature-verified, PURCHASED purchases populate the entitlement cache
+    - PurchasesUpdatedListener wired so cache reflects refunds, voided purchases, subscription expiry
+    - Tiltbuggy ships a non-consumable on Android and the entitlement survives uninstall + reinstall (Google account-bound, manual verification)
+    - CMakeLists.txt branches on Android to compile iap_android.cpp; Gradle adds the Play Billing dependency
+    context: Android implementation of the internal Store interface. JNI bridge to BillingClient (Play Billing Library 7+) wired through ge.GeActivity. queryProductDetailsAsync for localised metadata; queryPurchasesAsync at startup to populate the entitlement cache; PurchasesUpdatedListener for live events. Only Purchase.purchaseState == PURCHASED + signature-verified entries written to cache; PENDING (slow payment methods) surfaces as owned()==false until confirmed, with onPending callback in a follow-up. Bundle ID prepended to local product IDs.
+    depends_on:
+    - T65.1
+    tags:
+    - iap
+    - play-billing
+    - android
+    - jni
+    origin: manual
+    discovered: 2026-05-17
+  T65.4:
+    name: LocalStore mode — .storekit (iOS) and android.test.* (Android) for offline dev iteration
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - A committed ios/StoreKit.storekit template lives in ge with the product schema; consuming games copy + customise via a make rule
+    - When GE_IAP_MODE=local on iOS, StoreKit reads from the .storekit file; products() returns the configured set, buy() exercises the real signature-verification path
+    - On Android, GE_IAP_MODE=local routes buy() to android.test.purchased / canceled / refunded / item_unavailable based on the local product ID
+    - Documented in CLAUDE.md alongside the debug menu (T65.6) with guidance on when to use each
+    context: 'When GE_IAP_MODE=local, run the platform StoreKit / Play Billing path against fake products. iOS: a committed .storekit configuration file describes products inline; Xcode injects them into the StoreKit API at run time, no App Store Connect round-trip, works in the simulator with no signed-in account. Android: use the reserved android.test.* SKUs (purchased / canceled / refunded / item_unavailable) for the basic flow. Less capable than sandbox accounts (no subscriptions on Android side) but unblocks the inner loop. Lower priority than the debug menu (T65.6) — that''s the day-to-day tool. This target exists for the case where a developer genuinely wants to validate the real framework path without sandbox credentials.'
+    depends_on:
+    - T65.2
+    - T65.3
+    tags:
+    - iap
+    - storekit
+    - play-billing
+    - local-dev
+    origin: manual
+    discovered: 2026-05-17
+  T65.5:
+    name: Entitlement cache persists in Keychain (iOS) and EncryptedSharedPreferences (Android)
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - StubStore continues to use in-memory state (no persistence — tests start clean)
+    - iOS PlatformStore writes verified entitlements to Keychain with kSecAttrAccessibleAfterFirstUnlock
+    - Android PlatformStore writes verified entitlements to EncryptedSharedPreferences
+    - On launch, owned() returns the persisted cache value within the first frame; the store's current-entitlements query then reconciles within the first second
+    - Cache lifecycle and invalidation rules documented in CLAUDE.md's IAP section
+    context: 'owned() must be cheap — games call it from render loops. The cache populates on init from the platform store''s current-entitlements query (StoreKit Transaction.currentEntitlements / Play Billing queryPurchasesAsync) and refreshes on transaction-updated callbacks. Persistence beyond the process lifetime uses platform-native secure storage: Keychain on iOS (survives reinstall, kSecAttrAccessibleAfterFirstUnlock), EncryptedSharedPreferences on Android (survives reinstall when auto-backup is enabled). Cache is advisory — the store is always queried at startup as the source of truth; the persisted cache fills the window between launch and first store response so owned() returns the right answer for the first frame.'
+    depends_on:
+    - T65.2
+    - T65.3
+    tags:
+    - iap
+    - cache
+    - keychain
+    - encryptedsharedpreferences
+    origin: manual
+    discovered: 2026-05-17
+  T65.6:
+    name: ge::iap::DebugPanel — long-press to toggle entitlements in dev builds
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - A long-press in the top-right corner of a debug build opens the panel; release builds compile the panel code out
+    - Panel lists all registered products with live ownership state and tap-to-toggle
+    - Reset-all and force-restore buttons work
+    - 'Tiltbuggy proves out the loop: long-press → toggle pro → gated content appears / disappears without restart'
+    - Panel rendered via ge::Sprite + lunasvg — no Dear ImGui or other heavy dep
+    context: Inner-loop testing tool. Long-press a screen corner in debug builds opens an SVG-rendered panel listing every registered product with its current ownership state. Tap a product to toggle entitled / not-entitled via ge::iap::testing::setOwned, which goes through StubStore directly. Includes "Reset all purchases" and "Force restore" buttons. Compiled out of release builds entirely. This is the workflow that matters day-to-day; .storekit / sandbox testers are the once-per-release verification path. Sits on top of T65.1 (the testing surface) and reuses ge::Button (T59) + lunasvg (T42) for the UI.
+    depends_on:
+    - T65.1
+    tags:
+    - iap
+    - debug
+    - ui
+    - lunasvg
+    origin: manual
+    discovered: 2026-05-17
+  T65.7:
+    name: Tiltbuggy ships a `pro` non-consumable unlock as the proving ground for ge::iap
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - Tiltbuggy registers `pro` and gates at least one visible piece of content behind owned(`pro`)
+    - com.squz.tiltbuggy.pro registered in App Store Connect; matching SKU in Play Console
+    - TestFlight Internal build demonstrates buy() succeeding via a sandbox Apple ID; the gated content unlocks without restart
+    - Play Internal Testing build demonstrates buy() succeeding via a license tester Google account; the gated content unlocks without restart
+    - Uninstall + reinstall + Restore Purchases recovers the entitlement on both platforms
+    context: Validates the whole T65 stack against a real consumer. Tiltbuggy registers `pro` as a NonConsumable in setCatalogue, gates some visible content behind owned(), surfaces a buy button + Restore Purchases button in the UI. SKU registered in App Store Connect as com.squz.tiltbuggy.pro and in Play Console with matching ID. Shipped via TestFlight Internal + Play Internal Testing using sandbox / license tester accounts. Demonstration target — retirement requires a real device showing the locked-then-unlocked transition.
+    depends_on:
+    - T65.2
+    - T65.3
+    - T65.5
+    - T65.6
+    tags:
+    - iap
+    - tiltbuggy
+    - proving-ground
     origin: manual
     discovered: 2026-05-17
   T7:
