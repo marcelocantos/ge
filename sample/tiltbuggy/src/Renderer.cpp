@@ -5,6 +5,7 @@
 #include "Scene.h"
 
 #include <ge/FileIO.h>
+#include <ge/iap.h>
 #include <ge/sprite.h>
 #include <ge/svg.h>
 #include <ge/transform.h>
@@ -283,13 +284,18 @@ void Renderer::drawFrame(const Scene& scene, const ge::Context& c,
     // 3. Buggy — sized in proportion to the world (kept at 1/20 of the
     // arena half-extent to match the Box2D shape, so when the world is
     // shrunk to speed up physics, the rendered chassis tracks it).
+    // Pro entitlement (🎯T65.7) flips the chassis paint from default
+    // yellow to a chromed cyan — the visible gate for the IAP demo.
     const Pose pose = scene.buggyPose();
     const float hw = scene.halfExtent() * 0.05f;
     const float hh = hw * 0.5f;
+    const uint32_t buggyColor = ge::iap::owned("pro")
+        ? rgb(0x00, 0xE0, 0xFF)   // pro: chromed cyan
+        : rgb(0xFF, 0xCC, 0x33);  // default: yellow
     pushRotatedRect(verts,
         ge::Rect{pose.x - hw, pose.y - hh, 2.f * hw, 2.f * hh},
         pose.angle,
-        rgb(0xFF, 0xCC, 0x33));
+        buggyColor);
 
     // --- Submit ---
     const uint32_t numVerts = static_cast<uint32_t>(verts.size());
