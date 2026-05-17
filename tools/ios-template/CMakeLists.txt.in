@@ -88,11 +88,17 @@ set(GE_SOURCES
     ${GE_ROOT}/src/BgfxContext.mm
     ${GE_ROOT}/src/Signal.cpp
     ${GE_ROOT}/src/SessionHost.mm
-    ${GE_ROOT}/src/SvgRasterizer.cpp
     ${GE_ROOT}/src/sprite.cpp
     ${GE_ROOT}/src/svg.cpp
     ${GE_ROOT}/src/png.cpp
     ${GE_ROOT}/src/text.cpp
+    ${GE_ROOT}/src/button.cpp
+    ${GE_ROOT}/src/sdl_input.cpp
+    ${GE_ROOT}/src/iap.cpp
+    ${GE_ROOT}/src/iap_apple.mm
+    ${GE_ROOT}/src/Immersive_stub.cpp
+    ${GE_ROOT}/src/CutoutInsets_stub.cpp
+    ${GE_ROOT}/src/Attitude_apple.mm
     ${GE_ROOT}/src/render/DirectRenderHost.mm
     ${GE_ROOT}/tools/player_orientation_ios.mm
     ${GE_ROOT}/vendor/src/sqlite3.c
@@ -179,6 +185,7 @@ target_include_directories(__CMAKE_PROJECT__ PRIVATE
     ${GE_ROOT}/vendor/github.com/gabime/spdlog/include
     ${GE_ROOT}/vendor/github.com/chriskohlhoff/asio/include
     ${GE_ROOT}/vendor/github.com/libsdl-org/SDL/include
+    ${GE_ROOT}/vendor/github.com/libsdl-org/SDL_ttf/external/freetype/include
     ${GE_ROOT}/vendor/sdl3/include
     ${GE_ROOT}/vendor/github.com/sqliteai/liteparser/src
     ${LUNASVG_DIR}/include
@@ -208,6 +215,7 @@ target_link_libraries(__CMAKE_PROJECT__ PRIVATE
     "-framework GameController" "-framework CoreHaptics"
     "-framework CoreMotion" "-framework VideoToolbox"
     "-framework Security" "-framework OpenGLES" "-framework ImageIO"
+    "-framework CoreText" "-framework StoreKit"
     "-lobjc"
 )
 
