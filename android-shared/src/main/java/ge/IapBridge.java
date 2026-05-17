@@ -90,7 +90,7 @@ public class IapBridge implements PurchasesUpdatedListener {
                 Log.w(TAG, "queryProductDetailsAsync failed: " + br.getDebugMessage());
                 return;
             }
-            for (ProductDetails pd : result.getProductDetailsList()) {
+            for (ProductDetails pd : result) {
                 productsBySku.put(pd.getProductId(), pd);
                 String price = "";
                 String currency = "";

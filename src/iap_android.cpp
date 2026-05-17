@@ -31,6 +31,8 @@
 
 #include <spdlog/spdlog.h>
 
+#include <SDL3/SDL_system.h>
+
 #include <jni.h>
 
 #include <memory>
@@ -144,9 +146,28 @@ std::string localIdFromSku(JNIEnv* env, const std::string& sku) {
 } // namespace
 
 AndroidStore::AndroidStore() {
+    // Bootstrap g_jvm + g_activity from SDL's Android bridge so consumers
+    // don't need a separate JNI_OnLoad hook. SDL_GetAndroidJNIEnv() and
+    // SDL_GetAndroidActivity() are usable any time after SDL_Init runs
+    // (which it has by the time ge::run reaches its render-loop body).
+    if (!g_jvm) {
+        JNIEnv* bootstrapEnv = static_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());
+        if (bootstrapEnv) bootstrapEnv->GetJavaVM(&g_jvm);
+    }
+    if (!g_activity) {
+        jobject local = static_cast<jobject>(SDL_GetAndroidActivity());
+        if (local) {
+            ScopedEnv tmp;
+            if (tmp.env) {
+                g_activity = tmp.env->NewGlobalRef(local);
+                tmp.env->DeleteLocalRef(local);
+            }
+        }
+    }
+
     ScopedEnv env;
     if (!env.env || !g_activity) {
-        SPDLOG_ERROR("AndroidStore: JVM or activity not initialised — install the engine's JNI_OnLoad first");
+        SPDLOG_ERROR("AndroidStore: SDL Android bridge unavailable; iap calls will no-op");
         return;
     }
     jclass cls = env.env->FindClass("ge/IapBridge");
@@ -323,6 +344,7 @@ JNIEXPORT void JNICALL Java_ge_IapBridge_nativeOnBillingReady(JNIEnv*, jclass) {
 JNIEXPORT void JNICALL Java_ge_IapBridge_nativeOnProductFetched(
         JNIEnv* env, jclass,
         jstring sku, jstring title, jstring desc, jstring price, jstring currency) {
+    using namespace ge::iap;
     using namespace ge::iap::detail;
     if (!g_instance) return;
     auto j2s = [&](jstring s) -> std::string {

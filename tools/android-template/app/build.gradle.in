@@ -80,4 +80,7 @@ tasks.register('syncAssets', Sync) {
 preBuild.dependsOn('syncAssets')
 
 dependencies {
+    // Play Billing 7+ — required by ge::iap's AndroidStore via JNI to
+    // ge.IapBridge (android-shared/src/main/java/ge/IapBridge.java).
+    implementation 'com.android.billingclient:billing:7.1.1'
 }
