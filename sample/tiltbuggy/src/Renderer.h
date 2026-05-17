@@ -10,6 +10,11 @@ namespace tiltbuggy {
 
 class Scene;  // from Scene.h — written by a parallel agent
 
+// Screen-pixel rect of the "BUY PRO" button. Returned in render-surface
+// pixel coordinates matching ge::input::fromSdl's output, so main.cpp's
+// onEvent hit-test and Renderer's draw position share one source of truth.
+ge::Rect proButtonRect(const ge::Context& c);
+
 class Renderer {
 public:
     Renderer();

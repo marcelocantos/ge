@@ -13,6 +13,7 @@
 #include <ge/iap.h>
 #include <ge/Protocol.h>
 #include <ge/Resource.h>
+#include <ge/sdl_input.h>
 #include <ge/SessionHost.h>
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>  // required on iOS/Android; no-op on desktop
@@ -67,6 +68,7 @@ struct State {
     std::unique_ptr<tiltbuggy::Renderer> renderer;
     b2Vec2 gravity{0, 0};
     bool rendererInited = false;
+    bool proPurchaseInFlight = false;   // debounce: drop taps while Apple modal is up
 };
 
 } // namespace
@@ -135,7 +137,7 @@ int main(int argc, char* argv[]) {
                 }
                 state.renderer->drawFrame(*state.scene, c);
             },
-            .onEvent = [&](const SDL_Event& e) {
+            .onEvent = [&, ctx](const SDL_Event& e) {
                 SPDLOG_INFO("onEvent type=0x{:x}", e.type);
                 if (e.type == SDL_EVENT_SENSOR_UPDATE) {
                     // Engine delivers device acceleration in screen frame.
@@ -147,6 +149,23 @@ int main(int argc, char* argv[]) {
                     SPDLOG_INFO("ACCEL accel=[{:+.2f},{:+.2f},{:+.2f}] gravity=[{:+.2f},{:+.2f}]",
                                 e.sensor.data[0], e.sensor.data[1], e.sensor.data[2],
                                 state.gravity.x, state.gravity.y);
+                    return;
+                }
+
+                // BUY PRO button tap (🎯T65.7): convert SDL pointer events
+                // to ge::PointerEvent in render-surface pixel space, then
+                // hit-test against the same screen rect Renderer draws at.
+                auto pe = ge::input::fromSdl(e, ctx.fullRect().size());
+                if (pe && pe->kind == ge::PointerEvent::Down
+                       && !ge::iap::owned("pro")
+                       && !state.proPurchaseInFlight
+                       && tiltbuggy::proButtonRect(ctx).contains(pe->pos)) {
+                    state.proPurchaseInFlight = true;
+                    SPDLOG_INFO("iap: tapping BUY PRO");
+                    ge::iap::buy("pro", [&state](ge::iap::Result r) {
+                        state.proPurchaseInFlight = false;
+                        SPDLOG_INFO("iap: buy pro complete ok={} error={}", r.ok, r.error);
+                    });
                 }
             },
             .onShutdown = [&] {

@@ -82,6 +82,14 @@ constexpr std::string_view kIcyPondSvg = R"SVG(<svg xmlns="http://www.w3.org/200
         fill="none" stroke="#4A7A9C" stroke-width="2.5" stroke-opacity="0.65"/>
 </svg>)SVG";
 
+// Buy-PRO button — shown when ge::iap::owned("pro") is false. Tapping
+// triggers ge::iap::buy("pro") in main.cpp's onEvent (hit-test against
+// the same screen-pixel rect via tiltbuggy::proButtonScreenRect).
+constexpr std::string_view kBuyProSvg = R"SVG(<svg xmlns="http://www.w3.org/2000/svg" width="256" height="80" viewBox="0 0 256 80">
+  <rect x="2" y="2" width="252" height="76" rx="14" fill="#FFCC33" stroke="#222222" stroke-width="3"/>
+  <text x="128" y="52" font-family="sans-serif" font-weight="bold" font-size="34" text-anchor="middle" fill="#222222">BUY PRO</text>
+</svg>)SVG";
+
 // Game title rendered as SVG <text>. Exercises the lazy default-font path
 // added in T42.4 — no app-side font setup, sans-serif comes from
 // ge::resolveFont("system:sans-serif") on first rasterize. Bold on macOS
@@ -184,18 +192,32 @@ constexpr uint32_t rgb(uint32_t r, uint32_t g, uint32_t b) {
 
 } // namespace
 
+// BUY PRO button screen rect. Lives at the top-left corner of the UI
+// safe rect so it never sits under the camera notch / Dynamic Island.
+// Size scales with pixelsPerPt so the tap target stays at ~85 × 27 pt
+// (above Apple HIG's 44 pt minimum) on every device class.
+ge::Rect proButtonRect(const ge::Context& c) {
+    const auto safe = c.uiSafeRect();
+    const float pad = 16.f * c.pixelsPerPt();
+    const float bw  = 85.f * 3.0f * c.pixelsPerPt();
+    const float bh  = 27.f * 3.0f * c.pixelsPerPt();
+    return {safe.x + pad, safe.y + pad, bw, bh};
+}
+
 struct Renderer::Impl {
     bgfx::VertexLayout  layout;
     bgfx::ProgramHandle program = BGFX_INVALID_HANDLE;
     ge::Sprite          pond;
     ge::Sprite          title;
+    ge::Sprite          buyPro;
 };
 
 Renderer::Renderer() : i_(std::make_unique<Impl>()) {}
 Renderer::~Renderer() {
-    if (bgfx::isValid(i_->program))  bgfx::destroy(i_->program);
-    if (bgfx::isValid(i_->pond.tex)) bgfx::destroy(i_->pond.tex);
+    if (bgfx::isValid(i_->program))   bgfx::destroy(i_->program);
+    if (bgfx::isValid(i_->pond.tex))  bgfx::destroy(i_->pond.tex);
     if (bgfx::isValid(i_->title.tex)) bgfx::destroy(i_->title.tex);
+    if (bgfx::isValid(i_->buyPro.tex)) bgfx::destroy(i_->buyPro.tex);
 }
 
 void Renderer::init(const char* shaderDir) {
@@ -212,6 +234,11 @@ void Renderer::init(const char* shaderDir) {
     // Rasterize the "TILT BUGGY" title SVG. 768x128 = 6:1 aspect; we'll
     // place it in a similarly proportioned world rect above the pond.
     i_->title = ge::rasterizeSvg(kTitleSvg, 768, 128);
+
+    // Rasterize the BUY PRO button (256x80). Drawn only when the pro
+    // entitlement isn't owned; tap triggers ge::iap::buy("pro") in
+    // main.cpp's onEvent.
+    i_->buyPro = ge::rasterizeSvg(kBuyProSvg, 256, 80);
 }
 
 void Renderer::drawFrame(const Scene& scene, const ge::Context& c,
@@ -270,15 +297,21 @@ void Renderer::drawFrame(const Scene& scene, const ge::Context& c,
     pushRect(verts, ge::Rect{bgL, bgB, bgR - bgL, bgT - bgB}, rgb(0xAA, 0x66, 0x44));
 
     // 2. Surface rects (excluding ice — drawn as a textured sprite below).
-    for (const auto& s : scene.surfaces()) {
-        uint32_t color;
-        switch (s.type) {
-            case SurfaceType::Ice:     continue;  // see ice-sprite pass below
-            case SurfaceType::Dirt:    color = rgb(0xAA, 0x66, 0x44); break;
-            case SurfaceType::Asphalt: continue;
-            default:                   continue;
+    // Both the dirt patch and the icy pond are gated behind the `pro`
+    // IAP (🎯T65.7) — without it the buggy slides on featureless
+    // asphalt; buying pro materialises the terrain features.
+    const bool proOwned = ge::iap::owned("pro");
+    if (proOwned) {
+        for (const auto& s : scene.surfaces()) {
+            uint32_t color;
+            switch (s.type) {
+                case SurfaceType::Ice:     continue;  // see ice-sprite pass below
+                case SurfaceType::Dirt:    color = rgb(0xAA, 0x66, 0x44); break;
+                case SurfaceType::Asphalt: continue;
+                default:                   continue;
+            }
+            pushRect(verts, s.rect, color);
         }
-        pushRect(verts, s.rect, color);
     }
 
     // 3. Buggy — sized in proportion to the world (kept at 1/20 of the
@@ -320,7 +353,7 @@ void Renderer::drawFrame(const Scene& scene, const ge::Context& c,
     // World is y-up (gravity points -y), so the rect's `y` is the rect's
     // TOP (larger y) and `h` is NEGATIVE, flipping the y basis so the
     // sprite's source-image top lands at world top.
-    if (!i_->pond.isNull()) {
+    if (proOwned && !i_->pond.isNull()) {
         for (const auto& s : scene.surfaces()) {
             if (s.type != SurfaceType::Ice) continue;
             // Inflate 25% so the irregular bezier border has visible overhang
@@ -356,6 +389,23 @@ void Renderer::drawFrame(const Scene& scene, const ge::Context& c,
         });
         bgfx::setTransform(&m[0][0]);
         i_->title.draw(0);
+    }
+
+    // BUY PRO button — only when pro isn't owned. Positioned in screen-
+    // pixel coordinates inside the UI safe rect; tiltbuggy::proButtonRect
+    // returns the same screen rect that main.cpp hit-tests in onEvent.
+    if (!proOwned && !i_->buyPro.isNull()) {
+        const auto btn = proButtonRect(c);
+        // Screen → world conversion uses the same pxToWorldX/Y as the
+        // background math above. World is y-up (frame() takes y=top with
+        // h NEGATIVE to flip the basis); convert each axis accordingly.
+        const float wL =  -orthoW + btn.x                  * pxToWorldX;
+        const float wT =   orthoH - btn.y                  * pxToWorldY;  // y=top in y-up
+        const float wW =                btn.w              * pxToWorldX;
+        const float wH =                btn.h              * pxToWorldY;
+        const auto m = ge::frame(ge::Rect{wL, wT, wW, -wH});
+        bgfx::setTransform(&m[0][0]);
+        i_->buyPro.draw(0);
     }
 }
 
