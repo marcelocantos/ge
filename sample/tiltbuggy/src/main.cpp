@@ -10,6 +10,7 @@
 #include "Renderer.h"
 #include "Scene.h"
 
+#include <ge/iap.h>
 #include <ge/Protocol.h>
 #include <ge/Resource.h>
 #include <ge/SessionHost.h>
@@ -98,6 +99,18 @@ int main(int argc, char* argv[]) {
 
     State state;
 
+    // Register the IAP catalogue and pre-populate the entitlement cache.
+    // The `pro` SKU must also be registered in App Store Connect as
+    // com.squz.tiltbuggy.pro and in Play Console with the matching id.
+    // T65.7 demo: once registered, sandbox / license-tester accounts
+    // can buy() this from the device and `owned("pro")` will flip.
+    ge::iap::setCatalogue({
+        {.id = "pro", .type = ge::iap::Type::NonConsumable},
+    });
+    ge::iap::restore([](ge::iap::Result r) {
+        SPDLOG_INFO("iap: restore complete ok={} error={}", r.ok, r.error);
+    });
+
     ge::run([&](ge::Context ctx) -> ge::RunConfig {
         state.scene = std::make_unique<tiltbuggy::Scene>(kWorldHalfExtent);
         state.renderer = std::make_unique<tiltbuggy::Renderer>();
@@ -109,8 +122,9 @@ int main(int argc, char* argv[]) {
                 static int frame = 0;
                 if (++frame % 60 == 0) {
                     auto p = state.scene->buggyPose();
-                    SPDLOG_INFO("tick: dt={:.4f} g=[{:.2f},{:.2f}] pose=[{:.2f},{:.2f},{:.2f}]",
-                                dt, state.gravity.x, state.gravity.y, p.x, p.y, p.angle);
+                    SPDLOG_INFO("tick: dt={:.4f} g=[{:.2f},{:.2f}] pose=[{:.2f},{:.2f},{:.2f}] pro={}",
+                                dt, state.gravity.x, state.gravity.y, p.x, p.y, p.angle,
+                                ge::iap::owned("pro"));
                 }
             },
             .onRender = [&](const ge::Context& c) {
