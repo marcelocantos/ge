@@ -120,3 +120,77 @@ TEST_CASE("iap: testing::clearAll wipes entitlement state") {
     CHECK_FALSE(iap::owned("pro"));
     CHECK_FALSE(iap::owned("premium"));
 }
+
+TEST_CASE("iap::DebugPanel: rows() reflects live entitlement state") {
+    Reset r;
+    iap::setCatalogue({
+        {.id = "panel_pro",    .type = iap::Type::NonConsumable},
+        {.id = "panel_hints",  .type = iap::Type::Consumable},
+    });
+    iap::testing::setOwned("panel_pro", true);
+
+    iap::DebugPanel panel;
+    auto rows = panel.rows();
+
+    auto findRow = [&](const std::string& id) {
+        return std::find_if(rows.begin(), rows.end(),
+                            [&](const auto& r) { return r.id == id; });
+    };
+    auto proRow   = findRow("panel_pro");
+    auto hintsRow = findRow("panel_hints");
+    REQUIRE(proRow != rows.end());
+    REQUIRE(hintsRow != rows.end());
+    CHECK(proRow->owned);
+    CHECK_FALSE(hintsRow->owned);
+}
+
+TEST_CASE("iap::DebugPanel: onRowTap toggles owned state") {
+    Reset r;
+    iap::setCatalogue({{.id = "tappable", .type = iap::Type::NonConsumable}});
+
+    iap::DebugPanel panel;
+    CHECK_FALSE(iap::owned("tappable"));
+    panel.onRowTap("tappable");
+    CHECK(iap::owned("tappable"));
+    panel.onRowTap("tappable");
+    CHECK_FALSE(iap::owned("tappable"));
+}
+
+TEST_CASE("iap::DebugPanel: onResetAll clears entitlements") {
+    Reset r;
+    iap::setCatalogue({
+        {.id = "a", .type = iap::Type::NonConsumable},
+        {.id = "b", .type = iap::Type::NonConsumable},
+    });
+    iap::testing::setOwned("a", true);
+    iap::testing::setOwned("b", true);
+
+    iap::DebugPanel panel;
+    panel.onResetAll();
+    CHECK_FALSE(iap::owned("a"));
+    CHECK_FALSE(iap::owned("b"));
+}
+
+TEST_CASE("iap::DebugPanel: visibility helpers") {
+    iap::DebugPanel panel;
+    CHECK_FALSE(panel.visible);
+    panel.show();
+    CHECK(panel.visible);
+    panel.hide();
+    CHECK_FALSE(panel.visible);
+    panel.toggle();
+    CHECK(panel.visible);
+    panel.toggle();
+    CHECK_FALSE(panel.visible);
+}
+
+TEST_CASE("iap::DebugPanel: onForceRestore fires the callback") {
+    Reset r;
+    bool fired = false;
+    iap::DebugPanel panel;
+    panel.onForceRestore([&](iap::Result res) {
+        fired = true;
+        CHECK(res.ok);
+    });
+    CHECK(fired);
+}

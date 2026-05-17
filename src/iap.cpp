@@ -151,4 +151,31 @@ void clearAll()                                { store().testingClearAll(); }
 
 } // namespace testing
 
+// ── DebugPanel ─────────────────────────────────────────────────────
+
+std::vector<DebugPanel::Row> DebugPanel::rows() const {
+    auto list = products();
+    std::vector<Row> out;
+    out.reserve(list.size());
+    for (const auto& p : list) {
+        // Type isn't surfaced by products(), so re-derive presence via
+        // owned() and leave type defaulted — the debug panel cares
+        // about owned/not-owned, not consumable vs non-consumable.
+        out.push_back({.id = p.id, .type = Type::NonConsumable, .owned = owned(p.id)});
+    }
+    return out;
+}
+
+void DebugPanel::onRowTap(const std::string& id) {
+    testing::setOwned(id, !owned(id));
+}
+
+void DebugPanel::onResetAll() {
+    testing::clearAll();
+}
+
+void DebugPanel::onForceRestore(RestoreCallback cb) {
+    restore(std::move(cb));
+}
+
 } // namespace ge::iap

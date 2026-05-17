@@ -105,4 +105,37 @@ void clearAll();
 
 } // namespace testing
 
+// In-engine debug panel for toggling entitlements without touching a
+// real store. Pure state + actions — the game renders the panel using
+// its own UI primitives (ge::Sprite + lunasvg recommended) and pumps
+// pointer events through onRowTap/onResetAll/onForceRestore. Compile
+// out of release builds by guarding instantiation with #ifndef NDEBUG.
+struct DebugPanel {
+    struct Row {
+        std::string id;
+        Type        type;
+        bool        owned;
+    };
+
+    bool visible = false;
+
+    void show()   { visible = true;  }
+    void hide()   { visible = false; }
+    void toggle() { visible = !visible; }
+
+    // Live snapshot of registered products with current owned state.
+    std::vector<Row> rows() const;
+
+    // Flip a product's owned state via testing::setOwned. The next
+    // call to rows() reflects the change.
+    void onRowTap(const std::string& id);
+
+    // Wipe all entitlements via testing::clearAll.
+    void onResetAll();
+
+    // Trigger restore(). Useful for verifying the restore code path
+    // on stub before sandbox accounts are wired up.
+    void onForceRestore(RestoreCallback cb = {});
+};
+
 } // namespace ge::iap
