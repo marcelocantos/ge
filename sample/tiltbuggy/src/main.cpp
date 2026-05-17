@@ -105,7 +105,8 @@ int main(int argc, char* argv[]) {
     // T65.7 demo: once registered, sandbox / license-tester accounts
     // can buy() this from the device and `owned("pro")` will flip.
     ge::iap::setCatalogue({
-        {.id = "pro", .type = ge::iap::Type::NonConsumable},
+        {.id = "pro",           .type = ge::iap::Type::NonConsumable},
+        {.id = "powerboost10",  .type = ge::iap::Type::Consumable},
     });
     ge::iap::restore([](ge::iap::Result r) {
         SPDLOG_INFO("iap: restore complete ok={} error={}", r.ok, r.error);
