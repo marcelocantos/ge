@@ -1996,7 +1996,7 @@ targets:
     achieved: 2026-05-17
   T65.2:
     name: StoreKit 2 backend (iap_apple.mm) — verified transactions, entitlement cache, product fetch
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -2015,6 +2015,7 @@ targets:
     - apple
     origin: manual
     discovered: 2026-05-17
+    achieved: 2026-05-17
   T65.3:
     name: Play Billing 7+ backend (iap_android.cpp + JNI to BillingClient) — signed purchases, async product fetch
     status: identified
