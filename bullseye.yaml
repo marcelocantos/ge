@@ -2018,7 +2018,7 @@ targets:
     achieved: 2026-05-17
   T65.3:
     name: Play Billing 7+ backend (iap_android.cpp + JNI to BillingClient) — signed purchases, async product fetch
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -2037,6 +2037,7 @@ targets:
     - jni
     origin: manual
     discovered: 2026-05-17
+    achieved: 2026-05-17
   T65.4:
     name: LocalStore mode — .storekit (iOS) and android.test.* (Android) for offline dev iteration
     status: identified
