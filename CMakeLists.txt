@@ -182,6 +182,7 @@ set(GE_CORE_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/text.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/button.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/sdl_input.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/iap.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/vendor/src/sqlift.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/vendor/src/sqlpipe.cpp
 )

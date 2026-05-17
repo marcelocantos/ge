@@ -576,6 +576,43 @@ sprite = ge::renderSvgDocument(*doc, 1024, 256);
 - **`VideoEncoder`** (`VideoEncoder.h`) — H.264 encoder interface. Platform implementation: `VideoEncoder_apple.mm` (VideoToolbox). Used internally by `SessionHost` when running headless. pImpl.
 - **`VideoDecoder`** (`VideoDecoder.h`) — H.264 decoder interface. Platform implementation: `VideoDecoder_apple.mm` (VideoToolbox). Used by the player. pImpl.
 
+### IAP (🎯T65)
+
+In-app purchases with one cross-platform surface: games register a catalogue, query `owned()` in O(1), call `buy()` with a callback. Same code compiles on macOS (StubStore), iOS (StoreKit 2, T65.2), and Android (Play Billing, T65.3) without `#ifdef`.
+
+```cpp
+#include <ge/iap.h>
+
+ge::iap::setCatalogue({
+    {.id = "pro",      .type = ge::iap::Type::NonConsumable},
+    {.id = "hints_10", .type = ge::iap::Type::Consumable},
+});
+
+if (ge::iap::owned("pro")) { /* gate */ }
+
+ge::iap::buy("pro", [](ge::iap::Result r) {
+    if (r.ok) celebrate();
+});
+
+ge::iap::restore([](auto){ });  // Apple App Review requires a "Restore Purchases" button — route here.
+```
+
+**Backend selection** at process startup from `GE_IAP_MODE`:
+
+| Mode | Backend | When |
+|---|---|---|
+| `stub` (default on desktop) | `StubStore` — in-memory entitlement set, no platform calls | CI, unit tests, headless server runs |
+| `local` | `.storekit` (iOS) / `android.test.*` (Android) — real framework, fake products | Fast dev iteration (T65.4) |
+| `platform` (default on mobile) | Real StoreKit / Play Billing | Release. Sandbox vs production decided by binary signing, not by code |
+
+**Product IDs are local.** Game registers `"pro"`, ge prepends the bundle ID to form the platform SKU `com.squz.tiltbuggy.pro`. The same string is what gets registered in App Store Connect and Play Console — no separate mapping table.
+
+**Testing surface** (`ge::iap::testing::setOwned`, `clearAll`) is authoritative on StubStore, no-op on platform stores. Used by unit tests and the in-engine debug menu (T65.6) for inner-loop iteration without touching a real store.
+
+**Server-side receipt validation is intentionally not provided.** Modern frameworks return signature-verified transactions (StoreKit 2 JWS, Play Billing signed receipts); ge writes only verified entitlements to the cache. The JWS floor covers replay, bundle-ID-binding, and account-binding for the threat model that paid non-consumable unlocks against casual game audiences actually face. Add server-side validation when shipping subscriptions or high-value-currency consumables.
+
+- **`<ge/iap.h>`** — Public surface. `Type`, `Product`, `LocalisedProduct`, `Result`, `setCatalogue`, `owned`, `products`, `buy`, `restore`, `testing::setOwned`, `testing::clearAll`.
+
 ### Testing
 
 - **`ImageDiff`** (`ImageDiff.h`) — `imgdiff::compareCPU()` for pixel-level RMS comparison.

@@ -121,6 +121,7 @@ ge/SRC_DIRECT = \
 	$(ge)/src/svg.cpp \
 	$(ge)/src/png.cpp \
 	$(ge)/src/text.cpp \
+	$(ge)/src/iap.cpp \
 	$(ge)/src/button.cpp \
 	$(ge)/src/sdl_input.cpp \
 	$(ge)/src/render/DirectRenderHost.mm \
@@ -271,7 +272,8 @@ ge/TEST_SRC = \
 	$(ge)/src/gesture_test.cpp \
 	$(ge)/src/layout_test.cpp \
 	$(ge)/src/button_test.cpp \
-	$(ge)/src/sdl_input_test.cpp
+	$(ge)/src/sdl_input_test.cpp \
+	$(ge)/src/iap_test.cpp
 ge/TEST_OBJ = $(patsubst $(ge)/src/%.cpp,$(BUILD_DIR)/ge/src/%.o,$(ge/TEST_SRC))
 
 # Shared variables (parent can += to extend)
