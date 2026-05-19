@@ -2127,7 +2127,7 @@ targets:
     discovered: 2026-05-17
   T66:
     name: ge installs a cross-platform spdlog sink so SPDLOG_INFO surfaces uniformly on iOS, Android, and desktop
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -2179,6 +2179,7 @@ targets:
     - dev-experience
     origin: manual
     discovered: 2026-05-19
+    achieved: 2026-05-19
   T7:
     name: Audio pauses when the app is backgrounded
     status: identified
