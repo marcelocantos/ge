@@ -2125,6 +2125,60 @@ targets:
     - proving-ground
     origin: manual
     discovered: 2026-05-17
+  T66:
+    name: ge installs a cross-platform spdlog sink so SPDLOG_INFO surfaces uniformly on iOS, Android, and desktop
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - '`ge::log::install(std::string subsystem = "")` is called once per session host from `ge::run`, before any logging happens. Empty `subsystem` auto-detects: CFBundleIdentifier on iOS, package name on Android, argv[0] basename on desktop.'
+    - 'On iOS the installed sink emits each spdlog `log_msg` through `os_log_*` with a named logger created from `os_log_create(<subsystem>, <logger-name>)` (logger-name defaults to "ge" or the spdlog logger''s own name). The fully-formatted spdlog payload is passed as a single `%{public}s` argument so every value is visible — no per-call `%{public}` boilerplate in app code. spdlog level maps to OS_LOG_TYPE: trace/debug → DEBUG, info → INFO, warn → DEFAULT, error → ERROR, critical → FAULT.'
+    - On Android the installed sink emits each spdlog `log_msg` through `__android_log_print` with priority mapped from spdlog level (trace/debug → VERBOSE/DEBUG, info → INFO, warn → WARN, error → ERROR, critical → FATAL) and tag = subsystem (truncated to 23 chars per Android's TAG limit).
+    - On desktop the sink keeps the existing stderr behaviour (spdlog's default colour sink); no regression in current ge / app log output during local dev.
+    - Existing consumer apps (multimaze2, tiltbuggy, sample/tiltbuggy) require **zero source changes** to benefit. Every existing `SPDLOG_INFO` / `SPDLOG_WARN` / `SPDLOG_ERROR` / `SPDLOG_DEBUG` call now flows to the platform-native channel as well as stderr.
+    - 'Verified end-to-end on a real iPhone (Minicades Test iPhone, iOS 26.4.2): a `SPDLOG_INFO("hello")` in a consumer app produces a line visible to `spyder log <udid> --process <BundleExecutable>` (and `--subsystem <bundle-id>`) without the app touching `os_log_create` itself.'
+    - 'Verified end-to-end on a real Android device (Galaxy S24): same `SPDLOG_INFO` produces an `adb logcat` entry under the bundle-id tag.'
+    - 'Documented in `ge/CLAUDE.md` under the Public API section: `ge::log::install`, the platform fan-out table (spdlog level → native level for each OS), and the bundle-id auto-detection rules.'
+    - Old per-app workarounds (multimaze2's `os_log_create("com.squz.multimaze2", "T17")` block in src/Application.cpp from the 🎯T17 instrumentation push) can be deleted and replaced with the normal `SPDLOG_INFO` macro; the resulting messages still surface to `spyder log`.
+    context: |-
+      **Why this needs to be in ge, not in every app.**
+
+      Getting `SPDLOG_INFO` output off an iOS device is currently a multi-day reverse-engineering puzzle that every consuming game would otherwise have to solve independently. The gauntlet (as discovered during multimaze2's 🎯T17 instrumentation work on 2026-05-17 → 2026-05-19):
+
+      1. Apple has deprecated three logging APIs in sequence (NSLog → ASL syslog → unified log / `os_log`) without retiring any. Each has different visibility, capture paths, and filters.
+      2. Privacy-by-default since iOS 14: `os_log` arguments are `<private>` unless every format specifier carries `%{public}`. Entries logged via `OS_LOG_DEFAULT` (no named subsystem) are filtered out of remote capture entirely. Code "works" silently while emitting nothing visible.
+      3. Off-device capture is community-reverse-engineered. Apple's blessed answer is Xcode Console over USB — useless for automation. Spyder routes through go-ios's `os_trace_relay` service (the OSLog channel Xcode Console uses), but only sees entries from named loggers created by `os_log_create(<subsystem>, <category>)`.
+      4. No mainstream cross-platform logging library (spdlog, glog, fmt) bundles an iOS sink that does the right thing. spdlog's default stderr sink is invisible on iOS.
+
+      The exact incantation that works (proven during the 🎯T17 push):
+      - Create a logger once with `os_log_create("com.squz.multimaze2", "T17")` at file scope.
+      - Emit with `os_log(logger, "fmt %{public}d %{public}s", ...)` — every arg public.
+      - Capture from host: `spyder log <udid> --process <CFBundleExecutable> --follow` (range queries are 5-second live windows on iOS so `--follow` is required for ad-hoc captures).
+
+      That incantation is what `ge::log` needs to encode once. The "format spdlog message → single `%{public}s` arg" trick (pass the already-rendered payload string as a public argument so Apple's privacy filter never has to inspect individual values) means consumer code keeps writing normal `SPDLOG_INFO("v={:.3f} mass={:.4f}", v, m)` calls with no platform-specific annotation.
+
+      Android side (`__android_log_print`) is much simpler — included for completeness so consumer apps don't have to wire that separately.
+
+      Discovered while instrumenting multimaze2's 🎯T17 (ball-strike audio calibration). The level-1 marble-hit telemetry could not be retrieved from the iPhone for ~2 days because `OS_LOG_DEFAULT` was being filtered. Until ge encodes this, the next ge consumer will lose the same time.
+
+      **Out of scope for this target**:
+      - Log shipping (writing to a remote backend) — local-device capture only.
+      - Crash reports — separate channel; spyder's `crashes` subcommand handles that.
+      - Hot-reloadable log levels — current spdlog runtime level setting is sufficient.
+
+      Spyder-side improvements that would make this even nicer (tracked as separate targets in marcelocantos/spyder, not blockers for this work):
+      - Fix `spyder log --bundle-id <id> --follow` (currently EOFs immediately on iOS 26.4 — the `--process` path works as a workaround).
+      - Server-side managed capture sessions (`log_capture_start` / `log_capture_stop` MCP tools) so agents don't have to wrangle `--follow` + background processes + kill via shell.
+      - Document the "named subsystem required" constraint so consumers know what they're committing to.
+    tags:
+    - log
+    - ios
+    - android
+    - spdlog
+    - engine
+    - dev-experience
+    origin: manual
+    discovered: 2026-05-19
   T7:
     name: Audio pauses when the app is backgrounded
     status: identified
