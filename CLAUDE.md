@@ -566,6 +566,45 @@ sprite = ge::renderSvgDocument(*doc, 1024, 256);
 - **`SdlContext`** (`SdlContext.h`) — RAII SDL3 window creation. Used by the player; not typically used by the server. pImpl.
 - **`Signal`** (`Signal.h`) — SIGINT handler registration for graceful shutdown.
 
+### Logging (🎯T66)
+
+`ge::run` installs a platform-native spdlog sink at startup so consumer
+apps' `SPDLOG_INFO` / `WARN` / `ERROR` calls surface uniformly without
+per-app sink wiring. Consumers write normal spdlog macros and capture
+from the host with platform tooling:
+
+| Platform | Sink                | Capture |
+|---|---|---|
+| iOS / iPadOS / tvOS / watchOS | `os_log_with_type` via `os_log_create(<bundle-id>, "ge")` | `spyder log <udid> --process <CFBundleExecutable>` (live, `--follow`); Xcode Console over USB. |
+| Android  | `__android_log_print` with tag = `<package-name>` (truncated to 23 chars) | `adb -s <serial> logcat -s <package-name>` or `spyder log <serial>`. |
+| Desktop  | spdlog default colour-stderr (unchanged) | stderr. |
+
+spdlog → native level mapping:
+
+| spdlog       | Apple `os_log_type_t`     | Android `__android_log_print` priority |
+|---|---|---|
+| trace, debug | `OS_LOG_TYPE_DEBUG`       | `ANDROID_LOG_VERBOSE` / `ANDROID_LOG_DEBUG` |
+| info         | `OS_LOG_TYPE_INFO`        | `ANDROID_LOG_INFO`    |
+| warn         | `OS_LOG_TYPE_DEFAULT`     | `ANDROID_LOG_WARN`    |
+| err          | `OS_LOG_TYPE_ERROR`       | `ANDROID_LOG_ERROR`   |
+| critical     | `OS_LOG_TYPE_FAULT`       | `ANDROID_LOG_FATAL`   |
+
+**Why this lives in ge.** Apple's privacy-by-default unified-log behaviour
+hides `os_log` arguments as `<private>` unless every format specifier
+carries `%{public}`, and entries logged via `OS_LOG_DEFAULT` (no named
+subsystem) are filtered out of remote capture entirely. Apps that rolled
+their own `NSLog`-based sink ended up emitting nothing visible. ge's
+sink works around both: it creates a named subsystem with the consumer
+app's bundle ID and passes the spdlog-rendered payload as one
+`%{public}s` argument, so every value is visible without per-call
+`%{public}` boilerplate at the call site.
+
+- **`ge::log::install(subsystem = "")`** (`log.h`) — idempotent. Called
+  automatically from `ge::run`; consumers don't invoke it directly.
+  Empty `subsystem` auto-detects: `[[NSBundle mainBundle] bundleIdentifier]`
+  on iOS, `Activity.getPackageName()` via SDL's JNI bridge on Android,
+  falls back to `"ge"` otherwise.
+
 ### I/O
 
 - **`FileIO`** (`FileIO.h`) — `ge::openFile(path)` returns a `std::unique_ptr<std::istream>`. Uses `SDL_IOFromFile` internally for platform-agnostic file access (Android APK assets, iOS bundles, normal filesystem).

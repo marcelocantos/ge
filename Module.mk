@@ -123,6 +123,7 @@ ge/SRC_DIRECT = \
 	$(ge)/src/text.cpp \
 	$(ge)/src/iap.cpp \
 	$(ge)/src/iap_apple.mm \
+	$(ge)/src/log.cpp \
 	$(ge)/src/button.cpp \
 	$(ge)/src/sdl_input.cpp \
 	$(ge)/src/render/DirectRenderHost.mm \

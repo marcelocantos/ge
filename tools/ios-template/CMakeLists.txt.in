@@ -96,6 +96,8 @@ set(GE_SOURCES
     ${GE_ROOT}/src/sdl_input.cpp
     ${GE_ROOT}/src/iap.cpp
     ${GE_ROOT}/src/iap_apple.mm
+    ${GE_ROOT}/src/log.cpp
+    ${GE_ROOT}/src/log_apple.mm
     ${GE_ROOT}/src/Immersive_stub.cpp
     ${GE_ROOT}/src/CutoutInsets_stub.cpp
     ${GE_ROOT}/src/Attitude_apple.mm
