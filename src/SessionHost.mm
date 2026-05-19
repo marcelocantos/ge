@@ -18,6 +18,7 @@
 
 #include <bgfx/bgfx.h>
 #include <SDL3/SDL.h>
+#include <ge/log.h>
 #include <spdlog/spdlog.h>
 
 #include <string>
@@ -91,6 +92,12 @@ static void runDirect(Factory factory, const SessionHostConfig& config) {
 // ── ge::run — dispatch by modality ────────────────────────────────
 
 void run(Factory factory, const SessionHostConfig& config) {
+    // Install the cross-platform spdlog sink (🎯T66) before any other
+    // engine logging — SDL/bgfx/IAP startup all emit SPDLOG_INFO and
+    // we want those visible on iOS/Android logs without per-app
+    // sink wiring. Idempotent if a consumer has already installed.
+    ge::log::install();
+
     if (config.headless) {
         runBrokered(factory, config);
     } else {

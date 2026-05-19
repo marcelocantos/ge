@@ -1,0 +1,179 @@
+// Copyright 2026 Marcelo Cantos
+// SPDX-License-Identifier: Apache-2.0
+//
+// ge::iap floor: backend dispatcher + StubStore implementation +
+// DebugPanel. Platform backends in iap_apple.mm and iap_android.cpp
+// implement Store and provide makePlatformStore(); the dispatcher
+// picks one at process startup based on GE_IAP_MODE.
+
+#include "iap_internal.h"
+
+#include <spdlog/spdlog.h>
+
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
+
+#include <cassert>
+#include <cstdlib>
+
+namespace ge::iap {
+
+namespace detail {
+
+// In-memory backend. CI default, debug-menu backing store, unit-test
+// substrate. Threadsafe under a coarse mutex — IAP is not a hot path.
+struct StubStore : Store {
+    mutable std::mutex                              mu;
+    std::unordered_map<std::string, Product>        catalogue;
+    std::unordered_set<std::string>                 entitled;
+
+    void setCatalogue(std::vector<Product> next) override {
+        std::lock_guard lock(mu);
+        for (const auto& p : next) {
+            auto [it, inserted] = catalogue.try_emplace(p.id, p);
+            assert(inserted || it->second.type == p.type);
+        }
+    }
+
+    bool owned(const std::string& id) const override {
+        std::lock_guard lock(mu);
+        return entitled.contains(id);
+    }
+
+    std::vector<LocalisedProduct> products() const override {
+        std::lock_guard lock(mu);
+        std::vector<LocalisedProduct> out;
+        out.reserve(catalogue.size());
+        // Synthetic prices so dev UI can render. Real prices come
+        // from the platform store when GE_IAP_MODE=platform.
+        for (const auto& [id, p] : catalogue) {
+            out.push_back({
+                .id          = id,
+                .title       = id,
+                .description = "(stub) " + id,
+                .price       = "$0.99",
+                .currency    = "USD",
+            });
+        }
+        return out;
+    }
+
+    void buy(const std::string& id, BuyCallback cb) override {
+        Result r;
+        {
+            std::lock_guard lock(mu);
+            if (catalogue.find(id) == catalogue.end()) {
+                r = {.ok = false, .id = id, .error = "unknown product"};
+            } else {
+                const Product& p = catalogue.at(id);
+                if (p.type != Type::Consumable) {
+                    entitled.insert(id);
+                }
+                r = {.ok = true, .id = id, .error = {}};
+            }
+        }
+        if (cb) cb(std::move(r));
+    }
+
+    void restore(RestoreCallback cb) override {
+        if (cb) cb({.ok = true, .id = {}, .error = {}});
+    }
+
+    void testingSetOwned(const std::string& id, bool yes) override {
+        std::lock_guard lock(mu);
+        if (yes) entitled.insert(id);
+        else     entitled.erase(id);
+    }
+
+    void testingClearAll() override {
+        std::lock_guard lock(mu);
+        entitled.clear();
+    }
+};
+
+#if !defined(__APPLE__) && !defined(__ANDROID__)
+// Desktop / fallback default: no platform store. iap_apple.mm and
+// iap_android.cpp override this on their platforms.
+std::unique_ptr<Store> makePlatformStore() { return nullptr; }
+#endif
+
+} // namespace detail
+
+namespace {
+
+using detail::Store;
+using detail::StubStore;
+
+// Single backend instance, lazily constructed on first access.
+// std::once_flag guarantees the env-var probe + selection happens
+// exactly once even under concurrent first-touch from multiple threads.
+Store& store() {
+    static std::unique_ptr<Store> instance;
+    static std::once_flag         init;
+    std::call_once(init, [] {
+        const char* envMode = std::getenv("GE_IAP_MODE");
+        std::string mode    = envMode ? envMode : "";
+        // Default mode: platform on mobile, stub on desktop. macOS is
+        // desktop here — only iOS / iPadOS / tvOS / watchOS qualify
+        // as "mobile" for the auto-platform default.
+        if (mode.empty()) {
+#if defined(__ANDROID__)
+            mode = "platform";
+#elif defined(__APPLE__) && (TARGET_OS_IPHONE || TARGET_OS_TV || TARGET_OS_WATCH)
+            mode = "platform";
+#else
+            mode = "stub";
+#endif
+        }
+
+        if (mode == "stub") {
+            instance = std::make_unique<StubStore>();
+        } else if (mode == "platform") {
+            instance = detail::makePlatformStore();
+            if (!instance) {
+                SPDLOG_WARN("GE_IAP_MODE=platform but no platform store available; falling back to stub");
+                instance = std::make_unique<StubStore>();
+            }
+        } else {
+            // local mode lands with T65.4. Until then, anything
+            // unrecognised falls back to stub with a warning.
+            SPDLOG_WARN("GE_IAP_MODE={} not yet implemented; falling back to stub", mode);
+            instance = std::make_unique<StubStore>();
+        }
+    });
+    return *instance;
+}
+
+} // namespace
+
+void setCatalogue(std::vector<Product> c)                     { store().setCatalogue(std::move(c)); }
+bool owned(const std::string& id)                             { return store().owned(id); }
+std::vector<LocalisedProduct> products()                      { return store().products(); }
+void buy(const std::string& id, BuyCallback cb)               { store().buy(id, std::move(cb)); }
+void restore(RestoreCallback cb)                              { store().restore(std::move(cb)); }
+
+namespace testing {
+
+void setOwned(const std::string& id, bool yes) { store().testingSetOwned(id, yes); }
+void clearAll()                                { store().testingClearAll(); }
+
+} // namespace testing
+
+// ── DebugPanel ─────────────────────────────────────────────────────
+
+std::vector<DebugPanel::Row> DebugPanel::rows() const {
+    auto list = products();
+    std::vector<Row> out;
+    out.reserve(list.size());
+    for (const auto& p : list) {
+        out.push_back({.id = p.id, .type = Type::NonConsumable, .owned = owned(p.id)});
+    }
+    return out;
+}
+
+void DebugPanel::onRowTap(const std::string& id)        { testing::setOwned(id, !owned(id)); }
+void DebugPanel::onResetAll()                            { testing::clearAll(); }
+void DebugPanel::onForceRestore(RestoreCallback cb)      { restore(std::move(cb)); }
+
+} // namespace ge::iap

@@ -182,6 +182,8 @@ set(GE_CORE_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/text.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/button.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/sdl_input.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/iap.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/log.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/vendor/src/sqlift.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/vendor/src/sqlpipe.cpp
 )
@@ -192,6 +194,8 @@ if(APPLE)
         ${CMAKE_CURRENT_SOURCE_DIR}/src/SdlContext.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/Immersive_stub.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/CutoutInsets_stub.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/iap_apple.mm
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/log_apple.mm
         ${CMAKE_CURRENT_SOURCE_DIR}/src/Attitude_apple.mm)
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Android")
     list(APPEND GE_CORE_SOURCES
@@ -199,7 +203,9 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Android")
         ${CMAKE_CURRENT_SOURCE_DIR}/src/SdlContext_android.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/Immersive_android.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/CutoutInsets_android.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/Attitude_android.cpp)
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/Attitude_android.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/iap_android.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/log_android.cpp)
 else()
     list(APPEND GE_CORE_SOURCES
         ${CMAKE_CURRENT_SOURCE_DIR}/src/Immersive_stub.cpp

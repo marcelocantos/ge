@@ -10,49 +10,14 @@
 #include "Renderer.h"
 #include "Scene.h"
 
+#include <ge/iap.h>
 #include <ge/Protocol.h>
 #include <ge/Resource.h>
+#include <ge/sdl_input.h>
 #include <ge/SessionHost.h>
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>  // required on iOS/Android; no-op on desktop
 #include <spdlog/spdlog.h>
-#include <spdlog/sinks/base_sink.h>
-
-#ifdef GE_IOS
-// TEMP: T28.3 diagnostic — route spdlog through NSLog so logs appear in
-// xcrun simctl spawn log stream output.
-#import <Foundation/Foundation.h>
-template <typename Mutex>
-class nslog_sink : public spdlog::sinks::base_sink<Mutex> {
-protected:
-    void sink_it_(const spdlog::details::log_msg& msg) override {
-        spdlog::memory_buf_t buf;
-        spdlog::sinks::base_sink<Mutex>::formatter_->format(msg, buf);
-        NSString* s = [[NSString alloc] initWithBytes:buf.data()
-                                               length:buf.size()
-                                             encoding:NSUTF8StringEncoding];
-        NSLog(@"%@", s);
-    }
-    void flush_() override {}
-};
-#endif  // GE_IOS
-
-#ifdef __ANDROID__
-// TEMP: T28.4 diagnostic — route spdlog through Android's log so logs
-// appear in logcat.
-#include <android/log.h>
-template <typename Mutex>
-class android_sink : public spdlog::sinks::base_sink<Mutex> {
-protected:
-    void sink_it_(const spdlog::details::log_msg& msg) override {
-        spdlog::memory_buf_t buf;
-        spdlog::sinks::base_sink<Mutex>::formatter_->format(msg, buf);
-        std::string s(buf.data(), buf.size());
-        __android_log_print(ANDROID_LOG_INFO, "tiltbuggy", "%s", s.c_str());
-    }
-    void flush_() override {}
-};
-#endif  // __ANDROID__
 
 #include <cstring>
 #include <memory>
@@ -66,30 +31,15 @@ struct State {
     std::unique_ptr<tiltbuggy::Renderer> renderer;
     b2Vec2 gravity{0, 0};
     bool rendererInited = false;
+    bool proPurchaseInFlight = false;   // debounce: drop taps while Apple modal is up
 };
 
 } // namespace
 
 int main(int argc, char* argv[]) {
-#ifdef GE_IOS
-    // TEMP: T28.3 diagnostic — install NSLog sink so spdlog output is visible.
-    {
-        auto sink = std::make_shared<nslog_sink<std::mutex>>();
-        auto logger = std::make_shared<spdlog::logger>("tiltbuggy", sink);
-        logger->set_level(spdlog::level::info);
-        spdlog::set_default_logger(logger);
-    }
-#endif  // GE_IOS
-
-#ifdef __ANDROID__
-    // TEMP: T28.4 diagnostic — install Android log sink so spdlog output is visible.
-    {
-        auto sink = std::make_shared<android_sink<std::mutex>>();
-        auto logger = std::make_shared<spdlog::logger>("tiltbuggy", sink);
-        logger->set_level(spdlog::level::info);
-        spdlog::set_default_logger(logger);
-    }
-#endif  // __ANDROID__
+    // spdlog logs flow to platform-native channels via ge::log::install,
+    // which ge::run calls automatically below. No per-app sink wiring
+    // needed (🎯T66).
 
     bool brokered = false;  // default: direct/distribution modality
     for (int i = 1; i < argc; i++) {
@@ -97,6 +47,19 @@ int main(int argc, char* argv[]) {
     }
 
     State state;
+
+    // Register the IAP catalogue and pre-populate the entitlement cache.
+    // The `pro` SKU must also be registered in App Store Connect as
+    // com.squz.tiltbuggy.pro and in Play Console with the matching id.
+    // T65.7 demo: once registered, sandbox / license-tester accounts
+    // can buy() this from the device and `owned("pro")` will flip.
+    ge::iap::setCatalogue({
+        {.id = "pro",           .type = ge::iap::Type::NonConsumable},
+        {.id = "powerboost10",  .type = ge::iap::Type::Consumable},
+    });
+    ge::iap::restore([](ge::iap::Result r) {
+        SPDLOG_INFO("iap: restore complete ok={} error={}", r.ok, r.error);
+    });
 
     ge::run([&](ge::Context ctx) -> ge::RunConfig {
         state.scene = std::make_unique<tiltbuggy::Scene>(kWorldHalfExtent);
@@ -109,8 +72,9 @@ int main(int argc, char* argv[]) {
                 static int frame = 0;
                 if (++frame % 60 == 0) {
                     auto p = state.scene->buggyPose();
-                    SPDLOG_INFO("tick: dt={:.4f} g=[{:.2f},{:.2f}] pose=[{:.2f},{:.2f},{:.2f}]",
-                                dt, state.gravity.x, state.gravity.y, p.x, p.y, p.angle);
+                    SPDLOG_INFO("tick: dt={:.4f} g=[{:.2f},{:.2f}] pose=[{:.2f},{:.2f},{:.2f}] pro={}",
+                                dt, state.gravity.x, state.gravity.y, p.x, p.y, p.angle,
+                                ge::iap::owned("pro"));
                 }
             },
             .onRender = [&](const ge::Context& c) {
@@ -120,7 +84,7 @@ int main(int argc, char* argv[]) {
                 }
                 state.renderer->drawFrame(*state.scene, c);
             },
-            .onEvent = [&](const SDL_Event& e) {
+            .onEvent = [&, ctx](const SDL_Event& e) {
                 SPDLOG_INFO("onEvent type=0x{:x}", e.type);
                 if (e.type == SDL_EVENT_SENSOR_UPDATE) {
                     // Engine delivers device acceleration in screen frame.
@@ -132,6 +96,23 @@ int main(int argc, char* argv[]) {
                     SPDLOG_INFO("ACCEL accel=[{:+.2f},{:+.2f},{:+.2f}] gravity=[{:+.2f},{:+.2f}]",
                                 e.sensor.data[0], e.sensor.data[1], e.sensor.data[2],
                                 state.gravity.x, state.gravity.y);
+                    return;
+                }
+
+                // BUY PRO button tap (🎯T65.7): convert SDL pointer events
+                // to ge::PointerEvent in render-surface pixel space, then
+                // hit-test against the same screen rect Renderer draws at.
+                auto pe = ge::input::fromSdl(e, ctx.fullRect().size());
+                if (pe && pe->kind == ge::PointerEvent::Down
+                       && !ge::iap::owned("pro")
+                       && !state.proPurchaseInFlight
+                       && tiltbuggy::proButtonRect(ctx).contains(pe->pos)) {
+                    state.proPurchaseInFlight = true;
+                    SPDLOG_INFO("iap: tapping BUY PRO");
+                    ge::iap::buy("pro", [&state](ge::iap::Result r) {
+                        state.proPurchaseInFlight = false;
+                        SPDLOG_INFO("iap: buy pro complete ok={} error={}", r.ok, r.error);
+                    });
                 }
             },
             .onShutdown = [&] {

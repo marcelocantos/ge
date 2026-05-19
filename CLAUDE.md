@@ -566,6 +566,45 @@ sprite = ge::renderSvgDocument(*doc, 1024, 256);
 - **`SdlContext`** (`SdlContext.h`) — RAII SDL3 window creation. Used by the player; not typically used by the server. pImpl.
 - **`Signal`** (`Signal.h`) — SIGINT handler registration for graceful shutdown.
 
+### Logging (🎯T66)
+
+`ge::run` installs a platform-native spdlog sink at startup so consumer
+apps' `SPDLOG_INFO` / `WARN` / `ERROR` calls surface uniformly without
+per-app sink wiring. Consumers write normal spdlog macros and capture
+from the host with platform tooling:
+
+| Platform | Sink                | Capture |
+|---|---|---|
+| iOS / iPadOS / tvOS / watchOS | `os_log_with_type` via `os_log_create(<bundle-id>, "ge")` | `spyder log <udid> --process <CFBundleExecutable>` (live, `--follow`); Xcode Console over USB. |
+| Android  | `__android_log_print` with tag = `<package-name>` (truncated to 23 chars) | `adb -s <serial> logcat -s <package-name>` or `spyder log <serial>`. |
+| Desktop  | spdlog default colour-stderr (unchanged) | stderr. |
+
+spdlog → native level mapping:
+
+| spdlog       | Apple `os_log_type_t`     | Android `__android_log_print` priority |
+|---|---|---|
+| trace, debug | `OS_LOG_TYPE_DEBUG`       | `ANDROID_LOG_VERBOSE` / `ANDROID_LOG_DEBUG` |
+| info         | `OS_LOG_TYPE_INFO`        | `ANDROID_LOG_INFO`    |
+| warn         | `OS_LOG_TYPE_DEFAULT`     | `ANDROID_LOG_WARN`    |
+| err          | `OS_LOG_TYPE_ERROR`       | `ANDROID_LOG_ERROR`   |
+| critical     | `OS_LOG_TYPE_FAULT`       | `ANDROID_LOG_FATAL`   |
+
+**Why this lives in ge.** Apple's privacy-by-default unified-log behaviour
+hides `os_log` arguments as `<private>` unless every format specifier
+carries `%{public}`, and entries logged via `OS_LOG_DEFAULT` (no named
+subsystem) are filtered out of remote capture entirely. Apps that rolled
+their own `NSLog`-based sink ended up emitting nothing visible. ge's
+sink works around both: it creates a named subsystem with the consumer
+app's bundle ID and passes the spdlog-rendered payload as one
+`%{public}s` argument, so every value is visible without per-call
+`%{public}` boilerplate at the call site.
+
+- **`ge::log::install(subsystem = "")`** (`log.h`) — idempotent. Called
+  automatically from `ge::run`; consumers don't invoke it directly.
+  Empty `subsystem` auto-detects: `[[NSBundle mainBundle] bundleIdentifier]`
+  on iOS, `Activity.getPackageName()` via SDL's JNI bridge on Android,
+  falls back to `"ge"` otherwise.
+
 ### I/O
 
 - **`FileIO`** (`FileIO.h`) — `ge::openFile(path)` returns a `std::unique_ptr<std::istream>`. Uses `SDL_IOFromFile` internally for platform-agnostic file access (Android APK assets, iOS bundles, normal filesystem).
@@ -575,6 +614,43 @@ sprite = ge::renderSvgDocument(*doc, 1024, 256);
 
 - **`VideoEncoder`** (`VideoEncoder.h`) — H.264 encoder interface. Platform implementation: `VideoEncoder_apple.mm` (VideoToolbox). Used internally by `SessionHost` when running headless. pImpl.
 - **`VideoDecoder`** (`VideoDecoder.h`) — H.264 decoder interface. Platform implementation: `VideoDecoder_apple.mm` (VideoToolbox). Used by the player. pImpl.
+
+### IAP (🎯T65)
+
+In-app purchases with one cross-platform surface: games register a catalogue, query `owned()` in O(1), call `buy()` with a callback. Same code compiles on macOS (StubStore), iOS (StoreKit 2, T65.2), and Android (Play Billing, T65.3) without `#ifdef`.
+
+```cpp
+#include <ge/iap.h>
+
+ge::iap::setCatalogue({
+    {.id = "pro",      .type = ge::iap::Type::NonConsumable},
+    {.id = "hints_10", .type = ge::iap::Type::Consumable},
+});
+
+if (ge::iap::owned("pro")) { /* gate */ }
+
+ge::iap::buy("pro", [](ge::iap::Result r) {
+    if (r.ok) celebrate();
+});
+
+ge::iap::restore([](auto){ });  // Apple App Review requires a "Restore Purchases" button — route here.
+```
+
+**Backend selection** at process startup from `GE_IAP_MODE`:
+
+| Mode | Backend | When |
+|---|---|---|
+| `stub` (default on desktop) | `StubStore` — in-memory entitlement set, no platform calls | CI, unit tests, headless server runs |
+| `local` | `.storekit` (iOS) / `android.test.*` (Android) — real framework, fake products | Fast dev iteration (T65.4) |
+| `platform` (default on mobile) | Real StoreKit / Play Billing | Release. Sandbox vs production decided by binary signing, not by code |
+
+**Product IDs are local.** Game registers `"pro"`, ge prepends the bundle ID to form the platform SKU `com.squz.tiltbuggy.pro`. The same string is what gets registered in App Store Connect and Play Console — no separate mapping table.
+
+**Testing surface** (`ge::iap::testing::setOwned`, `clearAll`) is authoritative on StubStore, no-op on platform stores. Used by unit tests and the in-engine debug menu (T65.6) for inner-loop iteration without touching a real store.
+
+**Server-side receipt validation is intentionally not provided.** Modern frameworks return signature-verified transactions (StoreKit 2 JWS, Play Billing signed receipts); ge writes only verified entitlements to the cache. The JWS floor covers replay, bundle-ID-binding, and account-binding for the threat model that paid non-consumable unlocks against casual game audiences actually face. Add server-side validation when shipping subscriptions or high-value-currency consumables.
+
+- **`<ge/iap.h>`** — Public surface. `Type`, `Product`, `LocalisedProduct`, `Result`, `setCatalogue`, `owned`, `products`, `buy`, `restore`, `testing::setOwned`, `testing::clearAll`.
 
 ### Testing
 
